@@ -1,0 +1,5 @@
+param_namespace:
+  # device_url: "serial:///dev/ttyS7:921600"
+  device_url: "udp://:14540"
+  takeoff_height: 3.0 # [m]
+  waypoint_marker_scale: 0.3

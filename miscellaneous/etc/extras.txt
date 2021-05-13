@@ -1,0 +1,5 @@
+mavlink start -d /dev/ttyS2 -b 921600
+set +e
+micrortps_client start -d /dev/ttyS2 -b 921600
+set -e
+usleep 100000
