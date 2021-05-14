@@ -54,7 +54,11 @@ private:
   bool motion_started_       = false;
   bool is_simulation_        = false;
 
-  std::string uav_name_ = "uav1";
+  std::string uav_name_         = "";
+  std::string world_frame_      = "";
+  std::string ned_origin_frame_ = "";
+  std::string ned_fcu_frame_    = "";
+  std::string fcu_frame_        = "";
 
   unsigned int                     px4_system_id_;
   unsigned int                     px4_component_id_ = 1;
@@ -185,6 +189,12 @@ ControlInterface::ControlInterface(rclcpp::NodeOptions options) : Node("control_
   parse_param("device_url", device_url_);
   parse_param("takeoff_height", takeoff_height_);
   parse_param("waypoint_marker_scale", waypoint_marker_scale_);
+
+  /* frame definition */
+  world_frame_ = "world";
+  fcu_frame_ = uav_name_ + "/fcu";
+  ned_fcu_frame_ = uav_name_ + "/ned_fcu";
+  ned_origin_frame_ = uav_name_ + "/ned_origin";;
   //}
 
   /* estabilish connection with PX4 //{ */
@@ -438,7 +448,7 @@ void ControlInterface::controlRoutine(void) {
         RCLCPP_INFO(this->get_logger(), "[%s]: All waypoints have been visited", this->get_name());
         motion_started_ = false;
       } else {
-        auto            pos_in_world_tf = tf_buffer_->lookupTransform("world", uav_name_ + "/local_odom", rclcpp::Time(0));
+        auto            pos_in_world_tf = tf_buffer_->lookupTransform(world_frame_, fcu_frame_, rclcpp::Time(0));
         Eigen::Vector3d pos_in_world(pos_in_world_tf.transform.translation.x, pos_in_world_tf.transform.translation.y, pos_in_world_tf.transform.translation.z);
 
         if ((pos_in_world - current_goal_).norm() < 0.4) {
@@ -653,8 +663,8 @@ void ControlInterface::publishStaticTF() {
   geometry_msgs::msg::TransformStamped tf_stamped;
   tf2::Quaternion                      q;
   q.setRPY(-M_PI, 0, 0);
-  tf_stamped.header.frame_id         = uav_name_ + "/local_odom";
-  tf_stamped.child_frame_id          = uav_name_ + "/fcu";
+  tf_stamped.header.frame_id         = ned_fcu_frame_;
+  tf_stamped.child_frame_id          = fcu_frame_;
   tf_stamped.transform.translation.x = 0.0;
   tf_stamped.transform.translation.y = 0.0;
   tf_stamped.transform.translation.z = 0.0;
@@ -666,8 +676,8 @@ void ControlInterface::publishStaticTF() {
 
   q.setRPY(M_PI, 0, M_PI / 2);
   q                                  = q.inverse();
-  tf_stamped.header.frame_id         = "world";
-  tf_stamped.child_frame_id          = uav_name_ + "/ned_origin";
+  tf_stamped.header.frame_id         = world_frame_;
+  tf_stamped.child_frame_id          = ned_origin_frame_;
   tf_stamped.transform.translation.x = 0.0;
   tf_stamped.transform.translation.y = 0.0;
   tf_stamped.transform.translation.z = 0.0;
@@ -686,8 +696,8 @@ void ControlInterface::publishTF() {
   }
   geometry_msgs::msg::TransformStamped tf1;
   tf1.header.stamp            = this->get_clock()->now();
-  tf1.header.frame_id         = uav_name_ + "/ned_origin";
-  tf1.child_frame_id          = uav_name_ + "/local_odom";
+  tf1.header.frame_id         = ned_origin_frame_;
+  tf1.child_frame_id          = ned_fcu_frame_;
   tf1.transform.translation.x = pos_.x();
   tf1.transform.translation.y = pos_.y();
   tf1.transform.translation.z = pos_.z();
@@ -703,9 +713,9 @@ void ControlInterface::publishTF() {
 void ControlInterface::publishLocalOdom() {
   nav_msgs::msg::Odometry msg;
   msg.header.stamp            = this->get_clock()->now();
-  msg.header.frame_id         = "world";
-  msg.child_frame_id          = uav_name_ + "/fcu";
-  auto tf                     = transformBetween(uav_name_ + "/fcu", "world");
+  msg.header.frame_id         = world_frame_;
+  msg.child_frame_id          = fcu_frame_;
+  auto tf                     = transformBetween(fcu_frame_, world_frame_);
   msg.pose.pose.position.x    = tf.pose.position.x;
   msg.pose.pose.position.y    = tf.pose.position.y;
   msg.pose.pose.position.z    = tf.pose.position.z;
@@ -723,7 +733,7 @@ void ControlInterface::publishDebugMarkers() {
 
   visualization_msgs::msg::Marker points_marker;
   points_marker.header.stamp       = this->get_clock()->now();
-  points_marker.header.frame_id    = "world";
+  points_marker.header.frame_id    = world_frame_;
   points_marker.ns                 = uav_name_ + "/debug/waypoints";
   points_marker.type               = visualization_msgs::msg::Marker::POINTS;
   points_marker.id                 = 8;
