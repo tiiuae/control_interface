@@ -5,8 +5,9 @@
   <name>control_interface</name>
   <version>0.0.1</version>
   <description>ROS2 interface to send commands to PX4 through MavSDK</description>
-  <maintainer email="stibipet@fel.cvut.cz">stibipet</maintainer>
-  <license>GPLv3</license>
+  <maintainer email="petr.stibinger@fly4future.com">stibipet</maintainer>
+  
+  <license>BSD 3-Clause</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>
 
