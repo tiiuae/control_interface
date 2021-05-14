@@ -4,7 +4,7 @@
 
   <name>control_interface</name>
   <version>0.0.1</version>
-  <description>Sends commands to PX4 directly through ROS2/RTPS</description>
+  <description>ROS2 interface to send commands to PX4 through MavSDK</description>
   <maintainer email="stibipet@fel.cvut.cz">stibipet</maintainer>
   <license>GPLv3</license>
 
@@ -24,7 +24,7 @@
   <depend>std_msgs</depend>
   <depend>std_srvs</depend>
   <depend>px4_msgs</depend>
-  <depend>mrs_msgs</depend>
+  <depend>fog_msgs</depend>
   <depend>geometry_msgs</depend>
   <depend>visualization_msgs</depend>
   <depend>tf2</depend>

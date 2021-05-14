@@ -1,4 +1,3 @@
-#include <px4_msgs/msg/detail/vehicle_command__struct.hpp>
 #include <thread>
 #include <rclcpp/rclcpp.hpp>
 #include <rclcpp/time.hpp>
@@ -12,7 +11,7 @@
 #include <px4_msgs/msg/vehicle_odometry.hpp>
 #include <px4_msgs/msg/timesync.hpp>
 
-#include <mrs_msgs/srv/vec4.hpp>
+#include <fog_msgs/srv/vec4.hpp>
 
 #include <mavsdk/mavsdk.h>
 #include <mavsdk/plugins/action/action.h>
@@ -113,12 +112,12 @@ private:
   // services provided
   rclcpp::Service<std_srvs::srv::SetBool>::SharedPtr takeoff_service_;
   rclcpp::Service<std_srvs::srv::SetBool>::SharedPtr land_service_;
-  rclcpp::Service<mrs_msgs::srv::Vec4>::SharedPtr    local_setpoint_service_;
+  rclcpp::Service<fog_msgs::srv::Vec4>::SharedPtr    local_setpoint_service_;
 
   // service callbacks
   bool takeoffCallback(const std::shared_ptr<std_srvs::srv::SetBool::Request> request, std::shared_ptr<std_srvs::srv::SetBool::Response> response);
   bool landCallback(const std::shared_ptr<std_srvs::srv::SetBool::Request> request, std::shared_ptr<std_srvs::srv::SetBool::Response> response);
-  bool localSetpointCallback(const std::shared_ptr<mrs_msgs::srv::Vec4::Request> request, std::shared_ptr<mrs_msgs::srv::Vec4::Response> response);
+  bool localSetpointCallback(const std::shared_ptr<fog_msgs::srv::Vec4::Request> request, std::shared_ptr<fog_msgs::srv::Vec4::Response> response);
 
   // internal functions
   bool arm();
@@ -190,7 +189,7 @@ ControlInterface::ControlInterface(rclcpp::NodeOptions options) : Node("control_
   /* estabilish connection with PX4 //{ */
   mavsdk::ConnectionResult connection_result;
   try {
-    connection_result = mavsdk_.add_any_connection(device_url_, mavsdk::ForwardingOption::ForwardingOn);
+    connection_result = mavsdk_.add_any_connection(device_url_);
   }
   catch (...) {
     RCLCPP_ERROR(this->get_logger(), "[%s]: Connection failed! Device does not exist: %s", this->get_name(), device_url_.c_str());
@@ -243,7 +242,7 @@ ControlInterface::ControlInterface(rclcpp::NodeOptions options) : Node("control_
   // service handlers
   takeoff_service_        = this->create_service<std_srvs::srv::SetBool>("~/takeoff_in", std::bind(&ControlInterface::takeoffCallback, this, _1, _2));
   land_service_           = this->create_service<std_srvs::srv::SetBool>("~/land_in", std::bind(&ControlInterface::landCallback, this, _1, _2));
-  local_setpoint_service_ = this->create_service<mrs_msgs::srv::Vec4>("~/local_setpoint_in", std::bind(&ControlInterface::localSetpointCallback, this, _1, _2));
+  local_setpoint_service_ = this->create_service<fog_msgs::srv::Vec4>("~/local_setpoint_in", std::bind(&ControlInterface::localSetpointCallback, this, _1, _2));
 
   control_timer_ =
       this->create_wall_timer(std::chrono::duration<double>(1.0 / control_loop_rate_), std::bind(&ControlInterface::controlRoutine, this), callback_group_);
@@ -378,8 +377,8 @@ void ControlInterface::controlModeCallback(const px4_msgs::msg::VehicleControlMo
 //}
 
 /* localSetpointCallback //{ */
-bool ControlInterface::localSetpointCallback(const std::shared_ptr<mrs_msgs::srv::Vec4::Request> request,
-                                             std::shared_ptr<mrs_msgs::srv::Vec4::Response>      response) {
+bool ControlInterface::localSetpointCallback(const std::shared_ptr<fog_msgs::srv::Vec4::Request> request,
+                                             std::shared_ptr<fog_msgs::srv::Vec4::Response>      response) {
   if (!abortMission()) {
     response->message = "Setpoint not set, previous mission cannot be aborted";
     response->success = false;
