@@ -90,7 +90,6 @@ private:
   double takeoff_height_        = 2.5;
   double waypoint_marker_scale_ = 0.3;
   double control_loop_rate_     = 20.0;
-  double tf_republisher_rate_   = 100.0;
 
   std::atomic<unsigned long long> timestamp_;
 
@@ -145,9 +144,7 @@ private:
   // timers
   rclcpp::CallbackGroup::SharedPtr callback_group_;
   rclcpp::TimerBase::SharedPtr     control_timer_;
-  rclcpp::TimerBase::SharedPtr     tf_republisher_timer_;
   void                             controlRoutine(void);
-  void                             tfRepublisherRoutine(void);
 
   // utils
   template <class T>
@@ -243,11 +240,11 @@ ControlInterface::ControlInterface(rclcpp::NodeOptions options) : Node("control_
 
   control_timer_ =
       this->create_wall_timer(std::chrono::duration<double>(1.0 / control_loop_rate_), std::bind(&ControlInterface::controlRoutine, this), callback_group_);
-  tf_republisher_timer_ = this->create_wall_timer(std::chrono::duration<double>(1.0 / tf_republisher_rate_),
-                                                  std::bind(&ControlInterface::tfRepublisherRoutine, this), callback_group_);
 
   tf_broadcaster_        = nullptr;
-  static_tf_broadcaster_ = nullptr;
+
+  static_tf_broadcaster_ = std::make_shared<tf2_ros::StaticTransformBroadcaster>(this->shared_from_this());
+  publishStaticTF();
 
   tf_buffer_ = std::make_shared<tf2_ros::Buffer>(this->get_clock());
   tf_buffer_->setUsingDedicatedThread(true);
@@ -298,6 +295,8 @@ void ControlInterface::pixhawkOdomCallback(const px4_msgs::msg::VehicleOdometry:
   ori_[1]  = msg->q[1];
   ori_[2]  = msg->q[2];
   ori_[3]  = msg->q[3];
+
+  publishTF();
 
   getting_pixhawk_odom_ = true;
   RCLCPP_INFO_ONCE(this->get_logger(), "[%s]: Getting pixhawk odometry!", this->get_name());
@@ -495,18 +494,6 @@ void ControlInterface::controlRoutine(void) {
   } else {
     RCLCPP_INFO(this->get_logger(), "[%s]: Initialized: %s, GPS: %s, PX4 Odom: %s", this->get_name(), is_initialized_ ? "TRUE" : "FALSE",
                 getting_gps_ ? "TRUE" : "FALSE", getting_pixhawk_odom_ ? "TRUE" : "FALSE");
-  }
-}
-//}
-
-/* tfRepublisherRoutine //{ */
-void ControlInterface::tfRepublisherRoutine(void) {
-  if (is_initialized_ && getting_gps_ && getting_pixhawk_odom_) {
-    if (static_tf_broadcaster_ == nullptr) {
-      static_tf_broadcaster_ = std::make_shared<tf2_ros::StaticTransformBroadcaster>(this->shared_from_this());
-      publishStaticTF();
-    }
-    publishTF();
   }
 }
 //}
