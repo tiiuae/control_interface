@@ -676,18 +676,6 @@ void ControlInterface::publishStaticTF() {
   tf_stamped.transform.rotation.z    = q.getZ();
   tf_stamped.transform.rotation.w    = q.getW();
   static_tf_broadcaster_->sendTransform(tf_stamped);
-
-  q.setRPY(0, 0, 0);
-  tf_stamped.header.frame_id         = uav_name_ + "/fcu";
-  tf_stamped.child_frame_id          = uav_name_ + "/rplidar";
-  tf_stamped.transform.translation.x = 0.0;
-  tf_stamped.transform.translation.y = 0.0;
-  tf_stamped.transform.translation.z = 0.15;
-  tf_stamped.transform.rotation.x    = q.getX();
-  tf_stamped.transform.rotation.y    = q.getY();
-  tf_stamped.transform.rotation.z    = q.getZ();
-  tf_stamped.transform.rotation.w    = q.getW();
-  static_tf_broadcaster_->sendTransform(tf_stamped);
 }
 //}
 
