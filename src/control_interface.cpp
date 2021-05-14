@@ -298,6 +298,8 @@ void ControlInterface::pixhawkOdomCallback(const px4_msgs::msg::VehicleOdometry:
 
   publishTF();
 
+  publishLocalOdom();
+
   getting_pixhawk_odom_ = true;
   RCLCPP_INFO_ONCE(this->get_logger(), "[%s]: Getting pixhawk odometry!", this->get_name());
 }
@@ -434,8 +436,6 @@ bool ControlInterface::localSetpointCallback(const std::shared_ptr<fog_msgs::srv
 void ControlInterface::controlRoutine(void) {
 
   if (is_initialized_ && getting_gps_ && getting_pixhawk_odom_) {
-
-    publishLocalOdom();
 
     /* handle takeoff //{ */
     if (takeoff_requested_) {
