@@ -200,7 +200,7 @@ ControlInterface::ControlInterface(rclcpp::NodeOptions options) : Node("control_
   /* estabilish connection with PX4 //{ */
   mavsdk::ConnectionResult connection_result;
   try {
-    connection_result = mavsdk_.add_any_connection(device_url_, mavsdk::ForwardingOption::ForwardingOn);
+    connection_result = mavsdk_.add_any_connection(device_url_);
   }
   catch (...) {
     RCLCPP_ERROR(this->get_logger(), "[%s]: Connection failed! Device does not exist: %s", this->get_name(), device_url_.c_str());
