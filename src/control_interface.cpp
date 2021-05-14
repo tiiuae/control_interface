@@ -114,18 +114,18 @@ private:
   void controlModeCallback(const px4_msgs::msg::VehicleControlMode::UniquePtr msg);
 
   // services provided
+  rclcpp::Service<std_srvs::srv::SetBool>::SharedPtr arming_service_;
   rclcpp::Service<std_srvs::srv::SetBool>::SharedPtr takeoff_service_;
   rclcpp::Service<std_srvs::srv::SetBool>::SharedPtr land_service_;
   rclcpp::Service<fog_msgs::srv::Vec4>::SharedPtr    local_setpoint_service_;
 
   // service callbacks
+  bool armingCallback(const std::shared_ptr<std_srvs::srv::SetBool::Request> request, std::shared_ptr<std_srvs::srv::SetBool::Response> response);
   bool takeoffCallback(const std::shared_ptr<std_srvs::srv::SetBool::Request> request, std::shared_ptr<std_srvs::srv::SetBool::Response> response);
   bool landCallback(const std::shared_ptr<std_srvs::srv::SetBool::Request> request, std::shared_ptr<std_srvs::srv::SetBool::Response> response);
   bool localSetpointCallback(const std::shared_ptr<fog_msgs::srv::Vec4::Request> request, std::shared_ptr<fog_msgs::srv::Vec4::Response> response);
 
   // internal functions
-  bool arm();
-  bool disarm();
   bool takeoff();
   bool land();
   bool startMission();
@@ -176,10 +176,11 @@ ControlInterface::ControlInterface(rclcpp::NodeOptions options) : Node("control_
   parse_param("waypoint_marker_scale", waypoint_marker_scale_);
 
   /* frame definition */
-  world_frame_ = "world";
-  fcu_frame_ = uav_name_ + "/fcu";
-  ned_fcu_frame_ = uav_name_ + "/ned_fcu";
-  ned_origin_frame_ = uav_name_ + "/ned_origin";;
+  world_frame_      = "world";
+  fcu_frame_        = uav_name_ + "/fcu";
+  ned_fcu_frame_    = uav_name_ + "/ned_fcu";
+  ned_origin_frame_ = uav_name_ + "/ned_origin";
+  ;
   //}
 
   /* estabilish connection with PX4 //{ */
@@ -236,6 +237,7 @@ ControlInterface::ControlInterface(rclcpp::NodeOptions options) : Node("control_
       this->create_subscription<px4_msgs::msg::VehicleControlMode>("~/control_mode_in", 10, std::bind(&ControlInterface::controlModeCallback, this, _1));
 
   // service handlers
+  arming_service_         = this->create_service<std_srvs::srv::SetBool>("~/arming_in", std::bind(&ControlInterface::armingCallback, this, _1, _2));
   takeoff_service_        = this->create_service<std_srvs::srv::SetBool>("~/takeoff_in", std::bind(&ControlInterface::takeoffCallback, this, _1, _2));
   land_service_           = this->create_service<std_srvs::srv::SetBool>("~/land_in", std::bind(&ControlInterface::landCallback, this, _1, _2));
   local_setpoint_service_ = this->create_service<fog_msgs::srv::Vec4>("~/local_setpoint_in", std::bind(&ControlInterface::localSetpointCallback, this, _1, _2));
@@ -358,6 +360,42 @@ bool ControlInterface::landCallback([[maybe_unused]] const std::shared_ptr<std_s
 }
 //}
 
+/* armingCallback //{ */
+bool ControlInterface::armingCallback([[maybe_unused]] const std::shared_ptr<std_srvs::srv::SetBool::Request> request,
+                                      std::shared_ptr<std_srvs::srv::SetBool::Response>                       response) {
+
+  if (request->data) {
+    auto result = action_->arm();
+    if (result != mavsdk::Action::Result::Success) {
+      response->message = "Arming failed";
+      response->success = false;
+      RCLCPP_WARN(this->get_logger(), response->message);
+      return true;
+    } else {
+      response->message = "Vehicle armed";
+      response->success = true;
+      armed_            = true;
+      RCLCPP_INFO(this->get_logger(), response->message);
+      return true;
+    }
+  } else {
+    auto result = action_->disarm();
+    if (result != mavsdk::Action::Result::Success) {
+      response->message = "Disarming failed";
+      response->success = false;
+      RCLCPP_WARN(this->get_logger(), response->message);
+      return true;
+    } else {
+      response->message = "Vehicle disarmed";
+      response->success = true;
+      armed_            = false;
+      RCLCPP_INFO(this->get_logger(), response->message);
+      return true;
+    }
+  }
+}
+//}
+
 /* controlModeCallback //{ */
 void ControlInterface::controlModeCallback(const px4_msgs::msg::VehicleControlMode::UniquePtr msg) {
   if (armed_ != msg->flag_armed) {
@@ -471,34 +509,6 @@ void ControlInterface::tfRepublisherRoutine(void) {
     }
     publishTF();
   }
-}
-//}
-
-/* arm //{ */
-bool ControlInterface::arm() {
-
-  auto result = action_->arm();
-  if (result != mavsdk::Action::Result::Success) {
-    RCLCPP_WARN(this->get_logger(), "[%s]: Arming failed", this->get_name());
-    return false;
-  }
-  RCLCPP_INFO(this->get_logger(), "[%s]: Vehicle armed", this->get_name());
-  armed_ = true;
-  return true;
-}
-//}
-
-/* disarm //{ */
-bool ControlInterface::disarm() {
-
-  auto result = action_->disarm();
-  if (result != mavsdk::Action::Result::Success) {
-    RCLCPP_WARN(this->get_logger(), "[%s]: Disarming failed", this->get_name());
-    return false;
-  }
-  RCLCPP_INFO(this->get_logger(), "[%s]: Vehicle disarmed", this->get_name());
-  armed_ = false;
-  return true;
 }
 //}
 
