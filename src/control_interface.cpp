@@ -52,7 +52,6 @@ private:
   bool airborne_             = false;
   bool takeoff_requested_    = false;
   bool motion_started_       = false;
-  bool is_simulation_        = false;
 
   std::string uav_name_         = "";
   std::string world_frame_      = "";
@@ -160,20 +159,6 @@ private:
 ControlInterface::ControlInterface(rclcpp::NodeOptions options) : Node("control_interface", options) {
 
   RCLCPP_INFO(this->get_logger(), "Initializing...");
-
-  /* load environment variables //{ */
-  std::string run_type;
-  try {
-    run_type = std::string(std::getenv("RUN_TYPE"));
-    RCLCPP_INFO(this->get_logger(), "[%s]: Run type is: '%s'", this->get_name(), run_type.c_str());
-  }
-  catch (...) {
-    RCLCPP_WARN(this->get_logger(), "[%s]: Environment variable RUN_TYPE was not defined!", this->get_name());
-  }
-
-  if (run_type == "simulation") {
-    is_simulation_ = true;
-  }
 
   try {
     uav_name_ = std::string(std::getenv("UAV_NAME"));
@@ -419,13 +404,6 @@ void ControlInterface::controlRoutine(void) {
     /* handle takeoff //{ */
     if (takeoff_requested_) {
 
-      if (is_simulation_) {
-        while (!arm()) {
-          RCLCPP_INFO_ONCE(this->get_logger(), "[%s]: Attempting to arm", this->get_name());
-          rclcpp::Rate(100).sleep();
-        }
-      }
-
       if (!armed_) {
         RCLCPP_INFO(this->get_logger(), "[%s]: Vehicle not armed", this->get_name());
         return;
@@ -499,12 +477,6 @@ void ControlInterface::tfRepublisherRoutine(void) {
 /* arm //{ */
 bool ControlInterface::arm() {
 
-  if (!is_simulation_) {
-    RCLCPP_WARN(this->get_logger(), "[%s]: For safety reasons, software arming is disabled outside simulation.", this->get_name());
-    RCLCPP_INFO(this->get_logger(), "[%s]: Use RC to manually arm the vehicle.", this->get_name());
-    return false;
-  }
-
   auto result = action_->arm();
   if (result != mavsdk::Action::Result::Success) {
     RCLCPP_WARN(this->get_logger(), "[%s]: Arming failed", this->get_name());
@@ -518,12 +490,6 @@ bool ControlInterface::arm() {
 
 /* disarm //{ */
 bool ControlInterface::disarm() {
-
-  if (!is_simulation_) {
-    RCLCPP_WARN(this->get_logger(), "[%s]: For safety reasons, software disarming is disabled outside simulation.", this->get_name());
-    RCLCPP_INFO(this->get_logger(), "[%s]: Use RC to manually disarm the vehicle.", this->get_name());
-    return false;
-  }
 
   auto result = action_->disarm();
   if (result != mavsdk::Action::Result::Success) {
