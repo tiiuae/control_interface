@@ -58,8 +58,6 @@ private:
   std::string ned_fcu_frame_    = "";
   std::string fcu_frame_        = "";
 
-  unsigned int                     px4_system_id_;
-  unsigned int                     px4_component_id_ = 1;
   std::string                      device_url_;
   mavsdk::Mavsdk                   mavsdk_;
   std::shared_ptr<mavsdk::System>  system_;
@@ -164,7 +162,6 @@ ControlInterface::ControlInterface(rclcpp::NodeOptions options) : Node("control_
   }
   RCLCPP_INFO(this->get_logger(), "[%s]: UAV name is: '%s'", this->get_name(), uav_name_.c_str());
 
-  //}
 
   /* parse params from config file //{ */
   parse_param("device_url", device_url_);
@@ -206,7 +203,6 @@ ControlInterface::ControlInterface(rclcpp::NodeOptions options) : Node("control_
       if (mavsdk_.systems().at(i)->get_system_id() == 1) {
         connected      = true;
         system_        = mavsdk_.systems().at(i);
-        px4_system_id_ = i;
         break;
       }
     }
@@ -241,9 +237,7 @@ ControlInterface::ControlInterface(rclcpp::NodeOptions options) : Node("control_
       this->create_wall_timer(std::chrono::duration<double>(1.0 / control_loop_rate_), std::bind(&ControlInterface::controlRoutine, this), callback_group_);
 
   tf_broadcaster_        = nullptr;
-
-  static_tf_broadcaster_ = std::make_shared<tf2_ros::StaticTransformBroadcaster>(this->shared_from_this());
-  publishStaticTF();
+  static_tf_broadcaster_ = nullptr;
 
   tf_buffer_ = std::make_shared<tf2_ros::Buffer>(this->get_clock());
   tf_buffer_->setUsingDedicatedThread(true);
@@ -301,6 +295,12 @@ void ControlInterface::pixhawkOdomCallback(const px4_msgs::msg::VehicleOdometry:
 
   getting_pixhawk_odom_ = true;
   RCLCPP_INFO_ONCE(this->get_logger(), "[%s]: Getting pixhawk odometry!", this->get_name());
+
+  // one-shot publish static TF
+  if (static_tf_broadcaster_ == nullptr) {
+    static_tf_broadcaster_ = std::make_shared<tf2_ros::StaticTransformBroadcaster>(this->shared_from_this());
+    publishStaticTF();
+  }
 }
 //}
 
