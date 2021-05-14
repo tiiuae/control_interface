@@ -180,7 +180,6 @@ ControlInterface::ControlInterface(rclcpp::NodeOptions options) : Node("control_
   fcu_frame_        = uav_name_ + "/fcu";
   ned_fcu_frame_    = uav_name_ + "/ned_fcu";
   ned_origin_frame_ = uav_name_ + "/ned_origin";
-  ;
   //}
 
   /* estabilish connection with PX4 //{ */
@@ -369,13 +368,13 @@ bool ControlInterface::armingCallback([[maybe_unused]] const std::shared_ptr<std
     if (result != mavsdk::Action::Result::Success) {
       response->message = "Arming failed";
       response->success = false;
-      RCLCPP_WARN(this->get_logger(), response->message);
+      RCLCPP_ERROR(this->get_logger(), "[%s]: %s", this->get_name(), response->message);
       return true;
     } else {
       response->message = "Vehicle armed";
       response->success = true;
       armed_            = true;
-      RCLCPP_INFO(this->get_logger(), response->message);
+      RCLCPP_WARN(this->get_logger(), "[%s]: %s", this->get_name(), response->message);
       return true;
     }
   } else {
@@ -383,13 +382,13 @@ bool ControlInterface::armingCallback([[maybe_unused]] const std::shared_ptr<std
     if (result != mavsdk::Action::Result::Success) {
       response->message = "Disarming failed";
       response->success = false;
-      RCLCPP_WARN(this->get_logger(), response->message);
+      RCLCPP_ERROR(this->get_logger(), "[%s]: %s", this->get_name(), response->message);
       return true;
     } else {
       response->message = "Vehicle disarmed";
       response->success = true;
       armed_            = false;
-      RCLCPP_INFO(this->get_logger(), response->message);
+      RCLCPP_WARN(this->get_logger(), "[%s]: %s", this->get_name(), response->message);
       return true;
     }
   }
@@ -401,9 +400,9 @@ void ControlInterface::controlModeCallback(const px4_msgs::msg::VehicleControlMo
   if (armed_ != msg->flag_armed) {
     armed_ = msg->flag_armed;
     if (armed_) {
-      RCLCPP_WARN(this->get_logger(), "[%s]: Armed", this->get_name());
+      RCLCPP_WARN(this->get_logger(), "[%s]: Vehicle armed", this->get_name());
     } else {
-      RCLCPP_WARN(this->get_logger(), "[%s]: Disarmed", this->get_name());
+      RCLCPP_WARN(this->get_logger(), "[%s]: Vehicle disarmed", this->get_name());
       airborne_ = false;
     }
   }
