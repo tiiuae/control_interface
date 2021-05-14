@@ -19,7 +19,6 @@ def generate_launch_description():
     dbg_sub = launch.substitutions.PythonExpression(['"" if "false" == "', launch.substitutions.LaunchConfiguration("debug"), '" else "debug_ros2launch ' + os.ttyname(sys.stdout.fileno()) + '"'])
 
 
-    UAV_TYPE=os.getenv('UAV_TYPE')
     UAV_NAME=os.getenv('UAV_NAME')
 
     namespace=UAV_NAME
@@ -51,6 +50,7 @@ def generate_launch_description():
 
                     ("~/offboard_control_mode_out", "/OffboardControlMode_PubSubTopic"),
                     ("~/position_setpoint_triplet_out", "/PositionSetpointTriplet_PubSubTopic"),
+                    ("~/arming_in", "/arming"),
                     ("~/takeoff_in", "/takeoff"),
                     ("~/land_in", "/land"),
                     ("~/land_home_in", "/land_home"),

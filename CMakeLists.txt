@@ -38,11 +38,11 @@ ament_target_dependencies(control_interface
   rclcpp
   rclcpp_components
   std_msgs
-  nav_msgs 
+  nav_msgs
   std_srvs
   fog_msgs
   px4_msgs
-  geometry_msgs 
+  geometry_msgs
   visualization_msgs
   tf2
   tf2_ros
@@ -69,11 +69,7 @@ install(TARGETS
   RUNTIME DESTINATION bin
   )
 
-install(DIRECTORY launch
-  DESTINATION share/${PROJECT_NAME}
-  )
-
-install(DIRECTORY config
+install(DIRECTORY launch config
   DESTINATION share/${PROJECT_NAME}
   )
 

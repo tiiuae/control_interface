@@ -51,9 +51,12 @@ private:
   bool airborne_             = false;
   bool takeoff_requested_    = false;
   bool motion_started_       = false;
-  bool is_simulation_        = false;
 
-  std::string uav_name_ = "uav1";
+  std::string uav_name_         = "";
+  std::string world_frame_      = "";
+  std::string ned_origin_frame_ = "";
+  std::string ned_fcu_frame_    = "";
+  std::string fcu_frame_        = "";
 
   unsigned int                     px4_system_id_;
   unsigned int                     px4_component_id_ = 1;
@@ -86,7 +89,6 @@ private:
   double takeoff_height_        = 2.5;
   double waypoint_marker_scale_ = 0.3;
   double control_loop_rate_     = 20.0;
-  double tf_republisher_rate_   = 100.0;
 
   std::atomic<unsigned long long> timestamp_;
 
@@ -110,18 +112,18 @@ private:
   void controlModeCallback(const px4_msgs::msg::VehicleControlMode::UniquePtr msg);
 
   // services provided
+  rclcpp::Service<std_srvs::srv::SetBool>::SharedPtr arming_service_;
   rclcpp::Service<std_srvs::srv::SetBool>::SharedPtr takeoff_service_;
   rclcpp::Service<std_srvs::srv::SetBool>::SharedPtr land_service_;
   rclcpp::Service<fog_msgs::srv::Vec4>::SharedPtr    local_setpoint_service_;
 
   // service callbacks
+  bool armingCallback(const std::shared_ptr<std_srvs::srv::SetBool::Request> request, std::shared_ptr<std_srvs::srv::SetBool::Response> response);
   bool takeoffCallback(const std::shared_ptr<std_srvs::srv::SetBool::Request> request, std::shared_ptr<std_srvs::srv::SetBool::Response> response);
   bool landCallback(const std::shared_ptr<std_srvs::srv::SetBool::Request> request, std::shared_ptr<std_srvs::srv::SetBool::Response> response);
   bool localSetpointCallback(const std::shared_ptr<fog_msgs::srv::Vec4::Request> request, std::shared_ptr<fog_msgs::srv::Vec4::Response> response);
 
   // internal functions
-  bool arm();
-  bool disarm();
   bool takeoff();
   bool land();
   bool startMission();
@@ -141,9 +143,7 @@ private:
   // timers
   rclcpp::CallbackGroup::SharedPtr callback_group_;
   rclcpp::TimerBase::SharedPtr     control_timer_;
-  rclcpp::TimerBase::SharedPtr     tf_republisher_timer_;
   void                             controlRoutine(void);
-  void                             tfRepublisherRoutine(void);
 
   // utils
   template <class T>
@@ -155,20 +155,6 @@ private:
 ControlInterface::ControlInterface(rclcpp::NodeOptions options) : Node("control_interface", options) {
 
   RCLCPP_INFO(this->get_logger(), "Initializing...");
-
-  /* load environment variables //{ */
-  std::string run_type;
-  try {
-    run_type = std::string(std::getenv("RUN_TYPE"));
-    RCLCPP_INFO(this->get_logger(), "[%s]: Run type is: '%s'", this->get_name(), run_type.c_str());
-  }
-  catch (...) {
-    RCLCPP_WARN(this->get_logger(), "[%s]: Environment variable RUN_TYPE was not defined!", this->get_name());
-  }
-
-  if (run_type == "simulation") {
-    is_simulation_ = true;
-  }
 
   try {
     uav_name_ = std::string(std::getenv("UAV_NAME"));
@@ -184,6 +170,12 @@ ControlInterface::ControlInterface(rclcpp::NodeOptions options) : Node("control_
   parse_param("device_url", device_url_);
   parse_param("takeoff_height", takeoff_height_);
   parse_param("waypoint_marker_scale", waypoint_marker_scale_);
+
+  /* frame definition */
+  world_frame_      = "world";
+  fcu_frame_        = uav_name_ + "/fcu";
+  ned_fcu_frame_    = uav_name_ + "/ned_fcu";
+  ned_origin_frame_ = uav_name_ + "/ned_origin";
   //}
 
   /* estabilish connection with PX4 //{ */
@@ -240,17 +232,18 @@ ControlInterface::ControlInterface(rclcpp::NodeOptions options) : Node("control_
       this->create_subscription<px4_msgs::msg::VehicleControlMode>("~/control_mode_in", 10, std::bind(&ControlInterface::controlModeCallback, this, _1));
 
   // service handlers
+  arming_service_         = this->create_service<std_srvs::srv::SetBool>("~/arming_in", std::bind(&ControlInterface::armingCallback, this, _1, _2));
   takeoff_service_        = this->create_service<std_srvs::srv::SetBool>("~/takeoff_in", std::bind(&ControlInterface::takeoffCallback, this, _1, _2));
   land_service_           = this->create_service<std_srvs::srv::SetBool>("~/land_in", std::bind(&ControlInterface::landCallback, this, _1, _2));
   local_setpoint_service_ = this->create_service<fog_msgs::srv::Vec4>("~/local_setpoint_in", std::bind(&ControlInterface::localSetpointCallback, this, _1, _2));
 
   control_timer_ =
       this->create_wall_timer(std::chrono::duration<double>(1.0 / control_loop_rate_), std::bind(&ControlInterface::controlRoutine, this), callback_group_);
-  tf_republisher_timer_ = this->create_wall_timer(std::chrono::duration<double>(1.0 / tf_republisher_rate_),
-                                                  std::bind(&ControlInterface::tfRepublisherRoutine, this), callback_group_);
 
   tf_broadcaster_        = nullptr;
-  static_tf_broadcaster_ = nullptr;
+
+  static_tf_broadcaster_ = std::make_shared<tf2_ros::StaticTransformBroadcaster>(this->shared_from_this());
+  publishStaticTF();
 
   tf_buffer_ = std::make_shared<tf2_ros::Buffer>(this->get_clock());
   tf_buffer_->setUsingDedicatedThread(true);
@@ -301,6 +294,10 @@ void ControlInterface::pixhawkOdomCallback(const px4_msgs::msg::VehicleOdometry:
   ori_[1]  = msg->q[1];
   ori_[2]  = msg->q[2];
   ori_[3]  = msg->q[3];
+
+  publishTF();
+
+  publishLocalOdom();
 
   getting_pixhawk_odom_ = true;
   RCLCPP_INFO_ONCE(this->get_logger(), "[%s]: Getting pixhawk odometry!", this->get_name());
@@ -362,14 +359,50 @@ bool ControlInterface::landCallback([[maybe_unused]] const std::shared_ptr<std_s
 }
 //}
 
+/* armingCallback //{ */
+bool ControlInterface::armingCallback([[maybe_unused]] const std::shared_ptr<std_srvs::srv::SetBool::Request> request,
+                                      std::shared_ptr<std_srvs::srv::SetBool::Response>                       response) {
+
+  if (request->data) {
+    auto result = action_->arm();
+    if (result != mavsdk::Action::Result::Success) {
+      response->message = "Arming failed";
+      response->success = false;
+      RCLCPP_ERROR(this->get_logger(), "[%s]: %s", this->get_name(), response->message);
+      return true;
+    } else {
+      response->message = "Vehicle armed";
+      response->success = true;
+      armed_            = true;
+      RCLCPP_WARN(this->get_logger(), "[%s]: %s", this->get_name(), response->message);
+      return true;
+    }
+  } else {
+    auto result = action_->disarm();
+    if (result != mavsdk::Action::Result::Success) {
+      response->message = "Disarming failed";
+      response->success = false;
+      RCLCPP_ERROR(this->get_logger(), "[%s]: %s", this->get_name(), response->message);
+      return true;
+    } else {
+      response->message = "Vehicle disarmed";
+      response->success = true;
+      armed_            = false;
+      RCLCPP_WARN(this->get_logger(), "[%s]: %s", this->get_name(), response->message);
+      return true;
+    }
+  }
+}
+//}
+
 /* controlModeCallback //{ */
 void ControlInterface::controlModeCallback(const px4_msgs::msg::VehicleControlMode::UniquePtr msg) {
   if (armed_ != msg->flag_armed) {
     armed_ = msg->flag_armed;
     if (armed_) {
-      RCLCPP_WARN(this->get_logger(), "[%s]: Armed", this->get_name());
+      RCLCPP_WARN(this->get_logger(), "[%s]: Vehicle armed", this->get_name());
     } else {
-      RCLCPP_WARN(this->get_logger(), "[%s]: Disarmed", this->get_name());
+      RCLCPP_WARN(this->get_logger(), "[%s]: Vehicle disarmed", this->get_name());
       airborne_ = false;
     }
   }
@@ -403,17 +436,8 @@ void ControlInterface::controlRoutine(void) {
 
   if (is_initialized_ && getting_gps_ && getting_pixhawk_odom_) {
 
-    publishLocalOdom();
-
     /* handle takeoff //{ */
     if (takeoff_requested_) {
-
-      if (is_simulation_) {
-        while (!arm()) {
-          RCLCPP_INFO_ONCE(this->get_logger(), "[%s]: Attempting to arm", this->get_name());
-          rclcpp::Rate(100).sleep();
-        }
-      }
 
       if (!armed_) {
         RCLCPP_INFO(this->get_logger(), "[%s]: Vehicle not armed", this->get_name());
@@ -437,7 +461,7 @@ void ControlInterface::controlRoutine(void) {
         RCLCPP_INFO(this->get_logger(), "[%s]: All waypoints have been visited", this->get_name());
         motion_started_ = false;
       } else {
-        auto            pos_in_world_tf = tf_buffer_->lookupTransform("world", uav_name_ + "/local_odom", rclcpp::Time(0));
+        auto            pos_in_world_tf = tf_buffer_->lookupTransform(world_frame_, fcu_frame_, rclcpp::Time(0));
         Eigen::Vector3d pos_in_world(pos_in_world_tf.transform.translation.x, pos_in_world_tf.transform.translation.y, pos_in_world_tf.transform.translation.z);
 
         if ((pos_in_world - current_goal_).norm() < 0.4) {
@@ -470,58 +494,6 @@ void ControlInterface::controlRoutine(void) {
     RCLCPP_INFO(this->get_logger(), "[%s]: Initialized: %s, GPS: %s, PX4 Odom: %s", this->get_name(), is_initialized_ ? "TRUE" : "FALSE",
                 getting_gps_ ? "TRUE" : "FALSE", getting_pixhawk_odom_ ? "TRUE" : "FALSE");
   }
-}
-//}
-
-/* tfRepublisherRoutine //{ */
-void ControlInterface::tfRepublisherRoutine(void) {
-  if (is_initialized_ && getting_gps_ && getting_pixhawk_odom_) {
-    if (static_tf_broadcaster_ == nullptr) {
-      static_tf_broadcaster_ = std::make_shared<tf2_ros::StaticTransformBroadcaster>(this->shared_from_this());
-      publishStaticTF();
-    }
-    publishTF();
-  }
-}
-//}
-
-/* arm //{ */
-bool ControlInterface::arm() {
-
-  if (!is_simulation_) {
-    RCLCPP_WARN(this->get_logger(), "[%s]: For safety reasons, software arming is disabled outside simulation.", this->get_name());
-    RCLCPP_INFO(this->get_logger(), "[%s]: Use RC to manually arm the vehicle.", this->get_name());
-    return false;
-  }
-
-  auto result = action_->arm();
-  if (result != mavsdk::Action::Result::Success) {
-    RCLCPP_WARN(this->get_logger(), "[%s]: Arming failed", this->get_name());
-    return false;
-  }
-  RCLCPP_INFO(this->get_logger(), "[%s]: Vehicle armed", this->get_name());
-  armed_ = true;
-  return true;
-}
-//}
-
-/* disarm //{ */
-bool ControlInterface::disarm() {
-
-  if (!is_simulation_) {
-    RCLCPP_WARN(this->get_logger(), "[%s]: For safety reasons, software disarming is disabled outside simulation.", this->get_name());
-    RCLCPP_INFO(this->get_logger(), "[%s]: Use RC to manually disarm the vehicle.", this->get_name());
-    return false;
-  }
-
-  auto result = action_->disarm();
-  if (result != mavsdk::Action::Result::Success) {
-    RCLCPP_WARN(this->get_logger(), "[%s]: Disarming failed", this->get_name());
-    return false;
-  }
-  RCLCPP_INFO(this->get_logger(), "[%s]: Vehicle disarmed", this->get_name());
-  armed_ = false;
-  return true;
 }
 //}
 
@@ -652,8 +624,8 @@ void ControlInterface::publishStaticTF() {
   geometry_msgs::msg::TransformStamped tf_stamped;
   tf2::Quaternion                      q;
   q.setRPY(-M_PI, 0, 0);
-  tf_stamped.header.frame_id         = uav_name_ + "/local_odom";
-  tf_stamped.child_frame_id          = uav_name_ + "/fcu";
+  tf_stamped.header.frame_id         = ned_fcu_frame_;
+  tf_stamped.child_frame_id          = fcu_frame_;
   tf_stamped.transform.translation.x = 0.0;
   tf_stamped.transform.translation.y = 0.0;
   tf_stamped.transform.translation.z = 0.0;
@@ -665,23 +637,11 @@ void ControlInterface::publishStaticTF() {
 
   q.setRPY(M_PI, 0, M_PI / 2);
   q                                  = q.inverse();
-  tf_stamped.header.frame_id         = "world";
-  tf_stamped.child_frame_id          = uav_name_ + "/ned_origin";
+  tf_stamped.header.frame_id         = world_frame_;
+  tf_stamped.child_frame_id          = ned_origin_frame_;
   tf_stamped.transform.translation.x = 0.0;
   tf_stamped.transform.translation.y = 0.0;
   tf_stamped.transform.translation.z = 0.0;
-  tf_stamped.transform.rotation.x    = q.getX();
-  tf_stamped.transform.rotation.y    = q.getY();
-  tf_stamped.transform.rotation.z    = q.getZ();
-  tf_stamped.transform.rotation.w    = q.getW();
-  static_tf_broadcaster_->sendTransform(tf_stamped);
-
-  q.setRPY(0, 0, 0);
-  tf_stamped.header.frame_id         = uav_name_ + "/fcu";
-  tf_stamped.child_frame_id          = uav_name_ + "/rplidar";
-  tf_stamped.transform.translation.x = 0.0;
-  tf_stamped.transform.translation.y = 0.0;
-  tf_stamped.transform.translation.z = 0.15;
   tf_stamped.transform.rotation.x    = q.getX();
   tf_stamped.transform.rotation.y    = q.getY();
   tf_stamped.transform.rotation.z    = q.getZ();
@@ -697,8 +657,8 @@ void ControlInterface::publishTF() {
   }
   geometry_msgs::msg::TransformStamped tf1;
   tf1.header.stamp            = this->get_clock()->now();
-  tf1.header.frame_id         = uav_name_ + "/ned_origin";
-  tf1.child_frame_id          = uav_name_ + "/local_odom";
+  tf1.header.frame_id         = ned_origin_frame_;
+  tf1.child_frame_id          = ned_fcu_frame_;
   tf1.transform.translation.x = pos_.x();
   tf1.transform.translation.y = pos_.y();
   tf1.transform.translation.z = pos_.z();
@@ -714,9 +674,9 @@ void ControlInterface::publishTF() {
 void ControlInterface::publishLocalOdom() {
   nav_msgs::msg::Odometry msg;
   msg.header.stamp            = this->get_clock()->now();
-  msg.header.frame_id         = "world";
-  msg.child_frame_id          = uav_name_ + "/fcu";
-  auto tf                     = transformBetween(uav_name_ + "/fcu", "world");
+  msg.header.frame_id         = world_frame_;
+  msg.child_frame_id          = fcu_frame_;
+  auto tf                     = transformBetween(fcu_frame_, world_frame_);
   msg.pose.pose.position.x    = tf.pose.position.x;
   msg.pose.pose.position.y    = tf.pose.position.y;
   msg.pose.pose.position.z    = tf.pose.position.z;
@@ -734,7 +694,7 @@ void ControlInterface::publishDebugMarkers() {
 
   visualization_msgs::msg::Marker points_marker;
   points_marker.header.stamp       = this->get_clock()->now();
-  points_marker.header.frame_id    = "world";
+  points_marker.header.frame_id    = world_frame_;
   points_marker.ns                 = uav_name_ + "/debug/waypoints";
   points_marker.type               = visualization_msgs::msg::Marker::POINTS;
   points_marker.id                 = 8;

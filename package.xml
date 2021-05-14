@@ -30,10 +30,6 @@
   <depend>tf2</depend>
   <depend>tf2_ros</depend>
 
-
-  <!-- this is needed to be able to run launch files -->
-  <depend>control_interface_py</depend>
-
   <export>
     <build_type>ament_cmake</build_type>
   </export>
