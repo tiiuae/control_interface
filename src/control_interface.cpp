@@ -155,10 +155,10 @@ ControlInterface::ControlInterface(rclcpp::NodeOptions options) : Node("control_
   RCLCPP_INFO(this->get_logger(), "Initializing...");
 
   try {
-    uav_name_ = std::string(std::getenv("UAV_NAME"));
+    uav_name_ = std::string(std::getenv("DRONE_DEVICE_ID"));
   }
   catch (...) {
-    RCLCPP_WARN(this->get_logger(), "[%s]: Environment variable UAV_NAME was not defined!", this->get_name());
+    RCLCPP_WARN(this->get_logger(), "[%s]: Environment variable DRONE_DEVICE_ID was not defined!", this->get_name());
   }
   RCLCPP_INFO(this->get_logger(), "[%s]: UAV name is: '%s'", this->get_name(), uav_name_.c_str());
 
