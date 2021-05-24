@@ -330,7 +330,7 @@ void ControlInterface::waypointsCallback(const nav_msgs::msg::Path::UniquePtr ms
 /* takeoffCallback //{ */
 bool ControlInterface::takeoffCallback([[maybe_unused]] const std::shared_ptr<std_srvs::srv::SetBool::Request> request,
                                        std::shared_ptr<std_srvs::srv::SetBool::Response>                       response) {
-  if (is_initialized_ && getting_pixhawk_odom_ && getting_gps_ && !airborne_) {
+  if (is_initialized_ && armed_ && getting_pixhawk_odom_ && getting_gps_ && !airborne_) {
     response->message  = "Takeoff started";
     response->success  = true;
     takeoff_requested_ = true;
@@ -368,13 +368,13 @@ bool ControlInterface::armingCallback([[maybe_unused]] const std::shared_ptr<std
     if (result != mavsdk::Action::Result::Success) {
       response->message = "Arming failed";
       response->success = false;
-      RCLCPP_ERROR(this->get_logger(), "[%s]: %s", this->get_name(), response->message);
+      RCLCPP_ERROR(this->get_logger(), "[%s]: %s", this->get_name(), response->message.c_str());
       return true;
     } else {
       response->message = "Vehicle armed";
       response->success = true;
       armed_            = true;
-      RCLCPP_WARN(this->get_logger(), "[%s]: %s", this->get_name(), response->message);
+      RCLCPP_WARN(this->get_logger(), "[%s]: %s", this->get_name(), response->message.c_str());
       return true;
     }
   } else {
@@ -382,13 +382,13 @@ bool ControlInterface::armingCallback([[maybe_unused]] const std::shared_ptr<std
     if (result != mavsdk::Action::Result::Success) {
       response->message = "Disarming failed";
       response->success = false;
-      RCLCPP_ERROR(this->get_logger(), "[%s]: %s", this->get_name(), response->message);
+      RCLCPP_ERROR(this->get_logger(), "[%s]: %s", this->get_name(), response->message.c_str());
       return true;
     } else {
       response->message = "Vehicle disarmed";
       response->success = true;
       armed_            = false;
-      RCLCPP_WARN(this->get_logger(), "[%s]: %s", this->get_name(), response->message);
+      RCLCPP_WARN(this->get_logger(), "[%s]: %s", this->get_name(), response->message.c_str());
       return true;
     }
   }
