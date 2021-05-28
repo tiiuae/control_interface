@@ -3,7 +3,7 @@
 <package format="3">
 
   <name>control_interface</name>
-  <version>0.0.0</version>
+  <version>0.0.1</version>
   <description>ROS2 interface to send commands to PX4 through MavSDK</description>
   <maintainer email="petr.stibinger@fly4future.com">stibipet</maintainer>
   

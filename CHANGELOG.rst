@@ -2,5 +2,5 @@
 Changelog for package control_interface
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-Forthcoming
------------
+0.0.1 (2021-05-28)
+------------------
