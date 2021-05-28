@@ -307,12 +307,18 @@ void ControlInterface::pixhawkOdomCallback(const px4_msgs::msg::VehicleOdometry:
 // used internally, called by the navigation node
 bool ControlInterface::setWaypointsCallback(const std::shared_ptr<fog_msgs::srv::Path::Request> request,
                                             std::shared_ptr<fog_msgs::srv::Path::Response>      response) {
+  if (request->path.poses.size() < 1) {
+    RCLCPP_ERROR(this->get_logger(), "[%s]: Requested path is empty!", this->get_name());
+    response->success = false;
+    response->message = "Setpoint not set, request is empty";
+    return true;
+  }
 
   if (!abortMission()) {
     RCLCPP_WARN(this->get_logger(), "[%s]: Setpoint not set, previous mission cannot be aborted", this->get_name());
     response->success = false;
     response->message = "Setpoint not set, previous mission cannot be aborted";
-    return false;
+    return true;
   }
 
   RCLCPP_INFO(this->get_logger(), "[%s]: Got %d waypoints", this->get_name(), request->path.poses.size());
@@ -344,7 +350,7 @@ bool ControlInterface::takeoffCallback([[maybe_unused]] const std::shared_ptr<st
   }
   response->message = "Takeoff rejected";
   response->success = false;
-  return false;
+  return true;
 }
 //}
 
@@ -361,7 +367,7 @@ bool ControlInterface::landCallback([[maybe_unused]] const std::shared_ptr<std_s
   }
   response->message = "Landing rejected";
   response->success = false;
-  return false;
+  return true;
 }
 //}
 
@@ -421,7 +427,7 @@ bool ControlInterface::localSetpointCallback(const std::shared_ptr<fog_msgs::srv
   if (!abortMission()) {
     response->message = "Setpoint not set, previous mission cannot be aborted";
     response->success = false;
-    return false;
+    return true;
   }
 
   response->message = "Setpoint set";
