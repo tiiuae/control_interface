@@ -593,12 +593,10 @@ void ControlInterface::controlRoutine(void) {
     if (motion_started_) {
     
       publishDebugMarkers();
-      RCLCPP_INFO(this->get_logger(), "MISSION PLAN SIZE: %ld", mission_plan_.mission_items.size());
-      RCLCPP_INFO(this->get_logger(), "MISSION FINISHED: %s", mission_->is_mission_finished().second ? "TRUE" : "FALSE");
       
       // create a new mission plan if there are unused points in buffer
       if (waypoint_buffer_.size() > 0) {
-        mission_->clear_mission();
+        mission_->pause_mission();
         mission_plan_.mission_items.clear();
         for (auto &wp : waypoint_buffer_) {
           addLocalToMission(wp);
@@ -610,16 +608,17 @@ void ControlInterface::controlRoutine(void) {
       // upload and execute new mission
       if (start_mission_ && mission_plan_.mission_items.size() > 0) {
         // TODO why is mission always marked as finished after the first command?
+        // TODO try subscibing Mission, MissionResult or MavlinkLog to get info about finished mission.
+        // TODO MavSDK debug console prints this information out
         uploadMission();
         startMission();        
         start_mission_ = false;
-        rclcpp::Rate(0.5).sleep();
       }
       
       // stop if final goal is reached
-      if (mission_plan_.mission_items.size() > 0 && mission_->is_mission_finished().second) {
-        RCLCPP_INFO(this->get_logger(), "[%s]: All waypoints have been visited", this->get_name());
-        abortMission();
+      if (mission_->is_mission_finished().second) {
+        RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 1000, "[%s]: All waypoints have been visited", this->get_name());
+        // TODO why is mission always marked as finished after the first command?
       }
 
     }
@@ -708,7 +707,7 @@ bool ControlInterface::abortMission() {
   motion_started_ = false;
   start_mission_  = false;
 
-  auto result = mission_->clear_mission();
+  auto result = mission_->pause_mission();
   mission_plan_.mission_items.clear();
   waypoint_buffer_.clear();
 
