@@ -45,6 +45,8 @@ def generate_launch_description():
                     ("~/timesync_in", "/" + DRONE_DEVICE_ID + "/Timesync_PubSubTopic"),
                     ("~/gps_in", "/" + DRONE_DEVICE_ID + "/VehicleGlobalPosition_PubSubTopic"),
                     ("~/pixhawk_odom_in", "/" + DRONE_DEVICE_ID + "/VehicleOdometry_PubSubTopic"),
+                    ("~/control_mode_in", "/" + DRONE_DEVICE_ID + "/VehicleControlMode_PubSubTopic"),
+                    ("~/land_detected_in", "/" + DRONE_DEVICE_ID + "/VehicleLandDetected_PubSubTopic"),
                     ("~/waypoints_in", "~/waypoints"),
 
                     ("~/offboard_control_mode_out", "/" + DRONE_DEVICE_ID + "/OffboardControlMode_PubSubTopic"),
@@ -53,7 +55,6 @@ def generate_launch_description():
                     ("~/takeoff_in", "~/takeoff"),
                     ("~/land_in", "~/land"),
                     ("~/local_setpoint_in", "~/local_setpoint"),
-                    ("~/control_mode_in", "/" + DRONE_DEVICE_ID + "/VehicleControlMode_PubSubTopic"),
                 ],
             ),
         ],
