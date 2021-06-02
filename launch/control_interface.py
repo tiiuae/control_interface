@@ -47,7 +47,7 @@ def generate_launch_description():
                     ("~/pixhawk_odom_in", "/" + DRONE_DEVICE_ID + "/VehicleOdometry_PubSubTopic"),
                     ("~/control_mode_in", "/" + DRONE_DEVICE_ID + "/VehicleControlMode_PubSubTopic"),
                     ("~/land_detected_in", "/" + DRONE_DEVICE_ID + "/VehicleLandDetected_PubSubTopic"),
-                    ("~/waypoints_in", "~/waypoints"),
+                    ("~/mission_result_in", "/" + DRONE_DEVICE_ID + "/MissionResult_PubSubTopic"),
 
                     ("~/offboard_control_mode_out", "/" + DRONE_DEVICE_ID + "/OffboardControlMode_PubSubTopic"),
                     ("~/position_setpoint_triplet_out", "/" + DRONE_DEVICE_ID + "/PositionSetpointTriplet_PubSubTopic"),
@@ -55,6 +55,7 @@ def generate_launch_description():
                     ("~/takeoff_in", "~/takeoff"),
                     ("~/land_in", "~/land"),
                     ("~/local_setpoint_in", "~/local_setpoint"),
+                    ("~/waypoints_in", "~/waypoints"),
                 ],
             ),
         ],

@@ -7,6 +7,7 @@
 #include <mavsdk/plugins/action/action.h>
 #include <mavsdk/plugins/mission/mission.h>
 #include <nav_msgs/msg/odometry.hpp>
+#include <px4_msgs/msg/mission_result.hpp>
 #include <px4_msgs/msg/timesync.hpp>
 #include <px4_msgs/msg/vehicle_command.hpp>
 #include <px4_msgs/msg/vehicle_control_mode.hpp>
@@ -49,6 +50,9 @@ private:
   bool motion_started_       = false;
   bool landed_               = true;
 
+  bool     mission_finished_      = true;
+  unsigned last_mission_instance_ = 1;
+
   std::string uav_name_         = "";
   std::string world_frame_      = "";
   std::string ned_origin_frame_ = "";
@@ -83,6 +87,7 @@ private:
   double takeoff_height_        = 2.5;
   double waypoint_marker_scale_ = 0.3;
   double control_loop_rate_     = 20.0;
+  double waypoint_loiter_time_  = 0.0;
 
   std::atomic<unsigned long long> timestamp_;
 
@@ -97,6 +102,7 @@ private:
   rclcpp::Subscription<px4_msgs::msg::VehicleOdometry>::SharedPtr       pixhawk_odom_subscriber_;
   rclcpp::Subscription<px4_msgs::msg::VehicleControlMode>::SharedPtr    control_mode_subscriber_;
   rclcpp::Subscription<px4_msgs::msg::VehicleLandDetected>::SharedPtr   land_detected_subscriber_;
+  rclcpp::Subscription<px4_msgs::msg::MissionResult>::SharedPtr         mission_result_subscriber_;
 
   // subscriber callbacks
   void timesyncCallback(const px4_msgs::msg::Timesync::UniquePtr msg);
@@ -104,6 +110,7 @@ private:
   void pixhawkOdomCallback(const px4_msgs::msg::VehicleOdometry::UniquePtr msg);
   void controlModeCallback(const px4_msgs::msg::VehicleControlMode::UniquePtr msg);
   void landDetectedCallback(const px4_msgs::msg::VehicleLandDetected::UniquePtr msg);
+  void missionResultCallback(const px4_msgs::msg::MissionResult::UniquePtr msg);
 
   // services provided
   rclcpp::Service<std_srvs::srv::SetBool>::SharedPtr arming_service_;
@@ -127,7 +134,7 @@ private:
   bool land();
   bool startMission();
   bool uploadMission();
-  bool abortMission();
+  bool stopPreviousMission();
 
   void addGlobalToMission(Eigen::Vector3d waypoint);
   void addLocalToMission(Eigen::Vector3d waypoint);
@@ -167,6 +174,7 @@ ControlInterface::ControlInterface(rclcpp::NodeOptions options) : Node("control_
   parse_param("device_url", device_url_);
   parse_param("takeoff_height", takeoff_height_);
   parse_param("waypoint_marker_scale", waypoint_marker_scale_);
+  parse_param("waypoint_loiter_time", waypoint_loiter_time_);
 
   /* frame definition */
   world_frame_      = "world";
@@ -227,6 +235,8 @@ ControlInterface::ControlInterface(rclcpp::NodeOptions options) : Node("control_
       this->create_subscription<px4_msgs::msg::VehicleControlMode>("~/control_mode_in", 10, std::bind(&ControlInterface::controlModeCallback, this, _1));
   land_detected_subscriber_ =
       this->create_subscription<px4_msgs::msg::VehicleLandDetected>("~/land_detected_in", 10, std::bind(&ControlInterface::landDetectedCallback, this, _1));
+  mission_result_subscriber_ =
+      this->create_subscription<px4_msgs::msg::MissionResult>("~/mission_result_in", 10, std::bind(&ControlInterface::missionResultCallback, this, _1));
 
   // service handlers
   arming_service_         = this->create_service<std_srvs::srv::SetBool>("~/arming_in", std::bind(&ControlInterface::armingCallback, this, _1, _2));
@@ -311,7 +321,6 @@ void ControlInterface::pixhawkOdomCallback(const px4_msgs::msg::VehicleOdometry:
 
 /* controlModeCallback //{ */
 void ControlInterface::controlModeCallback(const px4_msgs::msg::VehicleControlMode::UniquePtr msg) {
-
   if (!is_initialized_) {
     return;
   }
@@ -342,51 +351,18 @@ void ControlInterface::landDetectedCallback(const px4_msgs::msg::VehicleLandDete
 }
 //}
 
-/* setWaypointsCallback //{ */
-// used internally, called by the navigation node
-bool ControlInterface::setWaypointsCallback(const std::shared_ptr<fog_msgs::srv::Path::Request> request,
-                                            std::shared_ptr<fog_msgs::srv::Path::Response>      response) {
-
+/* missionResultCallback //{ */
+void ControlInterface::missionResultCallback(const px4_msgs::msg::MissionResult::UniquePtr msg) {
   if (!is_initialized_) {
-    response->success = false;
-    response->message = "Setpoint not set, not initialized";
-    RCLCPP_ERROR(this->get_logger(), "[%s]: %s", this->get_name(), response->message.c_str());
-    return true;
+    return;
   }
 
-  if (!gettingPixhawkSensors()) {
-    response->success = false;
-    response->message = "Setpoint not set, missing Pixhawk sensors";
-    RCLCPP_ERROR(this->get_logger(), "[%s]: %s", this->get_name(), response->message.c_str());
-    return true;
-  }
+  unsigned instance = msg->instance_count;
 
-  if (request->path.poses.size() < 1) {
-    response->success = false;
-    response->message = "Setpoint not set, request is empty";
-    RCLCPP_ERROR(this->get_logger(), "[%s]: %s", this->get_name(), response->message.c_str());
-    return true;
+  if (msg->finished && instance != last_mission_instance_) {
+    mission_finished_      = true;
+    last_mission_instance_ = msg->instance_count;
   }
-
-  if (!abortMission()) {
-    response->success = false;
-    response->message = "Setpoint not set, previous mission cannot be aborted";
-    RCLCPP_ERROR(this->get_logger(), "[%s]: %s", this->get_name(), response->message.c_str());
-    return true;
-  }
-
-  RCLCPP_INFO(this->get_logger(), "[%s]: Got %d waypoints", this->get_name(), request->path.poses.size());
-  for (size_t i = 0; i < request->path.poses.size(); i++) {
-    Eigen::Vector3d wp;
-    wp.x() = request->path.poses[i].pose.position.x;
-    wp.y() = request->path.poses[i].pose.position.y;
-    wp.z() = request->path.poses[i].pose.position.z;
-    waypoint_buffer_.push_back(wp);
-  }
-  motion_started_   = true;
-  response->success = true;
-  response->message = "Waypoints set";
-  return true;
 }
 //}
 
@@ -467,7 +443,7 @@ bool ControlInterface::landCallback([[maybe_unused]] const std::shared_ptr<std_s
     return true;
   }
 
-  bool success = abortMission() && land();
+  bool success = stopPreviousMission() && land();
   if (success) {
     response->success = true;
     response->message = "Landing";
@@ -547,14 +523,14 @@ bool ControlInterface::localSetpointCallback(const std::shared_ptr<fog_msgs::srv
     return true;
   }
 
-  if(landed_){
+  if (landed_) {
     response->success = false;
     response->message = "Setpoint not set, vehicle not airborne";
     RCLCPP_ERROR(this->get_logger(), "[%s]: %s", this->get_name(), response->message.c_str());
     return true;
   }
 
-  if (!abortMission()) {
+  if (!stopPreviousMission()) {
     response->success = false;
     response->message = "Setpoint not set, previous mission cannot be aborted";
     RCLCPP_ERROR(this->get_logger(), "[%s]: %s", this->get_name(), response->message.c_str());
@@ -568,6 +544,53 @@ bool ControlInterface::localSetpointCallback(const std::shared_ptr<fog_msgs::srv
   Eigen::Vector3d goal(request->goal[0], request->goal[1], request->goal[2]);
   waypoint_buffer_.push_back(goal);
   motion_started_ = true;
+  return true;
+}
+//}
+
+/* setWaypointsCallback //{ */
+bool ControlInterface::setWaypointsCallback(const std::shared_ptr<fog_msgs::srv::Path::Request> request,
+                                            std::shared_ptr<fog_msgs::srv::Path::Response>      response) {
+
+  if (!is_initialized_) {
+    response->success = false;
+    response->message = "Waypoints not set, not initialized";
+    RCLCPP_ERROR(this->get_logger(), "[%s]: %s", this->get_name(), response->message.c_str());
+    return true;
+  }
+
+  if (!gettingPixhawkSensors()) {
+    response->success = false;
+    response->message = "Waypoints not set, missing Pixhawk sensors";
+    RCLCPP_ERROR(this->get_logger(), "[%s]: %s", this->get_name(), response->message.c_str());
+    return true;
+  }
+
+  if (request->path.poses.size() < 1) {
+    response->success = false;
+    response->message = "Waypoints not set, request is empty";
+    RCLCPP_ERROR(this->get_logger(), "[%s]: %s", this->get_name(), response->message.c_str());
+    return true;
+  }
+
+  if (!stopPreviousMission()) {
+    response->success = false;
+    response->message = "Waypoints not set, previous mission cannot be aborted";
+    RCLCPP_ERROR(this->get_logger(), "[%s]: %s", this->get_name(), response->message.c_str());
+    return true;
+  }
+
+  RCLCPP_INFO(this->get_logger(), "[%s]: Got %d waypoints", this->get_name(), request->path.poses.size());
+  for (size_t i = 0; i < request->path.poses.size(); i++) {
+    Eigen::Vector3d wp;
+    wp.x() = request->path.poses[i].pose.position.x;
+    wp.y() = request->path.poses[i].pose.position.y;
+    wp.z() = request->path.poses[i].pose.position.z;
+    waypoint_buffer_.push_back(wp);
+  }
+  motion_started_   = true;
+  response->success = true;
+  response->message = "Waypoints set";
   return true;
 }
 //}
@@ -591,36 +614,31 @@ void ControlInterface::controlRoutine(void) {
 
     /* handle motion //{ */
     if (motion_started_) {
-    
-      publishDebugMarkers();
-      
+
       // create a new mission plan if there are unused points in buffer
-      if (waypoint_buffer_.size() > 0) {
+      if (waypoint_buffer_.size() > 0 && mission_finished_) {
+        publishDebugMarkers();
+        RCLCPP_INFO(this->get_logger(), "[%s]: Waypoints to be visited: %ld", this->get_name(), waypoint_buffer_.size());
         mission_->pause_mission();
         mission_plan_.mission_items.clear();
-        for (auto &wp : waypoint_buffer_) {
-          addLocalToMission(wp);
-        }
-        waypoint_buffer_.clear();
+        addLocalToMission(*waypoint_buffer_.begin());
+        waypoint_buffer_.erase(waypoint_buffer_.begin());
         start_mission_ = true;
       }
 
       // upload and execute new mission
       if (start_mission_ && mission_plan_.mission_items.size() > 0) {
-        // TODO why is mission always marked as finished after the first command?
-        // TODO try subscibing Mission, MissionResult or MavlinkLog to get info about finished mission.
-        // TODO MavSDK debug console prints this information out
         uploadMission();
-        startMission();        
-        start_mission_ = false;
-      }
-      
-      // stop if final goal is reached
-      if (mission_->is_mission_finished().second) {
-        RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 1000, "[%s]: All waypoints have been visited", this->get_name());
-        // TODO why is mission always marked as finished after the first command?
+        startMission();
+        mission_finished_ = false;
+        start_mission_    = false;
       }
 
+      // stop if final goal is reached
+      if (mission_finished_) {
+        RCLCPP_INFO(this->get_logger(), "[%s]: All waypoints have been visited", this->get_name());
+        motion_started_ = false;
+      }
     }
     //}
 
@@ -638,9 +656,9 @@ bool ControlInterface::gettingPixhawkSensors() {
 
 /* printSensorsStatus //{ */
 void ControlInterface::printSensorsStatus() {
-  RCLCPP_INFO(this->get_logger(), "[%s]: TIME:%s, GPS:%s, ODOM:%s, CTRL:%s, LAND:%s", this->get_name(), getting_timesync_ ? "TRUE" : "FALSE",
-              getting_gps_ ? "TRUE" : "FALSE", getting_pixhawk_odom_ ? "TRUE" : "FALSE", getting_control_mode_ ? "TRUE" : "FALSE",
-              getting_landed_info_ ? "TRUE" : "FALSE");
+  RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 1000, "[%s]: TIME:%s, GPS:%s, ODOM:%s, CTRL:%s, LAND:%s", this->get_name(),
+                       getting_timesync_ ? "TRUE" : "FALSE", getting_gps_ ? "TRUE" : "FALSE", getting_pixhawk_odom_ ? "TRUE" : "FALSE",
+                       getting_control_mode_ ? "TRUE" : "FALSE", getting_landed_info_ ? "TRUE" : "FALSE");
 }
 //}
 
@@ -701,21 +719,26 @@ bool ControlInterface::uploadMission() {
 }
 //}
 
-/* abortMission //{ */
-bool ControlInterface::abortMission() {
+/* stopPreviousMission //{ */
+bool ControlInterface::stopPreviousMission() {
+
+  if (!motion_started_) {
+    return true;
+  }
 
   motion_started_ = false;
   start_mission_  = false;
+  mission_finished_ = true;
 
   auto result = mission_->pause_mission();
   mission_plan_.mission_items.clear();
   waypoint_buffer_.clear();
 
   if (result != mavsdk::Mission::Result::Success || mission_plan_.mission_items.size() > 0) {
-    RCLCPP_ERROR(this->get_logger(), "[%s]: Mission cannot be aborted", this->get_name());
+    RCLCPP_ERROR(this->get_logger(), "[%s]: Previous mission cannot be stopped", this->get_name());
     return false;
   }
-  RCLCPP_INFO(this->get_logger(), "[%s]: Mission aborted", this->get_name());
+  RCLCPP_INFO(this->get_logger(), "[%s]: Previous mission stopped", this->get_name());
   return true;
 }
 //}
@@ -726,12 +749,12 @@ void ControlInterface::addGlobalToMission(Eigen::Vector3d waypoint) {
   item.latitude_deg            = waypoint[0];
   item.longitude_deg           = waypoint[1];
   item.relative_altitude_m     = waypoint[2];
-  item.speed_m_s               = NAN;  // Use the default
-  item.is_fly_through          = true;
+  item.speed_m_s               = NAN; // NAN = use default values. This does NOT limit vehicle max speed
+  item.is_fly_through          = false;
   item.gimbal_pitch_deg        = 0.0f;
   item.gimbal_yaw_deg          = 0.0f;
   item.camera_action           = mavsdk::Mission::MissionItem::CameraAction::None;
-  item.loiter_time_s           = 0.0f;
+  item.loiter_time_s           = waypoint_loiter_time_;
   item.camera_photo_interval_s = 0.0f;
   mission_plan_.mission_items.push_back(item);
   RCLCPP_INFO(this->get_logger(), "[%s]: Waypoint (GPS) [%.2f,%.2f,%.2f] added into mission", this->get_name(), item.latitude_deg, item.longitude_deg,
@@ -750,12 +773,12 @@ void ControlInterface::addLocalToMission(Eigen::Vector3d waypoint) {
   item.latitude_deg            = global.latitude_deg;
   item.longitude_deg           = global.longitude_deg;
   item.relative_altitude_m     = waypoint[2];
-  item.speed_m_s               = NAN;  // Use the default
-  item.is_fly_through          = true;
+  item.speed_m_s               = NAN; // NAN = use default values. This does NOT limit vehicle max speed
+  item.is_fly_through          = false;
   item.gimbal_pitch_deg        = 0.0f;
   item.gimbal_yaw_deg          = 0.0f;
   item.camera_action           = mavsdk::Mission::MissionItem::CameraAction::None;
-  item.loiter_time_s           = 0.0f;
+  item.loiter_time_s           = waypoint_loiter_time_;
   item.camera_photo_interval_s = 0.0f;
   mission_plan_.mission_items.push_back(item);
   RCLCPP_INFO(this->get_logger(), "[%s]: Waypoint (LOCAL) [%.2f,%.2f,%.2f] added into mission", this->get_name(), waypoint[0], waypoint[1], waypoint[2]);

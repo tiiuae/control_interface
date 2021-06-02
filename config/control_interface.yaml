@@ -3,3 +3,4 @@ param_namespace:
   device_url: "udp://:14540"
   takeoff_height: 3.0 # [m]
   waypoint_marker_scale: 0.3
+  waypoint_loiter_time: 1.3 # [s]
