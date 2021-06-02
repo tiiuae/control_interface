@@ -1,6 +1,7 @@
 #include <eigen3/Eigen/Core>
 #include <fog_msgs/srv/path.hpp>
 #include <fog_msgs/srv/vec4.hpp>
+#include <fog_msgs/msg/control_interface_diagnostics.hpp>
 #include <geometry_msgs/msg/transform_stamped.hpp>
 #include <mavsdk/geometry.h>
 #include <mavsdk/mavsdk.h>
@@ -92,9 +93,10 @@ private:
   std::atomic<unsigned long long> timestamp_;
 
   // publishers
-  rclcpp::Publisher<px4_msgs::msg::VehicleCommand>::SharedPtr        vehicle_command_publisher_;
-  rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr              local_odom_publisher_;
-  rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr marker_publisher_;
+  rclcpp::Publisher<px4_msgs::msg::VehicleCommand>::SharedPtr              vehicle_command_publisher_;
+  rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr                    local_odom_publisher_;
+  rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr       marker_publisher_;
+  rclcpp::Publisher<fog_msgs::msg::ControlInterfaceDiagnostics>::SharedPtr diagnostics_publisher_;
 
   // subscribers
   rclcpp::Subscription<px4_msgs::msg::Timesync>::SharedPtr              timesync_subscriber_;
@@ -129,6 +131,7 @@ private:
   // internal functions
   bool gettingPixhawkSensors();
   void printSensorsStatus();
+  void publishDiagnostics();
 
   bool takeoff();
   bool land();
@@ -225,6 +228,7 @@ ControlInterface::ControlInterface(rclcpp::NodeOptions options) : Node("control_
   vehicle_command_publisher_ = this->create_publisher<px4_msgs::msg::VehicleCommand>("~/vehicle_command_out", 10);
   local_odom_publisher_      = this->create_publisher<nav_msgs::msg::Odometry>("~/local_odom_out", 10);
   marker_publisher_          = this->create_publisher<visualization_msgs::msg::MarkerArray>("~/debug_markers_out", 10);
+  diagnostics_publisher_     = this->create_publisher<fog_msgs::msg::ControlInterfaceDiagnostics>("~/diagnostics_out", 10);
 
   // subscribers
   timesync_subscriber_ = this->create_subscription<px4_msgs::msg::Timesync>("~/timesync_in", 10, std::bind(&ControlInterface::timesyncCallback, this, _1));
@@ -598,52 +602,56 @@ bool ControlInterface::setWaypointsCallback(const std::shared_ptr<fog_msgs::srv:
 /* controlRoutine //{ */
 void ControlInterface::controlRoutine(void) {
 
-  if (is_initialized_ && gettingPixhawkSensors()) {
+  if (is_initialized_) {
+    publishDiagnostics();
 
-    RCLCPP_INFO_ONCE(this->get_logger(), "[%s]: CONTROL INTERFACE IS READY", this->get_name());
+    if (gettingPixhawkSensors()) {
 
-    if (!armed_) {
-      RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 1000, "[%s]: Vehicle not armed", this->get_name());
-      return;
-    }
+      RCLCPP_INFO_ONCE(this->get_logger(), "[%s]: CONTROL INTERFACE IS READY", this->get_name());
 
-    if (landed_) {
-      RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 1000, "[%s]: Vehicle not airborne", this->get_name());
-      return;
-    }
-
-    /* handle motion //{ */
-    if (motion_started_) {
-
-      // create a new mission plan if there are unused points in buffer
-      if (waypoint_buffer_.size() > 0 && mission_finished_) {
-        publishDebugMarkers();
-        RCLCPP_INFO(this->get_logger(), "[%s]: Waypoints to be visited: %ld", this->get_name(), waypoint_buffer_.size());
-        mission_->pause_mission();
-        mission_plan_.mission_items.clear();
-        addLocalToMission(*waypoint_buffer_.begin());
-        waypoint_buffer_.erase(waypoint_buffer_.begin());
-        start_mission_ = true;
+      if (!armed_) {
+        RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 1000, "[%s]: Vehicle not armed", this->get_name());
+        return;
       }
 
-      // upload and execute new mission
-      if (start_mission_ && mission_plan_.mission_items.size() > 0) {
-        uploadMission();
-        startMission();
-        mission_finished_ = false;
-        start_mission_    = false;
+      if (landed_) {
+        RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 1000, "[%s]: Vehicle not airborne", this->get_name());
+        return;
       }
 
-      // stop if final goal is reached
-      if (mission_finished_) {
-        RCLCPP_INFO(this->get_logger(), "[%s]: All waypoints have been visited", this->get_name());
-        motion_started_ = false;
+      /* handle motion //{ */
+      if (motion_started_) {
+
+        // create a new mission plan if there are unused points in buffer
+        if (waypoint_buffer_.size() > 0 && mission_finished_) {
+          publishDebugMarkers();
+          RCLCPP_INFO(this->get_logger(), "[%s]: Waypoints to be visited: %ld", this->get_name(), waypoint_buffer_.size());
+          mission_->pause_mission();
+          mission_plan_.mission_items.clear();
+          addLocalToMission(*waypoint_buffer_.begin());
+          waypoint_buffer_.erase(waypoint_buffer_.begin());
+          start_mission_ = true;
+        }
+
+        // upload and execute new mission
+        if (start_mission_ && mission_plan_.mission_items.size() > 0) {
+          uploadMission();
+          startMission();
+          mission_finished_ = false;
+          start_mission_    = false;
+        }
+
+        // stop if final goal is reached
+        if (mission_finished_) {
+          RCLCPP_INFO(this->get_logger(), "[%s]: All waypoints have been visited", this->get_name());
+          motion_started_ = false;
+        }
       }
+      //}
+
+    } else {
+      printSensorsStatus();
     }
-    //}
-
-  } else {
-    printSensorsStatus();
   }
 }
 //}
@@ -659,6 +667,23 @@ void ControlInterface::printSensorsStatus() {
   RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 1000, "[%s]: TIME:%s, GPS:%s, ODOM:%s, CTRL:%s, LAND:%s", this->get_name(),
                        getting_timesync_ ? "TRUE" : "FALSE", getting_gps_ ? "TRUE" : "FALSE", getting_pixhawk_odom_ ? "TRUE" : "FALSE",
                        getting_control_mode_ ? "TRUE" : "FALSE", getting_landed_info_ ? "TRUE" : "FALSE");
+}
+//}
+
+/* publishDiagnostics //{ */
+void ControlInterface::publishDiagnostics() {
+  fog_msgs::msg::ControlInterfaceDiagnostics msg;
+  msg.armed                = armed_;
+  msg.airborne             = !landed_;
+  msg.moving               = motion_started_;
+  msg.mission_finished     = mission_finished_;
+  msg.waypoints_to_go      = waypoint_buffer_.size();
+  msg.getting_timesync     = getting_timesync_;
+  msg.getting_gps          = getting_gps_;
+  msg.getting_odom         = getting_pixhawk_odom_;
+  msg.getting_control_mode = getting_control_mode_;
+  msg.getting_land_sensor  = getting_landed_info_;
+  diagnostics_publisher_->publish(msg);
 }
 //}
 
@@ -726,8 +751,8 @@ bool ControlInterface::stopPreviousMission() {
     return true;
   }
 
-  motion_started_ = false;
-  start_mission_  = false;
+  motion_started_   = false;
+  start_mission_    = false;
   mission_finished_ = true;
 
   auto result = mission_->pause_mission();
@@ -749,7 +774,7 @@ void ControlInterface::addGlobalToMission(Eigen::Vector3d waypoint) {
   item.latitude_deg            = waypoint[0];
   item.longitude_deg           = waypoint[1];
   item.relative_altitude_m     = waypoint[2];
-  item.speed_m_s               = NAN; // NAN = use default values. This does NOT limit vehicle max speed
+  item.speed_m_s               = NAN;  // NAN = use default values. This does NOT limit vehicle max speed
   item.is_fly_through          = false;
   item.gimbal_pitch_deg        = 0.0f;
   item.gimbal_yaw_deg          = 0.0f;
@@ -773,7 +798,7 @@ void ControlInterface::addLocalToMission(Eigen::Vector3d waypoint) {
   item.latitude_deg            = global.latitude_deg;
   item.longitude_deg           = global.longitude_deg;
   item.relative_altitude_m     = waypoint[2];
-  item.speed_m_s               = NAN; // NAN = use default values. This does NOT limit vehicle max speed
+  item.speed_m_s               = NAN;  // NAN = use default values. This does NOT limit vehicle max speed
   item.is_fly_through          = false;
   item.gimbal_pitch_deg        = 0.0f;
   item.gimbal_yaw_deg          = 0.0f;

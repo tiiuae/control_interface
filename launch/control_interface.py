@@ -39,7 +39,10 @@ def generate_launch_description():
                 ],
                 remappings=[
                     ("~/vehicle_command_out", "/" + DRONE_DEVICE_ID + "/VehicleCommand_PubSubTopic"),
+                    ("~/offboard_control_mode_out", "/" + DRONE_DEVICE_ID + "/OffboardControlMode_PubSubTopic"),
+                    ("~/position_setpoint_triplet_out", "/" + DRONE_DEVICE_ID + "/PositionSetpointTriplet_PubSubTopic"),
                     ("~/local_odom_out", "~/local_odom"),
+                    ("~/diagnostics_out", "~/diagnostics"),
                     ("~/debug_markers_out", "~/debug/waypoint_markers"),
 
                     ("~/timesync_in", "/" + DRONE_DEVICE_ID + "/Timesync_PubSubTopic"),
@@ -48,9 +51,7 @@ def generate_launch_description():
                     ("~/control_mode_in", "/" + DRONE_DEVICE_ID + "/VehicleControlMode_PubSubTopic"),
                     ("~/land_detected_in", "/" + DRONE_DEVICE_ID + "/VehicleLandDetected_PubSubTopic"),
                     ("~/mission_result_in", "/" + DRONE_DEVICE_ID + "/MissionResult_PubSubTopic"),
-
-                    ("~/offboard_control_mode_out", "/" + DRONE_DEVICE_ID + "/OffboardControlMode_PubSubTopic"),
-                    ("~/position_setpoint_triplet_out", "/" + DRONE_DEVICE_ID + "/PositionSetpointTriplet_PubSubTopic"),
+                    
                     ("~/arming_in", "~/arming"),
                     ("~/takeoff_in", "~/takeoff"),
                     ("~/land_in", "~/land"),
