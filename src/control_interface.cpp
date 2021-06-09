@@ -219,6 +219,9 @@ ControlInterface::ControlInterface(rclcpp::NodeOptions options) : Node("control_
     }
   }
 
+  if (!rclcpp::ok())
+    return;
+
   RCLCPP_INFO(this->get_logger(), "[%s]: Target connected", this->get_name());
   action_  = std::make_shared<mavsdk::Action>(system_);
   mission_ = std::make_shared<mavsdk::Mission>(system_);
