@@ -219,6 +219,9 @@ ControlInterface::ControlInterface(rclcpp::NodeOptions options) : Node("control_
     }
   }
 
+  if (!rclcpp::ok())
+    return;
+
   RCLCPP_INFO(this->get_logger(), "[%s]: Target connected", this->get_name());
   action_  = std::make_shared<mavsdk::Action>(system_);
   mission_ = std::make_shared<mavsdk::Mission>(system_);
@@ -231,16 +234,16 @@ ControlInterface::ControlInterface(rclcpp::NodeOptions options) : Node("control_
   diagnostics_publisher_     = this->create_publisher<fog_msgs::msg::ControlInterfaceDiagnostics>("~/diagnostics_out", 10);
 
   // subscribers
-  timesync_subscriber_ = this->create_subscription<px4_msgs::msg::Timesync>("~/timesync_in", 10, std::bind(&ControlInterface::timesyncCallback, this, _1));
-  gps_subscriber_      = this->create_subscription<px4_msgs::msg::VehicleGlobalPosition>("~/gps_in", 10, std::bind(&ControlInterface::gpsCallback, this, _1));
+  timesync_subscriber_ = this->create_subscription<px4_msgs::msg::Timesync>("~/timesync_in", rclcpp::SystemDefaultsQoS(), std::bind(&ControlInterface::timesyncCallback, this, _1));
+  gps_subscriber_      = this->create_subscription<px4_msgs::msg::VehicleGlobalPosition>("~/gps_in", rclcpp::SystemDefaultsQoS(), std::bind(&ControlInterface::gpsCallback, this, _1));
   pixhawk_odom_subscriber_ =
-      this->create_subscription<px4_msgs::msg::VehicleOdometry>("~/pixhawk_odom_in", 10, std::bind(&ControlInterface::pixhawkOdomCallback, this, _1));
+      this->create_subscription<px4_msgs::msg::VehicleOdometry>("~/pixhawk_odom_in", rclcpp::SystemDefaultsQoS(), std::bind(&ControlInterface::pixhawkOdomCallback, this, _1));
   control_mode_subscriber_ =
-      this->create_subscription<px4_msgs::msg::VehicleControlMode>("~/control_mode_in", 10, std::bind(&ControlInterface::controlModeCallback, this, _1));
+      this->create_subscription<px4_msgs::msg::VehicleControlMode>("~/control_mode_in", rclcpp::SystemDefaultsQoS(), std::bind(&ControlInterface::controlModeCallback, this, _1));
   land_detected_subscriber_ =
-      this->create_subscription<px4_msgs::msg::VehicleLandDetected>("~/land_detected_in", 10, std::bind(&ControlInterface::landDetectedCallback, this, _1));
+      this->create_subscription<px4_msgs::msg::VehicleLandDetected>("~/land_detected_in", rclcpp::SystemDefaultsQoS(), std::bind(&ControlInterface::landDetectedCallback, this, _1));
   mission_result_subscriber_ =
-      this->create_subscription<px4_msgs::msg::MissionResult>("~/mission_result_in", 10, std::bind(&ControlInterface::missionResultCallback, this, _1));
+      this->create_subscription<px4_msgs::msg::MissionResult>("~/mission_result_in", rclcpp::SystemDefaultsQoS(), std::bind(&ControlInterface::missionResultCallback, this, _1));
 
   // service handlers
   arming_service_         = this->create_service<std_srvs::srv::SetBool>("~/arming_in", std::bind(&ControlInterface::armingCallback, this, _1, _2));
