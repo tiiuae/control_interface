@@ -5,6 +5,8 @@ on:
     branches: [ master ]
   pull_request:
     branches: [ master ]
+  repository_dispatch:
+    types: rebuild
 
 jobs:
   tii-deb-build:
@@ -28,14 +30,13 @@ jobs:
           set -eux
           mkdir bin
           pushd fogsw-ci-scripts
-          export ROS=1
           ./generate_deb.sh ../control_interface ../bin/
           popd
 
       - name: Install jfrog CLI tool
         env:
           JFROG_CLI_URL: https://artifactory.ssrc.fi/artifactory/gen-public-local/tools/jfrog/jfrog-1.45.2.tar.gz
-        if: github.event_name == 'push'
+        if: github.event_name == 'push' || github.event.action == 'rebuild'
         run: |
           set -exu
           mkdir -p "$GITHUB_WORKSPACE/.jfrog/bin"
@@ -53,19 +54,20 @@ jobs:
           ARCHITECTURE: amd64
           BUILD_NAME: control-interface
           CI: true
-        if: github.event_name == 'push'
+        if: github.event_name == 'push' || github.event.action == 'rebuild'
         run: |
           set -exu
           jfrog rt c import "$ARTIFACTORY_TOKEN"
           jfrog rt ping
           pkg=$(find bin -name 'ros-foxy-control-interface*.deb')
+          build_id="$GITHUB_SHA-$GITHUB_RUN_NUMBER"
           jfrog rt u --deb "$DISTRIBUTION/$COMPONENT/$ARCHITECTURE" \
                      --target-props COMMIT="$GITHUB_SHA" \
                      --build-name "$BUILD_NAME" \
-                     --build-number "$GITHUB_SHA" \
+                     --build-number "$build_id" \
                      "$pkg" \
                      "$ARTIFACTORY_REPO"
-          jfrog rt build-publish "$BUILD_NAME" "$GITHUB_SHA"
-          jfrog rt bpr "$BUILD_NAME" "$GITHUB_SHA" "$ARTIFACTORY_REPO" \
+          jfrog rt build-publish "$BUILD_NAME" "$build_id"
+          jfrog rt bpr "$BUILD_NAME" "$build_id" "$ARTIFACTORY_REPO" \
                        --status dev \
                        --comment "development build"
