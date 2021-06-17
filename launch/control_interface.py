@@ -46,8 +46,6 @@ def generate_launch_description():
                     ("~/debug_markers_out", "~/debug/waypoint_markers"),
 
                     ("~/timesync_in", "/" + DRONE_DEVICE_ID + "/Timesync_PubSubTopic"),
-                    ("~/gps_in", "/" + DRONE_DEVICE_ID + "/VehicleGlobalPosition_PubSubTopic"),
-                    ("~/pixhawk_odom_in", "/" + DRONE_DEVICE_ID + "/VehicleOdometry_PubSubTopic"),
                     ("~/control_mode_in", "/" + DRONE_DEVICE_ID + "/VehicleControlMode_PubSubTopic"),
                     ("~/land_detected_in", "/" + DRONE_DEVICE_ID + "/VehicleLandDetected_PubSubTopic"),
                     ("~/mission_result_in", "/" + DRONE_DEVICE_ID + "/MissionResult_PubSubTopic"),
@@ -57,6 +55,9 @@ def generate_launch_description():
                     ("~/land_in", "~/land"),
                     ("~/local_setpoint_in", "~/local_setpoint"),
                     ("~/waypoints_in", "~/waypoints"),
+
+                    ("~/get_origin", "/" + DRONE_DEVICE_ID + "/odometry2/get_origin"),
+                    ("~/getting_odom", "/" + DRONE_DEVICE_ID + "/odometry2/getting_odom"),
                 ],
             ),
         ],
