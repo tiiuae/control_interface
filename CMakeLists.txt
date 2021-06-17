@@ -5,6 +5,12 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+add_definitions("-Wall")
+add_definitions("-Wextra")
+add_definitions("-Wpedantic")
+add_definitions("-g")
+# add_definitions("-O3")
+
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(rclcpp_components REQUIRED)
@@ -18,11 +24,7 @@ find_package(visualization_msgs REQUIRED)
 find_package(tf2 REQUIRED)
 find_package(tf2_ros REQUIRED)
 find_package(MAVSDK REQUIRED)
-find_package(Threads REQUIRED)
-
-find_package(Eigen3 REQUIRED)
-set(Eigen_INCLUDE_DIRS ${EIGEN3_INCLUDE_DIRS})
-set(Eigen_LIBRARIES ${EIGEN3_LIBRARIES})
+# find_package(Threads REQUIRED)
 
 ## --------------------------------------------------------------
 ## |                       compile                              |
@@ -48,13 +50,12 @@ ament_target_dependencies(control_interface
   tf2
   tf2_ros
   MAVSDK
-  Threads
+  # Threads
   )
 
 target_link_libraries(control_interface
   MAVSDK::mavsdk_action
   MAVSDK::mavsdk_mission
-  MAVSDK::mavsdk_telemetry
   MAVSDK::mavsdk
   )
 
@@ -69,10 +70,14 @@ install(TARGETS
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib
   RUNTIME DESTINATION bin
-  )
+)
 
-install(DIRECTORY launch config
+install(DIRECTORY launch
   DESTINATION share/${PROJECT_NAME}
-  )
+)
+
+install(DIRECTORY config 
+  DESTINATION share/${PROJECT_NAME}
+)
 
 ament_package()
