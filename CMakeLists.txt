@@ -24,7 +24,7 @@ find_package(visualization_msgs REQUIRED)
 find_package(tf2 REQUIRED)
 find_package(tf2_ros REQUIRED)
 find_package(MAVSDK REQUIRED)
-# find_package(Threads REQUIRED)
+find_package(Threads REQUIRED)
 
 ## --------------------------------------------------------------
 ## |                       compile                              |
@@ -50,7 +50,7 @@ ament_target_dependencies(control_interface
   tf2
   tf2_ros
   MAVSDK
-  # Threads
+  Threads
   )
 
 target_link_libraries(control_interface

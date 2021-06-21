@@ -21,6 +21,7 @@
 #include <rclcpp/time.hpp>
 #include <std_msgs/msg/color_rgba.hpp>
 #include <std_srvs/srv/set_bool.hpp>
+#include <std_srvs/srv/trigger.hpp>
 #include <tf2/LinearMath/Quaternion.h>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.h>  // This has to be here otherwise you will get cryptic linker error about missing function 'getTimestamp'
 #include <tf2_ros/static_transform_broadcaster.h>
@@ -132,8 +133,8 @@ private:
 
   // services provided
   rclcpp::Service<std_srvs::srv::SetBool>::SharedPtr         arming_service_;
-  rclcpp::Service<std_srvs::srv::SetBool>::SharedPtr         takeoff_service_;
-  rclcpp::Service<std_srvs::srv::SetBool>::SharedPtr         land_service_;
+  rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr         takeoff_service_;
+  rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr         land_service_;
   rclcpp::Service<fog_msgs::srv::Vec4>::SharedPtr            local_waypoint_service_;
   rclcpp::Service<fog_msgs::srv::Path>::SharedPtr            local_path_service_;
   rclcpp::Service<fog_msgs::srv::Vec4>::SharedPtr            gps_waypoint_service_;
@@ -143,8 +144,8 @@ private:
 
   // service callbacks
   bool armingCallback(const std::shared_ptr<std_srvs::srv::SetBool::Request> request, std::shared_ptr<std_srvs::srv::SetBool::Response> response);
-  bool takeoffCallback(const std::shared_ptr<std_srvs::srv::SetBool::Request> request, std::shared_ptr<std_srvs::srv::SetBool::Response> response);
-  bool landCallback(const std::shared_ptr<std_srvs::srv::SetBool::Request> request, std::shared_ptr<std_srvs::srv::SetBool::Response> response);
+  bool takeoffCallback(const std::shared_ptr<std_srvs::srv::Trigger::Request> request, std::shared_ptr<std_srvs::srv::Trigger::Response> response);
+  bool landCallback(const std::shared_ptr<std_srvs::srv::Trigger::Request> request, std::shared_ptr<std_srvs::srv::Trigger::Response> response);
   bool localWaypointCallback(const std::shared_ptr<fog_msgs::srv::Vec4::Request> request, std::shared_ptr<fog_msgs::srv::Vec4::Response> response);
   bool localPathCallback(const std::shared_ptr<fog_msgs::srv::Path::Request> request, std::shared_ptr<fog_msgs::srv::Path::Response> response);
   bool gpsWaypointCallback(const std::shared_ptr<fog_msgs::srv::Vec4::Request> request, std::shared_ptr<fog_msgs::srv::Vec4::Response> response);
@@ -273,8 +274,8 @@ ControlInterface::ControlInterface(rclcpp::NodeOptions options) : Node("control_
 
   // service handlers
   arming_service_         = this->create_service<std_srvs::srv::SetBool>("~/arming_in", std::bind(&ControlInterface::armingCallback, this, _1, _2));
-  takeoff_service_        = this->create_service<std_srvs::srv::SetBool>("~/takeoff_in", std::bind(&ControlInterface::takeoffCallback, this, _1, _2));
-  land_service_           = this->create_service<std_srvs::srv::SetBool>("~/land_in", std::bind(&ControlInterface::landCallback, this, _1, _2));
+  takeoff_service_        = this->create_service<std_srvs::srv::Trigger>("~/takeoff_in", std::bind(&ControlInterface::takeoffCallback, this, _1, _2));
+  land_service_           = this->create_service<std_srvs::srv::Trigger>("~/land_in", std::bind(&ControlInterface::landCallback, this, _1, _2));
   local_waypoint_service_ = this->create_service<fog_msgs::srv::Vec4>("~/local_waypoint_in", std::bind(&ControlInterface::localWaypointCallback, this, _1, _2));
   local_path_service_     = this->create_service<fog_msgs::srv::Path>("~/local_path_in", std::bind(&ControlInterface::localPathCallback, this, _1, _2));
   gps_waypoint_service_   = this->create_service<fog_msgs::srv::Vec4>("~/gps_waypoint_in", std::bind(&ControlInterface::gpsWaypointCallback, this, _1, _2));
@@ -406,8 +407,8 @@ void ControlInterface::missionResultCallback(const px4_msgs::msg::MissionResult:
 //}
 
 /* takeoffCallback //{ */
-bool ControlInterface::takeoffCallback([[maybe_unused]] const std::shared_ptr<std_srvs::srv::SetBool::Request> request,
-                                       std::shared_ptr<std_srvs::srv::SetBool::Response>                       response) {
+bool ControlInterface::takeoffCallback([[maybe_unused]] const std::shared_ptr<std_srvs::srv::Trigger::Request> request,
+                                       std::shared_ptr<std_srvs::srv::Trigger::Response>                       response) {
 
   if (!is_initialized_) {
     response->success = false;
@@ -451,8 +452,8 @@ bool ControlInterface::takeoffCallback([[maybe_unused]] const std::shared_ptr<st
 //}
 
 /* landCallback //{ */
-bool ControlInterface::landCallback([[maybe_unused]] const std::shared_ptr<std_srvs::srv::SetBool::Request> request,
-                                    std::shared_ptr<std_srvs::srv::SetBool::Response>                       response) {
+bool ControlInterface::landCallback([[maybe_unused]] const std::shared_ptr<std_srvs::srv::Trigger::Request> request,
+                                    std::shared_ptr<std_srvs::srv::Trigger::Response>                       response) {
 
   if (!is_initialized_) {
     response->success = false;
