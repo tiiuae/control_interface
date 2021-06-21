@@ -3,7 +3,6 @@
 #include <fog_msgs/srv/path.hpp>
 #include <fog_msgs/srv/vec4.hpp>
 #include <fog_msgs/msg/control_interface_diagnostics.hpp>
-#include <geometry_msgs/msg/detail/pose_stamped__struct.hpp>
 #include <geometry_msgs/msg/transform_stamped.hpp>
 #include <mavsdk/geometry.h>
 #include <mavsdk/mavsdk.h>
@@ -11,7 +10,6 @@
 #include <mavsdk/plugins/mission/mission.h>
 #include <nav_msgs/msg/odometry.hpp>
 #include <px4_msgs/msg/mission_result.hpp>
-#include <px4_msgs/msg/timesync.hpp>
 #include <px4_msgs/msg/vehicle_command.hpp>
 #include <px4_msgs/msg/vehicle_control_mode.hpp>
 #include <px4_msgs/msg/vehicle_global_position.hpp>
@@ -56,7 +54,6 @@ public:
 
 private:
   bool is_initialized_       = false;
-  bool getting_timesync_     = false;
   bool getting_gps_          = false;
   bool getting_pixhawk_odom_ = false;
   bool getting_landed_info_  = false;
@@ -107,8 +104,6 @@ private:
   double control_loop_rate_     = 20.0;
   double waypoint_loiter_time_  = 0.0;
 
-  std::atomic<unsigned long long> timestamp_;
-
   // publishers
   rclcpp::Publisher<px4_msgs::msg::VehicleCommand>::SharedPtr              vehicle_command_publisher_;
   rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr                    local_odom_publisher_;
@@ -116,7 +111,6 @@ private:
   rclcpp::Publisher<fog_msgs::msg::ControlInterfaceDiagnostics>::SharedPtr diagnostics_publisher_;
 
   // subscribers
-  rclcpp::Subscription<px4_msgs::msg::Timesync>::SharedPtr              timesync_subscriber_;
   rclcpp::Subscription<px4_msgs::msg::VehicleGlobalPosition>::SharedPtr gps_subscriber_;
   rclcpp::Subscription<px4_msgs::msg::VehicleOdometry>::SharedPtr       pixhawk_odom_subscriber_;
   rclcpp::Subscription<px4_msgs::msg::VehicleControlMode>::SharedPtr    control_mode_subscriber_;
@@ -124,7 +118,6 @@ private:
   rclcpp::Subscription<px4_msgs::msg::MissionResult>::SharedPtr         mission_result_subscriber_;
 
   // subscriber callbacks
-  void timesyncCallback(const px4_msgs::msg::Timesync::UniquePtr msg);
   void gpsCallback(const px4_msgs::msg::VehicleGlobalPosition::UniquePtr msg);
   void pixhawkOdomCallback(const px4_msgs::msg::VehicleOdometry::UniquePtr msg);
   void controlModeCallback(const px4_msgs::msg::VehicleControlMode::UniquePtr msg);
@@ -259,8 +252,6 @@ ControlInterface::ControlInterface(rclcpp::NodeOptions options) : Node("control_
   diagnostics_publisher_     = this->create_publisher<fog_msgs::msg::ControlInterfaceDiagnostics>("~/diagnostics_out", 10);
 
   // subscribers
-  timesync_subscriber_       = this->create_subscription<px4_msgs::msg::Timesync>("~/timesync_in", rclcpp::SystemDefaultsQoS(),
-                                                                            std::bind(&ControlInterface::timesyncCallback, this, _1));
   gps_subscriber_            = this->create_subscription<px4_msgs::msg::VehicleGlobalPosition>("~/gps_in", rclcpp::SystemDefaultsQoS(),
                                                                                     std::bind(&ControlInterface::gpsCallback, this, _1));
   pixhawk_odom_subscriber_   = this->create_subscription<px4_msgs::msg::VehicleOdometry>("~/pixhawk_odom_in", rclcpp::SystemDefaultsQoS(),
@@ -297,16 +288,6 @@ ControlInterface::ControlInterface(rclcpp::NodeOptions options) : Node("control_
 
   is_initialized_ = true;
   RCLCPP_INFO(this->get_logger(), "[%s]: Initialized", this->get_name());
-}
-//}
-
-/* timesyncCallback //{ */
-void ControlInterface::timesyncCallback(const px4_msgs::msg::Timesync::UniquePtr msg) {
-  if (!is_initialized_) {
-    return;
-  }
-  getting_timesync_ = true;
-  timestamp_.store(msg->timestamp);
 }
 //}
 
@@ -897,15 +878,15 @@ void ControlInterface::controlRoutine(void) {
 
 /* gettingPixhawkSensors //{ */
 bool ControlInterface::gettingPixhawkSensors() {
-  return getting_timesync_ && getting_gps_ && getting_pixhawk_odom_ && getting_control_mode_ && getting_landed_info_;
+  return getting_gps_ && getting_pixhawk_odom_ && getting_control_mode_ && getting_landed_info_;
 }
 //}
 
 /* printSensorsStatus //{ */
 void ControlInterface::printSensorsStatus() {
-  RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 1000, "[%s]: TIME:%s, GPS:%s, ODOM:%s, CTRL:%s, LAND:%s", this->get_name(),
-                       getting_timesync_ ? "TRUE" : "FALSE", getting_gps_ ? "TRUE" : "FALSE", getting_pixhawk_odom_ ? "TRUE" : "FALSE",
-                       getting_control_mode_ ? "TRUE" : "FALSE", getting_landed_info_ ? "TRUE" : "FALSE");
+  RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 1000, "[%s]: GPS:%s, ODOM:%s, CTRL:%s, LAND:%s", this->get_name(),
+                       getting_gps_ ? "TRUE" : "FALSE", getting_pixhawk_odom_ ? "TRUE" : "FALSE", getting_control_mode_ ? "TRUE" : "FALSE",
+                       getting_landed_info_ ? "TRUE" : "FALSE");
 }
 //}
 
@@ -917,7 +898,6 @@ void ControlInterface::publishDiagnostics() {
   msg.moving               = motion_started_;
   msg.mission_finished     = mission_finished_;
   msg.waypoints_to_go      = waypoint_buffer_.size();
-  msg.getting_timesync     = getting_timesync_;
   msg.getting_gps          = getting_gps_;
   msg.getting_odom         = getting_pixhawk_odom_;
   msg.getting_control_mode = getting_control_mode_;
