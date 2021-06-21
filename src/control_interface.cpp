@@ -1,7 +1,9 @@
-#include <eigen3/Eigen/Core>
+#include <fog_msgs/srv/waypoint_to_local.hpp>
+#include <fog_msgs/srv/path_to_local.hpp>
 #include <fog_msgs/srv/path.hpp>
 #include <fog_msgs/srv/vec4.hpp>
 #include <fog_msgs/msg/control_interface_diagnostics.hpp>
+#include <geometry_msgs/msg/detail/pose_stamped__struct.hpp>
 #include <geometry_msgs/msg/transform_stamped.hpp>
 #include <mavsdk/geometry.h>
 #include <mavsdk/mavsdk.h>
@@ -19,6 +21,7 @@
 #include <rclcpp/time.hpp>
 #include <std_msgs/msg/color_rgba.hpp>
 #include <std_srvs/srv/set_bool.hpp>
+#include <std_srvs/srv/trigger.hpp>
 #include <tf2/LinearMath/Quaternion.h>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.h>  // This has to be here otherwise you will get cryptic linker error about missing function 'getTimestamp'
 #include <tf2_ros/static_transform_broadcaster.h>
@@ -31,6 +34,20 @@ using namespace std::placeholders;
 
 namespace control_interface
 {
+
+enum waypoint_type_t
+{
+  LOCAL = 0,
+  GPS
+};
+
+struct waypoint_t
+{
+  waypoint_type_t type;
+  double          x;
+  double          y;
+  double          z;
+};
 
 /* class ControlInterface //{ */
 class ControlInterface : public rclcpp::Node {
@@ -67,7 +84,7 @@ private:
   std::shared_ptr<mavsdk::Mission> mission_;
   mavsdk::Mission::MissionPlan     mission_plan_;
 
-  std::vector<Eigen::Vector3d> waypoint_buffer_;
+  std::vector<waypoint_t> waypoint_buffer_;
 
   std::shared_ptr<tf2_ros::Buffer>                     tf_buffer_;
   std::shared_ptr<tf2_ros::TransformListener>          tf_listener_;
@@ -78,8 +95,8 @@ private:
   float latitude_, longitude_, altitude_;
 
   // vehicle local position
-  Eigen::Vector3d pos_;
-  float           ori_[4];
+  float pos_[3];
+  float ori_[4];
 
   // use takeoff lat and long to initialize local frame
   std::shared_ptr<mavsdk::geometry::CoordinateTransformation> coord_transform_;
@@ -115,18 +132,27 @@ private:
   void missionResultCallback(const px4_msgs::msg::MissionResult::UniquePtr msg);
 
   // services provided
-  rclcpp::Service<std_srvs::srv::SetBool>::SharedPtr arming_service_;
-  rclcpp::Service<std_srvs::srv::SetBool>::SharedPtr takeoff_service_;
-  rclcpp::Service<std_srvs::srv::SetBool>::SharedPtr land_service_;
-  rclcpp::Service<fog_msgs::srv::Vec4>::SharedPtr    local_setpoint_service_;
-  rclcpp::Service<fog_msgs::srv::Path>::SharedPtr    set_waypoints_service_;
+  rclcpp::Service<std_srvs::srv::SetBool>::SharedPtr         arming_service_;
+  rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr         takeoff_service_;
+  rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr         land_service_;
+  rclcpp::Service<fog_msgs::srv::Vec4>::SharedPtr            local_waypoint_service_;
+  rclcpp::Service<fog_msgs::srv::Path>::SharedPtr            local_path_service_;
+  rclcpp::Service<fog_msgs::srv::Vec4>::SharedPtr            gps_waypoint_service_;
+  rclcpp::Service<fog_msgs::srv::Path>::SharedPtr            gps_path_service_;
+  rclcpp::Service<fog_msgs::srv::WaypointToLocal>::SharedPtr waypoint_to_local_service_;
+  rclcpp::Service<fog_msgs::srv::PathToLocal>::SharedPtr     path_to_local_service_;
 
   // service callbacks
   bool armingCallback(const std::shared_ptr<std_srvs::srv::SetBool::Request> request, std::shared_ptr<std_srvs::srv::SetBool::Response> response);
-  bool takeoffCallback(const std::shared_ptr<std_srvs::srv::SetBool::Request> request, std::shared_ptr<std_srvs::srv::SetBool::Response> response);
-  bool landCallback(const std::shared_ptr<std_srvs::srv::SetBool::Request> request, std::shared_ptr<std_srvs::srv::SetBool::Response> response);
-  bool localSetpointCallback(const std::shared_ptr<fog_msgs::srv::Vec4::Request> request, std::shared_ptr<fog_msgs::srv::Vec4::Response> response);
-  bool setWaypointsCallback(const std::shared_ptr<fog_msgs::srv::Path::Request> request, std::shared_ptr<fog_msgs::srv::Path::Response> response);
+  bool takeoffCallback(const std::shared_ptr<std_srvs::srv::Trigger::Request> request, std::shared_ptr<std_srvs::srv::Trigger::Response> response);
+  bool landCallback(const std::shared_ptr<std_srvs::srv::Trigger::Request> request, std::shared_ptr<std_srvs::srv::Trigger::Response> response);
+  bool localWaypointCallback(const std::shared_ptr<fog_msgs::srv::Vec4::Request> request, std::shared_ptr<fog_msgs::srv::Vec4::Response> response);
+  bool localPathCallback(const std::shared_ptr<fog_msgs::srv::Path::Request> request, std::shared_ptr<fog_msgs::srv::Path::Response> response);
+  bool gpsWaypointCallback(const std::shared_ptr<fog_msgs::srv::Vec4::Request> request, std::shared_ptr<fog_msgs::srv::Vec4::Response> response);
+  bool gpsPathCallback(const std::shared_ptr<fog_msgs::srv::Path::Request> request, std::shared_ptr<fog_msgs::srv::Path::Response> response);
+  bool waypointToLocalCallback(const std::shared_ptr<fog_msgs::srv::WaypointToLocal::Request> request,
+                               std::shared_ptr<fog_msgs::srv::WaypointToLocal::Response>      response);
+  bool pathToLocalCallback(const std::shared_ptr<fog_msgs::srv::PathToLocal::Request> request, std::shared_ptr<fog_msgs::srv::PathToLocal::Response> response);
 
   // internal functions
   bool gettingPixhawkSensors();
@@ -139,8 +165,7 @@ private:
   bool uploadMission();
   bool stopPreviousMission();
 
-  void addGlobalToMission(Eigen::Vector3d waypoint);
-  void addLocalToMission(Eigen::Vector3d waypoint);
+  void addToMission(waypoint_t w);
   void publishTF();
   void publishStaticTF();
   void publishLocalOdom();
@@ -234,23 +259,31 @@ ControlInterface::ControlInterface(rclcpp::NodeOptions options) : Node("control_
   diagnostics_publisher_     = this->create_publisher<fog_msgs::msg::ControlInterfaceDiagnostics>("~/diagnostics_out", 10);
 
   // subscribers
-  timesync_subscriber_ = this->create_subscription<px4_msgs::msg::Timesync>("~/timesync_in", rclcpp::SystemDefaultsQoS(), std::bind(&ControlInterface::timesyncCallback, this, _1));
-  gps_subscriber_      = this->create_subscription<px4_msgs::msg::VehicleGlobalPosition>("~/gps_in", rclcpp::SystemDefaultsQoS(), std::bind(&ControlInterface::gpsCallback, this, _1));
-  pixhawk_odom_subscriber_ =
-      this->create_subscription<px4_msgs::msg::VehicleOdometry>("~/pixhawk_odom_in", rclcpp::SystemDefaultsQoS(), std::bind(&ControlInterface::pixhawkOdomCallback, this, _1));
-  control_mode_subscriber_ =
-      this->create_subscription<px4_msgs::msg::VehicleControlMode>("~/control_mode_in", rclcpp::SystemDefaultsQoS(), std::bind(&ControlInterface::controlModeCallback, this, _1));
-  land_detected_subscriber_ =
-      this->create_subscription<px4_msgs::msg::VehicleLandDetected>("~/land_detected_in", rclcpp::SystemDefaultsQoS(), std::bind(&ControlInterface::landDetectedCallback, this, _1));
-  mission_result_subscriber_ =
-      this->create_subscription<px4_msgs::msg::MissionResult>("~/mission_result_in", rclcpp::SystemDefaultsQoS(), std::bind(&ControlInterface::missionResultCallback, this, _1));
+  timesync_subscriber_       = this->create_subscription<px4_msgs::msg::Timesync>("~/timesync_in", rclcpp::SystemDefaultsQoS(),
+                                                                            std::bind(&ControlInterface::timesyncCallback, this, _1));
+  gps_subscriber_            = this->create_subscription<px4_msgs::msg::VehicleGlobalPosition>("~/gps_in", rclcpp::SystemDefaultsQoS(),
+                                                                                    std::bind(&ControlInterface::gpsCallback, this, _1));
+  pixhawk_odom_subscriber_   = this->create_subscription<px4_msgs::msg::VehicleOdometry>("~/pixhawk_odom_in", rclcpp::SystemDefaultsQoS(),
+                                                                                       std::bind(&ControlInterface::pixhawkOdomCallback, this, _1));
+  control_mode_subscriber_   = this->create_subscription<px4_msgs::msg::VehicleControlMode>("~/control_mode_in", rclcpp::SystemDefaultsQoS(),
+                                                                                          std::bind(&ControlInterface::controlModeCallback, this, _1));
+  land_detected_subscriber_  = this->create_subscription<px4_msgs::msg::VehicleLandDetected>("~/land_detected_in", rclcpp::SystemDefaultsQoS(),
+                                                                                            std::bind(&ControlInterface::landDetectedCallback, this, _1));
+  mission_result_subscriber_ = this->create_subscription<px4_msgs::msg::MissionResult>("~/mission_result_in", rclcpp::SystemDefaultsQoS(),
+                                                                                       std::bind(&ControlInterface::missionResultCallback, this, _1));
 
   // service handlers
   arming_service_         = this->create_service<std_srvs::srv::SetBool>("~/arming_in", std::bind(&ControlInterface::armingCallback, this, _1, _2));
-  takeoff_service_        = this->create_service<std_srvs::srv::SetBool>("~/takeoff_in", std::bind(&ControlInterface::takeoffCallback, this, _1, _2));
-  land_service_           = this->create_service<std_srvs::srv::SetBool>("~/land_in", std::bind(&ControlInterface::landCallback, this, _1, _2));
-  local_setpoint_service_ = this->create_service<fog_msgs::srv::Vec4>("~/local_setpoint_in", std::bind(&ControlInterface::localSetpointCallback, this, _1, _2));
-  set_waypoints_service_  = this->create_service<fog_msgs::srv::Path>("~/waypoints_in", std::bind(&ControlInterface::setWaypointsCallback, this, _1, _2));
+  takeoff_service_        = this->create_service<std_srvs::srv::Trigger>("~/takeoff_in", std::bind(&ControlInterface::takeoffCallback, this, _1, _2));
+  land_service_           = this->create_service<std_srvs::srv::Trigger>("~/land_in", std::bind(&ControlInterface::landCallback, this, _1, _2));
+  local_waypoint_service_ = this->create_service<fog_msgs::srv::Vec4>("~/local_waypoint_in", std::bind(&ControlInterface::localWaypointCallback, this, _1, _2));
+  local_path_service_     = this->create_service<fog_msgs::srv::Path>("~/local_path_in", std::bind(&ControlInterface::localPathCallback, this, _1, _2));
+  gps_waypoint_service_   = this->create_service<fog_msgs::srv::Vec4>("~/gps_waypoint_in", std::bind(&ControlInterface::gpsWaypointCallback, this, _1, _2));
+  gps_path_service_       = this->create_service<fog_msgs::srv::Path>("~/gps_path_in", std::bind(&ControlInterface::gpsPathCallback, this, _1, _2));
+  waypoint_to_local_service_ =
+      this->create_service<fog_msgs::srv::WaypointToLocal>("~/waypoint_to_local_in", std::bind(&ControlInterface::waypointToLocalCallback, this, _1, _2));
+  path_to_local_service_ =
+      this->create_service<fog_msgs::srv::PathToLocal>("~/path_to_local_in", std::bind(&ControlInterface::pathToLocalCallback, this, _1, _2));
 
   control_timer_ =
       this->create_wall_timer(std::chrono::duration<double>(1.0 / control_loop_rate_), std::bind(&ControlInterface::controlRoutine, this), callback_group_);
@@ -304,13 +337,13 @@ void ControlInterface::pixhawkOdomCallback(const px4_msgs::msg::VehicleOdometry:
     return;
   }
 
-  pos_.x() = msg->x;
-  pos_.y() = msg->y;
-  pos_.z() = msg->z;
-  ori_[0]  = msg->q[0];
-  ori_[1]  = msg->q[1];
-  ori_[2]  = msg->q[2];
-  ori_[3]  = msg->q[3];
+  pos_[0] = msg->x;
+  pos_[1] = msg->y;
+  pos_[2] = msg->z;
+  ori_[0] = msg->q[0];
+  ori_[1] = msg->q[1];
+  ori_[2] = msg->q[2];
+  ori_[3] = msg->q[3];
 
   publishTF();
   publishLocalOdom();
@@ -374,8 +407,8 @@ void ControlInterface::missionResultCallback(const px4_msgs::msg::MissionResult:
 //}
 
 /* takeoffCallback //{ */
-bool ControlInterface::takeoffCallback([[maybe_unused]] const std::shared_ptr<std_srvs::srv::SetBool::Request> request,
-                                       std::shared_ptr<std_srvs::srv::SetBool::Response>                       response) {
+bool ControlInterface::takeoffCallback([[maybe_unused]] const std::shared_ptr<std_srvs::srv::Trigger::Request> request,
+                                       std::shared_ptr<std_srvs::srv::Trigger::Response>                       response) {
 
   if (!is_initialized_) {
     response->success = false;
@@ -419,8 +452,8 @@ bool ControlInterface::takeoffCallback([[maybe_unused]] const std::shared_ptr<st
 //}
 
 /* landCallback //{ */
-bool ControlInterface::landCallback([[maybe_unused]] const std::shared_ptr<std_srvs::srv::SetBool::Request> request,
-                                    std::shared_ptr<std_srvs::srv::SetBool::Response>                       response) {
+bool ControlInterface::landCallback([[maybe_unused]] const std::shared_ptr<std_srvs::srv::Trigger::Request> request,
+                                    std::shared_ptr<std_srvs::srv::Trigger::Response>                       response) {
 
   if (!is_initialized_) {
     response->success = false;
@@ -512,52 +545,55 @@ bool ControlInterface::armingCallback([[maybe_unused]] const std::shared_ptr<std
 }
 //}
 
-/* localSetpointCallback //{ */
-bool ControlInterface::localSetpointCallback(const std::shared_ptr<fog_msgs::srv::Vec4::Request> request,
+/* localWaypointCallback //{ */
+bool ControlInterface::localWaypointCallback(const std::shared_ptr<fog_msgs::srv::Vec4::Request> request,
                                              std::shared_ptr<fog_msgs::srv::Vec4::Response>      response) {
 
   if (!is_initialized_) {
     response->success = false;
-    response->message = "Setpoint not set, not initialized";
+    response->message = "Waypoint not set, not initialized";
     RCLCPP_ERROR(this->get_logger(), "[%s]: %s", this->get_name(), response->message.c_str());
     return true;
   }
 
   if (!gettingPixhawkSensors()) {
     response->success = false;
-    response->message = "Setpoint not set, missing Pixhawk sensors";
+    response->message = "Waypoint not set, missing Pixhawk sensors";
     RCLCPP_ERROR(this->get_logger(), "[%s]: %s", this->get_name(), response->message.c_str());
     return true;
   }
 
   if (landed_) {
     response->success = false;
-    response->message = "Setpoint not set, vehicle not airborne";
+    response->message = "Waypoint not set, vehicle not airborne";
     RCLCPP_ERROR(this->get_logger(), "[%s]: %s", this->get_name(), response->message.c_str());
     return true;
   }
 
   if (!stopPreviousMission()) {
     response->success = false;
-    response->message = "Setpoint not set, previous mission cannot be aborted";
+    response->message = "Waypoint not set, previous mission cannot be aborted";
     RCLCPP_ERROR(this->get_logger(), "[%s]: %s", this->get_name(), response->message.c_str());
     return true;
   }
 
-  response->message = "Setpoint set";
+  response->message = "Waypoint set";
   response->success = true;
   RCLCPP_INFO(this->get_logger(), "[%s]: %s", this->get_name(), response->message.c_str());
 
-  Eigen::Vector3d goal(request->goal[0], request->goal[1], request->goal[2]);
-  waypoint_buffer_.push_back(goal);
+  waypoint_t w;
+  w.x    = request->goal[0];
+  w.y    = request->goal[1];
+  w.z    = request->goal[2];
+  w.type = waypoint_type_t::LOCAL;
+  waypoint_buffer_.push_back(w);
   motion_started_ = true;
   return true;
 }
 //}
 
-/* setWaypointsCallback //{ */
-bool ControlInterface::setWaypointsCallback(const std::shared_ptr<fog_msgs::srv::Path::Request> request,
-                                            std::shared_ptr<fog_msgs::srv::Path::Response>      response) {
+/* localPathCallback //{ */
+bool ControlInterface::localPathCallback(const std::shared_ptr<fog_msgs::srv::Path::Request> request, std::shared_ptr<fog_msgs::srv::Path::Response> response) {
 
   if (!is_initialized_) {
     response->success = false;
@@ -589,15 +625,215 @@ bool ControlInterface::setWaypointsCallback(const std::shared_ptr<fog_msgs::srv:
 
   RCLCPP_INFO(this->get_logger(), "[%s]: Got %d waypoints", this->get_name(), request->path.poses.size());
   for (size_t i = 0; i < request->path.poses.size(); i++) {
-    Eigen::Vector3d wp;
-    wp.x() = request->path.poses[i].pose.position.x;
-    wp.y() = request->path.poses[i].pose.position.y;
-    wp.z() = request->path.poses[i].pose.position.z;
-    waypoint_buffer_.push_back(wp);
+    waypoint_t w;
+    w.x    = request->path.poses[i].pose.position.x;
+    w.y    = request->path.poses[i].pose.position.y;
+    w.z    = request->path.poses[i].pose.position.z;
+    w.type = waypoint_type_t::LOCAL;
+    waypoint_buffer_.push_back(w);
   }
   motion_started_   = true;
   response->success = true;
   response->message = "Waypoints set";
+  return true;
+}
+//}
+
+/* gpsWaypointCallback //{ */
+bool ControlInterface::gpsWaypointCallback(const std::shared_ptr<fog_msgs::srv::Vec4::Request> request,
+                                           std::shared_ptr<fog_msgs::srv::Vec4::Response>      response) {
+
+  if (!is_initialized_) {
+    response->success = false;
+    response->message = "Waypoint not set, not initialized";
+    RCLCPP_ERROR(this->get_logger(), "[%s]: %s", this->get_name(), response->message.c_str());
+    return true;
+  }
+
+  if (!gettingPixhawkSensors()) {
+    response->success = false;
+    response->message = "Waypoint not set, missing Pixhawk sensors";
+    RCLCPP_ERROR(this->get_logger(), "[%s]: %s", this->get_name(), response->message.c_str());
+    return true;
+  }
+
+  if (landed_) {
+    response->success = false;
+    response->message = "Waypoint not set, vehicle not airborne";
+    RCLCPP_ERROR(this->get_logger(), "[%s]: %s", this->get_name(), response->message.c_str());
+    return true;
+  }
+
+  if (!stopPreviousMission()) {
+    response->success = false;
+    response->message = "Waypoint not set, previous mission cannot be aborted";
+    RCLCPP_ERROR(this->get_logger(), "[%s]: %s", this->get_name(), response->message.c_str());
+    return true;
+  }
+
+  response->message = "Waypoint set";
+  response->success = true;
+  RCLCPP_INFO(this->get_logger(), "[%s]: %s", this->get_name(), response->message.c_str());
+
+  waypoint_t w;
+  w.x    = request->goal[0];
+  w.y    = request->goal[1];
+  w.z    = request->goal[2];
+  w.type = waypoint_type_t::GPS;
+  waypoint_buffer_.push_back(w);
+  motion_started_ = true;
+  return true;
+}
+//}
+
+/* gpsPathCallback //{ */
+bool ControlInterface::gpsPathCallback(const std::shared_ptr<fog_msgs::srv::Path::Request> request, std::shared_ptr<fog_msgs::srv::Path::Response> response) {
+
+  if (!is_initialized_) {
+    response->success = false;
+    response->message = "Waypoints not set, not initialized";
+    RCLCPP_ERROR(this->get_logger(), "[%s]: %s", this->get_name(), response->message.c_str());
+    return true;
+  }
+
+  if (!gettingPixhawkSensors()) {
+    response->success = false;
+    response->message = "Waypoints not set, missing Pixhawk sensors";
+    RCLCPP_ERROR(this->get_logger(), "[%s]: %s", this->get_name(), response->message.c_str());
+    return true;
+  }
+
+  if (request->path.poses.size() < 1) {
+    response->success = false;
+    response->message = "Waypoints not set, request is empty";
+    RCLCPP_ERROR(this->get_logger(), "[%s]: %s", this->get_name(), response->message.c_str());
+    return true;
+  }
+
+  if (!stopPreviousMission()) {
+    response->success = false;
+    response->message = "Waypoints not set, previous mission cannot be aborted";
+    RCLCPP_ERROR(this->get_logger(), "[%s]: %s", this->get_name(), response->message.c_str());
+    return true;
+  }
+
+  RCLCPP_INFO(this->get_logger(), "[%s]: Got %d waypoints", this->get_name(), request->path.poses.size());
+  for (size_t i = 0; i < request->path.poses.size(); i++) {
+    waypoint_t w;
+    w.x    = request->path.poses[i].pose.position.x;
+    w.y    = request->path.poses[i].pose.position.y;
+    w.z    = request->path.poses[i].pose.position.z;
+    w.type = waypoint_type_t::GPS;
+    waypoint_buffer_.push_back(w);
+  }
+  motion_started_   = true;
+  response->success = true;
+  response->message = "Waypoints set";
+  return true;
+}
+//}
+
+/* waypointToLocalCallback (gps -> local frame) //{ */
+bool ControlInterface::waypointToLocalCallback(const std::shared_ptr<fog_msgs::srv::WaypointToLocal::Request> request,
+                                               std::shared_ptr<fog_msgs::srv::WaypointToLocal::Response>      response) {
+
+  if (!is_initialized_) {
+    response->success = false;
+    response->message = "Cannot transform coordinates, not initialized";
+    RCLCPP_ERROR(this->get_logger(), "[%s]: %s", this->get_name(), response->message.c_str());
+    return true;
+  }
+
+  if (!gettingPixhawkSensors()) {
+    response->success = false;
+    response->message = "Cannot transform coordinates, missing Pixhawk sensors";
+    RCLCPP_ERROR(this->get_logger(), "[%s]: %s", this->get_name(), response->message.c_str());
+    return true;
+  }
+
+  mavsdk::geometry::CoordinateTransformation::GlobalCoordinate global;
+  global.latitude_deg  = request->latitude_deg;
+  global.longitude_deg = request->longitude_deg;
+  auto local           = coord_transform_->local_from_global(global);
+  response->local_x    = local.east_m;
+  response->local_y    = local.north_m;
+  response->local_z    = request->relative_altitude_m;
+
+  std::stringstream ss;
+  ss << "Transformed GPS [" << request->latitude_deg << ", " << request->longitude_deg << "] into local: [" << response->local_x << ", " << response->local_y
+     << "]";
+  response->message = ss.str();
+  response->success = true;
+  RCLCPP_INFO(this->get_logger(), "[%s]: %s", this->get_name(), response->message.c_str());
+  return true;
+}
+//}
+
+/* pathToLocalCallback (gps -> local frame) //{ */
+bool ControlInterface::pathToLocalCallback(const std::shared_ptr<fog_msgs::srv::PathToLocal::Request> request,
+                                           std::shared_ptr<fog_msgs::srv::PathToLocal::Response>      response) {
+
+  if (!is_initialized_) {
+    response->success = false;
+    response->message = "Cannot transform coordinates, not initialized";
+    RCLCPP_ERROR(this->get_logger(), "[%s]: %s", this->get_name(), response->message.c_str());
+    return true;
+  }
+
+  if (!gettingPixhawkSensors()) {
+    response->success = false;
+    response->message = "Cannot transform coordinates, missing Pixhawk sensors";
+    RCLCPP_ERROR(this->get_logger(), "[%s]: %s", this->get_name(), response->message.c_str());
+    return true;
+  }
+
+  nav_msgs::msg::Path local_path;
+
+  for (auto &pose : request->path.poses) {
+    geometry_msgs::msg::Point p_in = pose.pose.position;
+
+    mavsdk::geometry::CoordinateTransformation::GlobalCoordinate global;
+    global.latitude_deg  = p_in.x;
+    global.longitude_deg = p_in.y;
+
+    mavsdk::geometry::CoordinateTransformation::LocalCoordinate local;
+    try {
+      local = coord_transform_->local_from_global(global);
+    }
+    catch (...) {
+      std::stringstream ss;
+      ss << "Error transforming GPS [" << global.latitude_deg << ", " << global.longitude_deg << "] into local frame";
+      response->message = ss.str();
+      response->success = false;
+
+      RCLCPP_ERROR(this->get_logger(), "[%s]: %s", this->get_name(), response->message.c_str());
+      return true;
+    }
+    geometry_msgs::msg::Point p_out;
+
+    p_out.x = local.east_m;
+    p_out.y = local.north_m;
+    p_out.z = p_in.z;
+
+    std::stringstream ss;
+    ss << "Transformed GPS [" << global.latitude_deg << ", " << global.longitude_deg << "] into local: [" << p_out.x << ", " << p_out.y << "]";
+    response->message = ss.str();
+    response->success = true;
+    RCLCPP_INFO(this->get_logger(), "[%s]: %s", this->get_name(), response->message.c_str());
+
+    geometry_msgs::msg::PoseStamped p_stamped;
+    p_stamped.pose.position = p_out;
+    local_path.poses.push_back(p_stamped);
+    local_path.header.frame_id = "local";
+    local_path.header.stamp    = this->get_clock()->now();
+  }
+  std::stringstream ss;
+  ss << "Transformed " << request->path.poses.size() << " GPS poses into " << response->path.poses.size() << " local poses";
+  response->path    = local_path;
+  response->success = true;
+  response->message = ss.str();
+  RCLCPP_INFO(this->get_logger(), "[%s]: %s", this->get_name(), response->message.c_str());
+
   return true;
 }
 //}
@@ -631,7 +867,7 @@ void ControlInterface::controlRoutine(void) {
           RCLCPP_INFO(this->get_logger(), "[%s]: Waypoints to be visited: %ld", this->get_name(), waypoint_buffer_.size());
           mission_->pause_mission();
           mission_plan_.mission_items.clear();
-          addLocalToMission(*waypoint_buffer_.begin());
+          addToMission(*waypoint_buffer_.begin());
           waypoint_buffer_.erase(waypoint_buffer_.begin());
           start_mission_ = true;
         }
@@ -702,7 +938,11 @@ bool ControlInterface::takeoff() {
     RCLCPP_ERROR(this->get_logger(), "[%s]: Takeoff failed", this->get_name());
     return false;
   }
-  Eigen::Vector3d current_goal(pos_.x(), pos_.y(), takeoff_height_);
+  waypoint_t current_goal;
+  current_goal.x    = pos_[0];
+  current_goal.y    = pos_[1];
+  current_goal.z    = takeoff_height_;
+  current_goal.type = waypoint_type_t::LOCAL;
   waypoint_buffer_.push_back(current_goal);
   motion_started_ = true;
   RCLCPP_INFO(this->get_logger(), "[%s]: Taking off", this->get_name());
@@ -771,45 +1011,45 @@ bool ControlInterface::stopPreviousMission() {
 }
 //}
 
-/* addGlobalToMission //{ */
-void ControlInterface::addGlobalToMission(Eigen::Vector3d waypoint) {
-  mavsdk::Mission::MissionItem item;
-  item.latitude_deg            = waypoint[0];
-  item.longitude_deg           = waypoint[1];
-  item.relative_altitude_m     = waypoint[2];
-  item.speed_m_s               = NAN;  // NAN = use default values. This does NOT limit vehicle max speed
-  item.is_fly_through          = false;
-  item.gimbal_pitch_deg        = 0.0f;
-  item.gimbal_yaw_deg          = 0.0f;
-  item.camera_action           = mavsdk::Mission::MissionItem::CameraAction::None;
-  item.loiter_time_s           = waypoint_loiter_time_;
-  item.camera_photo_interval_s = 0.0f;
-  mission_plan_.mission_items.push_back(item);
-  RCLCPP_INFO(this->get_logger(), "[%s]: Waypoint (GPS) [%.2f,%.2f,%.2f] added into mission", this->get_name(), item.latitude_deg, item.longitude_deg,
-              item.relative_altitude_m);
-}
-//}
+/* addToMission //{ */
+void ControlInterface::addToMission(waypoint_t w) {
+  if (w.type == waypoint_type_t::GPS) {
+    mavsdk::Mission::MissionItem item;
+    item.latitude_deg            = w.x;
+    item.longitude_deg           = w.y;
+    item.relative_altitude_m     = w.z;
+    item.speed_m_s               = NAN;  // NAN = use default values. This does NOT limit vehicle max speed
+    item.is_fly_through          = false;
+    item.gimbal_pitch_deg        = 0.0f;
+    item.gimbal_yaw_deg          = 0.0f;
+    item.camera_action           = mavsdk::Mission::MissionItem::CameraAction::None;
+    item.loiter_time_s           = waypoint_loiter_time_;
+    item.camera_photo_interval_s = 0.0f;
+    mission_plan_.mission_items.push_back(item);
+    RCLCPP_INFO(this->get_logger(), "[%s]: Waypoint (GPS) [%.2f,%.2f,%.2f] added into mission", this->get_name(), item.latitude_deg, item.longitude_deg,
+                item.relative_altitude_m);
+    return;
+  }
+  if (w.type == waypoint_type_t::LOCAL) {
+    mavsdk::Mission::MissionItem                                item;
+    mavsdk::geometry::CoordinateTransformation::LocalCoordinate local;
+    local.north_m = w.y;
+    local.east_m  = w.x;
 
-/* addLocalToMission //{ */
-void ControlInterface::addLocalToMission(Eigen::Vector3d waypoint) {
-  mavsdk::Mission::MissionItem                                item;
-  mavsdk::geometry::CoordinateTransformation::LocalCoordinate local;
-  local.north_m = waypoint[1];
-  local.east_m  = waypoint[0];
-
-  auto global                  = coord_transform_->global_from_local(local);
-  item.latitude_deg            = global.latitude_deg;
-  item.longitude_deg           = global.longitude_deg;
-  item.relative_altitude_m     = waypoint[2];
-  item.speed_m_s               = NAN;  // NAN = use default values. This does NOT limit vehicle max speed
-  item.is_fly_through          = false;
-  item.gimbal_pitch_deg        = 0.0f;
-  item.gimbal_yaw_deg          = 0.0f;
-  item.camera_action           = mavsdk::Mission::MissionItem::CameraAction::None;
-  item.loiter_time_s           = waypoint_loiter_time_;
-  item.camera_photo_interval_s = 0.0f;
-  mission_plan_.mission_items.push_back(item);
-  RCLCPP_INFO(this->get_logger(), "[%s]: Waypoint (LOCAL) [%.2f,%.2f,%.2f] added into mission", this->get_name(), waypoint[0], waypoint[1], waypoint[2]);
+    auto global                  = coord_transform_->global_from_local(local);
+    item.latitude_deg            = global.latitude_deg;
+    item.longitude_deg           = global.longitude_deg;
+    item.relative_altitude_m     = w.z;
+    item.speed_m_s               = NAN;  // NAN = use default values. This does NOT limit vehicle max speed
+    item.is_fly_through          = false;
+    item.gimbal_pitch_deg        = 0.0f;
+    item.gimbal_yaw_deg          = 0.0f;
+    item.camera_action           = mavsdk::Mission::MissionItem::CameraAction::None;
+    item.loiter_time_s           = waypoint_loiter_time_;
+    item.camera_photo_interval_s = 0.0f;
+    mission_plan_.mission_items.push_back(item);
+    RCLCPP_INFO(this->get_logger(), "[%s]: Waypoint (LOCAL) [%.2f,%.2f,%.2f] added into mission", this->get_name(), w.x, w.y, w.z);
+  }
 }
 //}
 
@@ -854,9 +1094,9 @@ void ControlInterface::publishTF() {
   tf1.header.stamp            = this->get_clock()->now();
   tf1.header.frame_id         = ned_origin_frame_;
   tf1.child_frame_id          = ned_fcu_frame_;
-  tf1.transform.translation.x = pos_.x();
-  tf1.transform.translation.y = pos_.y();
-  tf1.transform.translation.z = pos_.z();
+  tf1.transform.translation.x = pos_[0];
+  tf1.transform.translation.y = pos_[1];
+  tf1.transform.translation.z = pos_[2];
   tf1.transform.rotation.w    = ori_[0];
   tf1.transform.rotation.x    = ori_[1];
   tf1.transform.rotation.y    = ori_[2];
@@ -898,12 +1138,12 @@ void ControlInterface::publishDebugMarkers() {
   points_marker.scale.x            = waypoint_marker_scale_;
   points_marker.scale.y            = waypoint_marker_scale_;
 
-  for (auto &wp : waypoint_buffer_) {
+  for (auto &w : waypoint_buffer_) {
     std_msgs::msg::ColorRGBA  color = generateColor(0, 1, 0, 1);
     geometry_msgs::msg::Point gp;
-    gp.x = wp.x();
-    gp.y = wp.y();
-    gp.z = wp.z();
+    gp.x = w.x;
+    gp.y = w.y;
+    gp.z = w.z;
     points_marker.points.push_back(gp);
     points_marker.colors.push_back(color);
   }
