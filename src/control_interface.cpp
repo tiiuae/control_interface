@@ -368,7 +368,8 @@ void ControlInterface::landDetectedCallback(const px4_msgs::msg::VehicleLandDete
     return;
   }
   getting_landed_info_ = true;
-  landed_              = msg->landed;
+  // checking only ground_contact flag instead of landed due to a problem in simulation
+  landed_              = msg->ground_contact;
 }
 //}
 
