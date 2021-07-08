@@ -919,8 +919,8 @@ bool ControlInterface::takeoff() {
     return false;
   }
   waypoint_t current_goal;
-  current_goal.x    = pos_[0];
-  current_goal.y    = pos_[1];
+  current_goal.x    = pos_[1];
+  current_goal.y    = pos_[0];
   current_goal.z    = takeoff_height_;
   current_goal.type = waypoint_type_t::LOCAL;
   waypoint_buffer_.push_back(current_goal);
