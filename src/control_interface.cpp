@@ -858,8 +858,12 @@ void ControlInterface::controlRoutine(void) {
           RCLCPP_INFO(this->get_logger(), "[%s]: Waypoints to be visited: %ld", this->get_name(), waypoint_buffer_.size());
           mission_->pause_mission();
           mission_plan_.mission_items.clear();
-          addToMission(*waypoint_buffer_.begin());
-          waypoint_buffer_.erase(waypoint_buffer_.begin());
+          for (auto &w : waypoint_buffer_) {
+            addToMission(w);
+          }
+          waypoint_buffer_.clear();
+          /* addToMission(*waypoint_buffer_.begin()); */
+          /* waypoint_buffer_.erase(waypoint_buffer_.begin()); */
           start_mission_ = true;
         }
 
