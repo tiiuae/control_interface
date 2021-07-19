@@ -105,6 +105,7 @@ private:
   double control_loop_rate_          = 20.0;
   double waypoint_loiter_time_       = 0.0;
   bool reset_octomap_before_takeoff_ = true;
+  double waypoint_acceptance_radius_ = 0.3;
 
   // publishers
   rclcpp::Publisher<px4_msgs::msg::VehicleCommand>::SharedPtr              vehicle_command_publisher_;
@@ -201,6 +202,7 @@ ControlInterface::ControlInterface(rclcpp::NodeOptions options) : Node("control_
   parse_param("waypoint_marker_scale", waypoint_marker_scale_);
   parse_param("waypoint_loiter_time", waypoint_loiter_time_);
   parse_param("reset_octomap_before_takeoff", reset_octomap_before_takeoff_);
+  parse_param("waypoint_acceptance_radius", waypoint_acceptance_radius_);
 
   /* frame definition */
   world_frame_      = "world";
@@ -1014,12 +1016,13 @@ void ControlInterface::addToMission(waypoint_t w) {
     item.longitude_deg           = w.y;
     item.relative_altitude_m     = w.z;
     item.speed_m_s               = NAN;  // NAN = use default values. This does NOT limit vehicle max speed
-    item.is_fly_through          = false;
+    item.is_fly_through          = true;
     item.gimbal_pitch_deg        = 0.0f;
     item.gimbal_yaw_deg          = 0.0f;
     item.camera_action           = mavsdk::Mission::MissionItem::CameraAction::None;
     item.loiter_time_s           = waypoint_loiter_time_;
     item.camera_photo_interval_s = 0.0f;
+    item.acceptance_radius_m     = waypoint_acceptance_radius_;
     mission_plan_.mission_items.push_back(item);
     RCLCPP_INFO(this->get_logger(), "[%s]: Waypoint (GPS) [%.2f,%.2f,%.2f] added into mission", this->get_name(), item.latitude_deg, item.longitude_deg,
                 item.relative_altitude_m);
@@ -1036,12 +1039,13 @@ void ControlInterface::addToMission(waypoint_t w) {
     item.longitude_deg           = global.longitude_deg;
     item.relative_altitude_m     = w.z;
     item.speed_m_s               = NAN;  // NAN = use default values. This does NOT limit vehicle max speed
-    item.is_fly_through          = false;
+    item.is_fly_through          = true;
     item.gimbal_pitch_deg        = 0.0f;
     item.gimbal_yaw_deg          = 0.0f;
     item.camera_action           = mavsdk::Mission::MissionItem::CameraAction::None;
     item.loiter_time_s           = waypoint_loiter_time_;
     item.camera_photo_interval_s = 0.0f;
+    item.acceptance_radius_m     = waypoint_acceptance_radius_;
     mission_plan_.mission_items.push_back(item);
     RCLCPP_INFO(this->get_logger(), "[%s]: Waypoint (LOCAL) [%.2f,%.2f,%.2f] added into mission", this->get_name(), w.x, w.y, w.z);
   }
