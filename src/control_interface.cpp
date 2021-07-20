@@ -20,6 +20,7 @@
 #include <std_msgs/msg/color_rgba.hpp>
 #include <std_srvs/srv/set_bool.hpp>
 #include <std_srvs/srv/trigger.hpp>
+#include <std_srvs/srv/empty.hpp>
 #include <tf2/LinearMath/Quaternion.h>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.h>  // This has to be here otherwise you will get cryptic linker error about missing function 'getTimestamp'
 #include <tf2_ros/static_transform_broadcaster.h>
@@ -99,10 +100,11 @@ private:
   std::shared_ptr<mavsdk::geometry::CoordinateTransformation> coord_transform_;
 
   // config params
-  double takeoff_height_        = 2.5;
-  double waypoint_marker_scale_ = 0.3;
-  double control_loop_rate_     = 20.0;
-  double waypoint_loiter_time_  = 0.0;
+  double takeoff_height_             = 2.5;
+  double waypoint_marker_scale_      = 0.3;
+  double control_loop_rate_          = 20.0;
+  double waypoint_loiter_time_       = 0.0;
+  bool reset_octomap_before_takeoff_ = true;
 
   // publishers
   rclcpp::Publisher<px4_msgs::msg::VehicleCommand>::SharedPtr              vehicle_command_publisher_;
@@ -134,6 +136,8 @@ private:
   rclcpp::Service<fog_msgs::srv::Path>::SharedPtr            gps_path_service_;
   rclcpp::Service<fog_msgs::srv::WaypointToLocal>::SharedPtr waypoint_to_local_service_;
   rclcpp::Service<fog_msgs::srv::PathToLocal>::SharedPtr     path_to_local_service_;
+
+  rclcpp::Client<std_srvs::srv::Empty>::SharedPtr octomap_reset_client_;
 
   // service callbacks
   bool armingCallback(const std::shared_ptr<std_srvs::srv::SetBool::Request> request, std::shared_ptr<std_srvs::srv::SetBool::Response> response);
@@ -196,6 +200,7 @@ ControlInterface::ControlInterface(rclcpp::NodeOptions options) : Node("control_
   parse_param("takeoff_height", takeoff_height_);
   parse_param("waypoint_marker_scale", waypoint_marker_scale_);
   parse_param("waypoint_loiter_time", waypoint_loiter_time_);
+  parse_param("reset_octomap_before_takeoff", reset_octomap_before_takeoff_);
 
   /* frame definition */
   world_frame_      = "world";
@@ -278,6 +283,8 @@ ControlInterface::ControlInterface(rclcpp::NodeOptions options) : Node("control_
 
   control_timer_ =
       this->create_wall_timer(std::chrono::duration<double>(1.0 / control_loop_rate_), std::bind(&ControlInterface::controlRoutine, this), callback_group_);
+
+  octomap_reset_client_ = this->create_client<std_srvs::srv::Empty>("~/octomap_reset_out");
 
   tf_broadcaster_        = nullptr;
   static_tf_broadcaster_ = nullptr;
@@ -913,6 +920,13 @@ bool ControlInterface::takeoff() {
     RCLCPP_ERROR(this->get_logger(), "[%s]: Failed to set takeoff height %.2f", this->get_name(), takeoff_height_);
     return false;
   }
+
+  if (reset_octomap_before_takeoff_) {
+    auto reset_srv = std::make_shared<std_srvs::srv::Empty::Request>();
+    auto call_result = octomap_reset_client_->async_send_request(reset_srv);
+    RCLCPP_INFO(this->get_logger(), "[%s]: Reseting octomap", this->get_name());
+  }
+
   action_->takeoff();
   if (result != mavsdk::Action::Result::Success) {
     RCLCPP_ERROR(this->get_logger(), "[%s]: Takeoff failed", this->get_name());
@@ -1183,6 +1197,7 @@ template bool ControlInterface::parse_param<double>(std::string param_name, doub
 template bool ControlInterface::parse_param<float>(std::string param_name, float &param_dest);
 template bool ControlInterface::parse_param<std::string>(std::string param_name, std::string &param_dest);
 template bool ControlInterface::parse_param<unsigned int>(std::string param_name, unsigned int &param_dest);
+template bool ControlInterface::parse_param<bool>(std::string param_name, bool &param_dest);
 //}
 
 }  // namespace control_interface
