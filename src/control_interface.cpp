@@ -924,7 +924,7 @@ bool ControlInterface::takeoff() {
   if (reset_octomap_before_takeoff_) {
     auto reset_srv = std::make_shared<std_srvs::srv::Empty::Request>();
     auto call_result = octomap_reset_client_->async_send_request(reset_srv);
-    RCLCPP_INFO(this->get_logger(), "[%s]: Reseting octomap", this->get_name());
+    RCLCPP_INFO(this->get_logger(), "[%s]: Resetting octomap server", this->get_name());
   }
 
   action_->takeoff();
