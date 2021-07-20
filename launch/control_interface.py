@@ -44,6 +44,8 @@ def generate_launch_description():
                     ("~/diagnostics_out", "~/diagnostics"),
                     ("~/debug_markers_out", "~/debug/waypoint_markers"),
 
+                    ("~/octomap_reset_out", "/" + DRONE_DEVICE_ID + "/octomap_server/reset"),
+
                     ("~/gps_in", "/" + DRONE_DEVICE_ID + "/VehicleGlobalPosition_PubSubTopic"),
                     ("~/pixhawk_odom_in", "/" + DRONE_DEVICE_ID + "/VehicleOdometry_PubSubTopic"),
                     ("~/control_mode_in", "/" + DRONE_DEVICE_ID + "/VehicleControlMode_PubSubTopic"),
