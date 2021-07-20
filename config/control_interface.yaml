@@ -5,4 +5,5 @@ param_namespace:
   reset_octomap_before_takeoff: true
   waypoint_marker_scale: 0.3
   waypoint_loiter_time: 0.0 # [s]
-  waypoint_acceptance_radius: 0.3 # [m]
+  waypoint_acceptance_radius: 0.2 # [m]
+  target_velocity: 0.7 # [m/s]

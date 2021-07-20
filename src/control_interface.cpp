@@ -106,6 +106,7 @@ private:
   double waypoint_loiter_time_       = 0.0;
   bool reset_octomap_before_takeoff_ = true;
   double waypoint_acceptance_radius_ = 0.3;
+  double target_velocity_            = 1.0;
 
   // publishers
   rclcpp::Publisher<px4_msgs::msg::VehicleCommand>::SharedPtr              vehicle_command_publisher_;
@@ -203,6 +204,7 @@ ControlInterface::ControlInterface(rclcpp::NodeOptions options) : Node("control_
   parse_param("waypoint_loiter_time", waypoint_loiter_time_);
   parse_param("reset_octomap_before_takeoff", reset_octomap_before_takeoff_);
   parse_param("waypoint_acceptance_radius", waypoint_acceptance_radius_);
+  parse_param("target_velocity", target_velocity_);
 
   /* frame definition */
   world_frame_      = "world";
@@ -1019,7 +1021,7 @@ void ControlInterface::addToMission(waypoint_t w) {
     item.latitude_deg            = w.x;
     item.longitude_deg           = w.y;
     item.relative_altitude_m     = w.z;
-    item.speed_m_s               = NAN;  // NAN = use default values. This does NOT limit vehicle max speed
+    item.speed_m_s               = target_velocity_;  // NAN = use default values. This does NOT limit vehicle max speed
     item.is_fly_through          = true;
     item.gimbal_pitch_deg        = 0.0f;
     item.gimbal_yaw_deg          = 0.0f;
@@ -1042,7 +1044,7 @@ void ControlInterface::addToMission(waypoint_t w) {
     item.latitude_deg            = global.latitude_deg;
     item.longitude_deg           = global.longitude_deg;
     item.relative_altitude_m     = w.z;
-    item.speed_m_s               = NAN;  // NAN = use default values. This does NOT limit vehicle max speed
+    item.speed_m_s               = target_velocity_;  // NAN = use default values. This does NOT limit vehicle max speed
     item.is_fly_through          = true;
     item.gimbal_pitch_deg        = 0.0f;
     item.gimbal_yaw_deg          = 0.0f;
