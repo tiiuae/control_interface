@@ -46,6 +46,7 @@ struct waypoint_t
   double          x;
   double          y;
   double          z;
+  double          heading;
 };
 
 /* class ControlInterface //{ */
@@ -575,10 +576,11 @@ bool ControlInterface::localWaypointCallback(const std::shared_ptr<fog_msgs::srv
   RCLCPP_INFO(this->get_logger(), "[%s]: %s", this->get_name(), response->message.c_str());
 
   waypoint_t w;
-  w.x    = request->goal[0];
-  w.y    = request->goal[1];
-  w.z    = request->goal[2];
-  w.type = waypoint_type_t::LOCAL;
+  w.x       = request->goal[0];
+  w.y       = request->goal[1];
+  w.z       = request->goal[2];
+  w.heading = request->goal[3];
+  w.type    = waypoint_type_t::LOCAL;
   waypoint_buffer_.push_back(w);
   motion_started_ = true;
   return true;
@@ -669,10 +671,11 @@ bool ControlInterface::gpsWaypointCallback(const std::shared_ptr<fog_msgs::srv::
   RCLCPP_INFO(this->get_logger(), "[%s]: %s", this->get_name(), response->message.c_str());
 
   waypoint_t w;
-  w.x    = request->goal[0];
-  w.y    = request->goal[1];
-  w.z    = request->goal[2];
-  w.type = waypoint_type_t::GPS;
+  w.x       = request->goal[0];
+  w.y       = request->goal[1];
+  w.z       = request->goal[2];
+  w.heading = request->goal[3];
+  w.type    = waypoint_type_t::GPS;
   waypoint_buffer_.push_back(w);
   motion_started_ = true;
   return true;
@@ -1021,6 +1024,7 @@ void ControlInterface::addToMission(waypoint_t w) {
     item.latitude_deg            = w.x;
     item.longitude_deg           = w.y;
     item.relative_altitude_m     = w.z;
+    item.yaw_deg                 = w.heading;
     item.speed_m_s               = target_velocity_;  // NAN = use default values. This does NOT limit vehicle max speed
     item.is_fly_through          = true;
     item.gimbal_pitch_deg        = 0.0f;
@@ -1030,8 +1034,8 @@ void ControlInterface::addToMission(waypoint_t w) {
     item.camera_photo_interval_s = 0.0f;
     item.acceptance_radius_m     = waypoint_acceptance_radius_;
     mission_plan_.mission_items.push_back(item);
-    RCLCPP_INFO(this->get_logger(), "[%s]: Waypoint (GPS) [%.2f,%.2f,%.2f] added into mission", this->get_name(), item.latitude_deg, item.longitude_deg,
-                item.relative_altitude_m);
+    RCLCPP_INFO(this->get_logger(), "[%s]: Waypoint (GPS) [%.2f,%.2f,%.2f,%.2f] added into mission", this->get_name(), item.latitude_deg, item.longitude_deg,
+                item.relative_altitude_m, item.yaw_deg);
     return;
   }
   if (w.type == waypoint_type_t::LOCAL) {
@@ -1044,6 +1048,7 @@ void ControlInterface::addToMission(waypoint_t w) {
     item.latitude_deg            = global.latitude_deg;
     item.longitude_deg           = global.longitude_deg;
     item.relative_altitude_m     = w.z;
+    item.yaw_deg                 = w.heading;
     item.speed_m_s               = target_velocity_;  // NAN = use default values. This does NOT limit vehicle max speed
     item.is_fly_through          = true;
     item.gimbal_pitch_deg        = 0.0f;
@@ -1053,7 +1058,7 @@ void ControlInterface::addToMission(waypoint_t w) {
     item.camera_photo_interval_s = 0.0f;
     item.acceptance_radius_m     = waypoint_acceptance_radius_;
     mission_plan_.mission_items.push_back(item);
-    RCLCPP_INFO(this->get_logger(), "[%s]: Waypoint (LOCAL) [%.2f,%.2f,%.2f] added into mission", this->get_name(), w.x, w.y, w.z);
+    RCLCPP_INFO(this->get_logger(), "[%s]: Waypoint (LOCAL) [%.2f,%.2f,%.2f,%.2f] added into mission", this->get_name(), w.x, w.y, w.z, w.heading);
   }
 }
 //}
@@ -1149,6 +1154,7 @@ void ControlInterface::publishDebugMarkers() {
     gp.x = w.x;
     gp.y = w.y;
     gp.z = w.z;
+    // TODO visualize heading
     points_marker.points.push_back(gp);
     points_marker.colors.push_back(color);
   }

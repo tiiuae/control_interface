@@ -23,7 +23,7 @@ find_package(geometry_msgs REQUIRED)
 find_package(visualization_msgs REQUIRED)
 find_package(tf2 REQUIRED)
 find_package(tf2_ros REQUIRED)
-find_package(MAVSDK REQUIRED)
+find_package(MAVSDK 0.41.0 EXACT REQUIRED)
 find_package(Threads REQUIRED)
 
 ## --------------------------------------------------------------
