@@ -1,9 +1,11 @@
+#include <eigen3/Eigen/Dense>
 #include <fog_msgs/srv/waypoint_to_local.hpp>
 #include <fog_msgs/srv/path_to_local.hpp>
 #include <fog_msgs/srv/path.hpp>
 #include <fog_msgs/srv/vec4.hpp>
 #include <fog_msgs/msg/control_interface_diagnostics.hpp>
 #include <geometry_msgs/msg/transform_stamped.hpp>
+#include <geometry_msgs/msg/pose_array.hpp>
 #include <mavsdk/geometry.h>
 #include <mavsdk/mavsdk.h>
 #include <mavsdk/plugins/action/action.h>
@@ -46,8 +48,16 @@ struct waypoint_t
   double          x;
   double          y;
   double          z;
-  double          heading;
+  double          yaw;
 };
+
+double radToDeg(const double &angle_rad) {
+  return angle_rad * 180.0 / M_PI;
+}
+
+double degToRad(const double &angle_deg) {
+  return angle_deg * M_PI / 180.0;
+}
 
 /* class ControlInterface //{ */
 class ControlInterface : public rclcpp::Node {
@@ -101,6 +111,7 @@ private:
   std::shared_ptr<mavsdk::geometry::CoordinateTransformation> coord_transform_;
 
   // config params
+  double yaw_offset_correction_      = M_PI / 2;
   double takeoff_height_             = 2.5;
   double waypoint_marker_scale_      = 0.3;
   double control_loop_rate_          = 20.0;
@@ -110,9 +121,10 @@ private:
   double target_velocity_            = 1.0;
 
   // publishers
-  rclcpp::Publisher<px4_msgs::msg::VehicleCommand>::SharedPtr              vehicle_command_publisher_;
-  rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr                    local_odom_publisher_;
-  rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr       marker_publisher_;
+  rclcpp::Publisher<px4_msgs::msg::VehicleCommand>::SharedPtr vehicle_command_publisher_;
+  rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr       local_odom_publisher_;
+  /* rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr       marker_publisher_; */
+  rclcpp::Publisher<geometry_msgs::msg::PoseArray>::SharedPtr              waypoint_marker_publisher_;
   rclcpp::Publisher<fog_msgs::msg::ControlInterfaceDiagnostics>::SharedPtr diagnostics_publisher_;
 
   // subscribers
@@ -155,6 +167,9 @@ private:
   bool pathToLocalCallback(const std::shared_ptr<fog_msgs::srv::PathToLocal::Request> request, std::shared_ptr<fog_msgs::srv::PathToLocal::Response> response);
 
   // internal functions
+  double getYaw(const Eigen::Quaterniond &q);
+  double getYaw(const geometry_msgs::msg::Quaternion &q);
+
   bool gettingPixhawkSensors();
   void printSensorsStatus();
   void publishDiagnostics();
@@ -200,6 +215,7 @@ ControlInterface::ControlInterface(rclcpp::NodeOptions options) : Node("control_
 
   /* parse params from config file //{ */
   parse_param("device_url", device_url_);
+  parse_param("yaw_offset_correction", yaw_offset_correction_);
   parse_param("takeoff_height", takeoff_height_);
   parse_param("waypoint_marker_scale", waypoint_marker_scale_);
   parse_param("waypoint_loiter_time", waypoint_loiter_time_);
@@ -238,8 +254,8 @@ ControlInterface::ControlInterface(rclcpp::NodeOptions options) : Node("control_
       rclcpp::sleep_for(std::chrono::seconds(1));
     }
     for (unsigned i = 0; i < mavsdk_.systems().size(); i++) {
-      RCLCPP_INFO(this->get_logger(), "[%s]: ID: %u", this->get_name(), i);
       if (mavsdk_.systems().at(i)->get_system_id() == 1) {
+        RCLCPP_INFO(this->get_logger(), "[%s]: ID: %u", this->get_name(), mavsdk_.systems().at(i)->get_system_id());
         connected = true;
         system_   = mavsdk_.systems().at(i);
         break;
@@ -258,7 +274,8 @@ ControlInterface::ControlInterface(rclcpp::NodeOptions options) : Node("control_
   // publishers
   vehicle_command_publisher_ = this->create_publisher<px4_msgs::msg::VehicleCommand>("~/vehicle_command_out", 10);
   local_odom_publisher_      = this->create_publisher<nav_msgs::msg::Odometry>("~/local_odom_out", 10);
-  marker_publisher_          = this->create_publisher<visualization_msgs::msg::MarkerArray>("~/debug_markers_out", 10);
+  /* marker_publisher_          = this->create_publisher<visualization_msgs::msg::MarkerArray>("~/debug_markers_out", 10); */
+  waypoint_marker_publisher_ = this->create_publisher<geometry_msgs::msg::PoseArray>("~/waypoint_markers_out", 10);
   diagnostics_publisher_     = this->create_publisher<fog_msgs::msg::ControlInterfaceDiagnostics>("~/diagnostics_out", 10);
 
   // subscribers
@@ -576,11 +593,11 @@ bool ControlInterface::localWaypointCallback(const std::shared_ptr<fog_msgs::srv
   RCLCPP_INFO(this->get_logger(), "[%s]: %s", this->get_name(), response->message.c_str());
 
   waypoint_t w;
-  w.x       = request->goal[0];
-  w.y       = request->goal[1];
-  w.z       = request->goal[2];
-  w.heading = request->goal[3];
-  w.type    = waypoint_type_t::LOCAL;
+  w.x    = request->goal[0];
+  w.y    = request->goal[1];
+  w.z    = request->goal[2];
+  w.yaw  = request->goal[3];
+  w.type = waypoint_type_t::LOCAL;
   waypoint_buffer_.push_back(w);
   motion_started_ = true;
   return true;
@@ -624,6 +641,7 @@ bool ControlInterface::localPathCallback(const std::shared_ptr<fog_msgs::srv::Pa
     w.x    = request->path.poses[i].pose.position.x;
     w.y    = request->path.poses[i].pose.position.y;
     w.z    = request->path.poses[i].pose.position.z;
+    w.yaw  = getYaw(request->path.poses[i].pose.orientation);
     w.type = waypoint_type_t::LOCAL;
     waypoint_buffer_.push_back(w);
   }
@@ -671,11 +689,11 @@ bool ControlInterface::gpsWaypointCallback(const std::shared_ptr<fog_msgs::srv::
   RCLCPP_INFO(this->get_logger(), "[%s]: %s", this->get_name(), response->message.c_str());
 
   waypoint_t w;
-  w.x       = request->goal[0];
-  w.y       = request->goal[1];
-  w.z       = request->goal[2];
-  w.heading = request->goal[3];
-  w.type    = waypoint_type_t::GPS;
+  w.x    = request->goal[0];
+  w.y    = request->goal[1];
+  w.z    = request->goal[2];
+  w.yaw  = request->goal[3];
+  w.type = waypoint_type_t::GPS;
   waypoint_buffer_.push_back(w);
   motion_started_ = true;
   return true;
@@ -719,6 +737,7 @@ bool ControlInterface::gpsPathCallback(const std::shared_ptr<fog_msgs::srv::Path
     w.x    = request->path.poses[i].pose.position.x;
     w.y    = request->path.poses[i].pose.position.y;
     w.z    = request->path.poses[i].pose.position.z;
+    w.yaw  = getYaw(request->path.poses[i].pose.orientation);
     w.type = waypoint_type_t::GPS;
     waypoint_buffer_.push_back(w);
   }
@@ -754,6 +773,7 @@ bool ControlInterface::waypointToLocalCallback(const std::shared_ptr<fog_msgs::s
   response->local_x    = local.east_m;
   response->local_y    = local.north_m;
   response->local_z    = request->relative_altitude_m;
+  response->yaw        = request->yaw;
 
   std::stringstream ss;
   ss << "Transformed GPS [" << request->latitude_deg << ", " << request->longitude_deg << "] into local: [" << response->local_x << ", " << response->local_y
@@ -818,7 +838,8 @@ bool ControlInterface::pathToLocalCallback(const std::shared_ptr<fog_msgs::srv::
     RCLCPP_INFO(this->get_logger(), "[%s]: %s", this->get_name(), response->message.c_str());
 
     geometry_msgs::msg::PoseStamped p_stamped;
-    p_stamped.pose.position = p_out;
+    p_stamped.pose.position    = p_out;
+    p_stamped.pose.orientation = pose.pose.orientation;
     local_path.poses.push_back(p_stamped);
     local_path.header.frame_id = "local";
     local_path.header.stamp    = this->get_clock()->now();
@@ -867,8 +888,6 @@ void ControlInterface::controlRoutine(void) {
             addToMission(w);
           }
           waypoint_buffer_.clear();
-          /* addToMission(*waypoint_buffer_.begin()); */
-          /* waypoint_buffer_.erase(waypoint_buffer_.begin()); */
           start_mission_ = true;
         }
 
@@ -948,6 +967,7 @@ bool ControlInterface::takeoff() {
   current_goal.x    = pos_[1];
   current_goal.y    = pos_[0];
   current_goal.z    = takeoff_height_;
+  current_goal.yaw  = 0.0;
   current_goal.type = waypoint_type_t::LOCAL;
   waypoint_buffer_.push_back(current_goal);
   motion_started_ = true;
@@ -1024,7 +1044,7 @@ void ControlInterface::addToMission(waypoint_t w) {
     item.latitude_deg            = w.x;
     item.longitude_deg           = w.y;
     item.relative_altitude_m     = w.z;
-    item.yaw_deg                 = w.heading;
+    item.yaw_deg                 = -radToDeg(w.yaw + yaw_offset_correction_);
     item.speed_m_s               = target_velocity_;  // NAN = use default values. This does NOT limit vehicle max speed
     item.is_fly_through          = true;
     item.gimbal_pitch_deg        = 0.0f;
@@ -1048,7 +1068,7 @@ void ControlInterface::addToMission(waypoint_t w) {
     item.latitude_deg            = global.latitude_deg;
     item.longitude_deg           = global.longitude_deg;
     item.relative_altitude_m     = w.z;
-    item.yaw_deg                 = w.heading;
+    item.yaw_deg                 = -radToDeg(w.yaw + yaw_offset_correction_);
     item.speed_m_s               = target_velocity_;  // NAN = use default values. This does NOT limit vehicle max speed
     item.is_fly_through          = true;
     item.gimbal_pitch_deg        = 0.0f;
@@ -1058,7 +1078,7 @@ void ControlInterface::addToMission(waypoint_t w) {
     item.camera_photo_interval_s = 0.0f;
     item.acceptance_radius_m     = waypoint_acceptance_radius_;
     mission_plan_.mission_items.push_back(item);
-    RCLCPP_INFO(this->get_logger(), "[%s]: Waypoint (LOCAL) [%.2f,%.2f,%.2f,%.2f] added into mission", this->get_name(), w.x, w.y, w.z, w.heading);
+    RCLCPP_INFO(this->get_logger(), "[%s]: Waypoint (LOCAL) [%.2f,%.2f,%.2f,%.2f] added into mission", this->get_name(), w.x, w.y, w.z, w.yaw);
   }
 }
 //}
@@ -1135,31 +1155,34 @@ void ControlInterface::publishLocalOdom() {
 
 /* publishDebugMarkers //{ */
 void ControlInterface::publishDebugMarkers() {
-  visualization_msgs::msg::MarkerArray msg;
 
-  visualization_msgs::msg::Marker points_marker;
-  points_marker.header.stamp       = this->get_clock()->now();
-  points_marker.header.frame_id    = world_frame_;
-  points_marker.ns                 = uav_name_ + "/debug/waypoints";
-  points_marker.type               = visualization_msgs::msg::Marker::POINTS;
-  points_marker.id                 = 8;
-  points_marker.action             = visualization_msgs::msg::Marker::ADD;
-  points_marker.pose.orientation.w = 1.0;
-  points_marker.scale.x            = waypoint_marker_scale_;
-  points_marker.scale.y            = waypoint_marker_scale_;
-
+  geometry_msgs::msg::PoseArray msg;
+  msg.header.stamp    = this->get_clock()->now();
+  msg.header.frame_id = world_frame_;
   for (auto &w : waypoint_buffer_) {
-    std_msgs::msg::ColorRGBA  color = generateColor(0, 1, 0, 1);
-    geometry_msgs::msg::Point gp;
-    gp.x = w.x;
-    gp.y = w.y;
-    gp.z = w.z;
-    // TODO visualize heading
-    points_marker.points.push_back(gp);
-    points_marker.colors.push_back(color);
+    geometry_msgs::msg::Pose p;
+    if (w.type == waypoint_type_t::LOCAL) {
+      p.position.x = w.x;
+      p.position.y = w.y;
+    }
+    if (w.type == waypoint_type_t::GPS) {
+      mavsdk::geometry::CoordinateTransformation::GlobalCoordinate global;
+      global.latitude_deg  = w.x;
+      global.longitude_deg = w.y;
+      auto local           = coord_transform_->local_from_global(global);
+      p.position.x         = local.east_m;
+      p.position.y         = local.north_m;
+    }
+    p.position.z = w.z;
+    Eigen::Quaterniond q =
+        Eigen::AngleAxisd(0, Eigen::Vector3d::UnitX()) * Eigen::AngleAxisd(0, Eigen::Vector3d::UnitY()) * Eigen::AngleAxisd(w.yaw, Eigen::Vector3d::UnitZ());
+    p.orientation.w = q.w();
+    p.orientation.x = q.x();
+    p.orientation.y = q.y();
+    p.orientation.z = q.z();
+    msg.poses.push_back(p);
   }
-  msg.markers.push_back(points_marker);
-  marker_publisher_->publish(msg);
+  waypoint_marker_publisher_->publish(msg);
 }
 //}
 
@@ -1190,6 +1213,20 @@ std_msgs::msg::ColorRGBA ControlInterface::generateColor(const double r, const d
   c.b = b;
   c.a = a;
   return c;
+}
+//}
+
+/* getYaw //{ */
+double ControlInterface::getYaw(const Eigen::Quaterniond &q) {
+  auto euler = q.toRotationMatrix().eulerAngles(0, 1, 2);
+  return euler[2];
+}
+
+double ControlInterface::getYaw(const geometry_msgs::msg::Quaternion &q) {
+  /* return atan2(2.0 * (q.z * q.w + q.x * q.y), -1.0 + 2.0 * (q.w * q.w + q.x * q.x)); */
+  Eigen::Quaterniond eq(q.w, q.x, q.y, q.z);
+  auto               euler = eq.toRotationMatrix().eulerAngles(0, 1, 2);
+  return euler[2];
 }
 //}
 
