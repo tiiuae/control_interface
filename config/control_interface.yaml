@@ -7,4 +7,5 @@ param_namespace:
   waypoint_marker_scale: 0.3
   waypoint_loiter_time: 0.0 # [s]
   waypoint_acceptance_radius: 0.2 # [m]
+  control_update_rate: 10.0 # [Hz]
   target_velocity: 1.5 # [m/s]

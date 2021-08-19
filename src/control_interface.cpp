@@ -114,16 +114,15 @@ private:
   double yaw_offset_correction_      = M_PI / 2;
   double takeoff_height_             = 2.5;
   double waypoint_marker_scale_      = 0.3;
-  double control_loop_rate_          = 20.0;
+  double control_update_rate_        = 10.0;
   double waypoint_loiter_time_       = 0.0;
   bool reset_octomap_before_takeoff_ = true;
   double waypoint_acceptance_radius_ = 0.3;
   double target_velocity_            = 1.0;
 
   // publishers
-  rclcpp::Publisher<px4_msgs::msg::VehicleCommand>::SharedPtr vehicle_command_publisher_;
-  rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr       local_odom_publisher_;
-  /* rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr       marker_publisher_; */
+  rclcpp::Publisher<px4_msgs::msg::VehicleCommand>::SharedPtr              vehicle_command_publisher_;
+  rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr                    local_odom_publisher_;
   rclcpp::Publisher<geometry_msgs::msg::PoseArray>::SharedPtr              waypoint_marker_publisher_;
   rclcpp::Publisher<fog_msgs::msg::ControlInterfaceDiagnostics>::SharedPtr diagnostics_publisher_;
 
@@ -222,6 +221,12 @@ ControlInterface::ControlInterface(rclcpp::NodeOptions options) : Node("control_
   parse_param("reset_octomap_before_takeoff", reset_octomap_before_takeoff_);
   parse_param("waypoint_acceptance_radius", waypoint_acceptance_radius_);
   parse_param("target_velocity", target_velocity_);
+  parse_param("control_update_rate", control_update_rate_);
+
+  if (control_update_rate_ < 5.0) {
+    control_update_rate_ = 5.0;
+    RCLCPP_WARN(this->get_logger(), "[%s]: Control update rate set too slow. Defaulting to 5 Hz", this->get_name());
+  }
 
   /* frame definition */
   world_frame_      = "world";
@@ -271,12 +276,12 @@ ControlInterface::ControlInterface(rclcpp::NodeOptions options) : Node("control_
   mission_ = std::make_shared<mavsdk::Mission>(system_);
   //}
 
+  rclcpp::QoS qos(rclcpp::KeepLast(3));
   // publishers
-  vehicle_command_publisher_ = this->create_publisher<px4_msgs::msg::VehicleCommand>("~/vehicle_command_out", 10);
-  local_odom_publisher_      = this->create_publisher<nav_msgs::msg::Odometry>("~/local_odom_out", 10);
-  /* marker_publisher_          = this->create_publisher<visualization_msgs::msg::MarkerArray>("~/debug_markers_out", 10); */
-  waypoint_marker_publisher_ = this->create_publisher<geometry_msgs::msg::PoseArray>("~/waypoint_markers_out", 10);
-  diagnostics_publisher_     = this->create_publisher<fog_msgs::msg::ControlInterfaceDiagnostics>("~/diagnostics_out", 10);
+  vehicle_command_publisher_ = this->create_publisher<px4_msgs::msg::VehicleCommand>("~/vehicle_command_out", qos);
+  local_odom_publisher_      = this->create_publisher<nav_msgs::msg::Odometry>("~/local_odom_out", qos);
+  waypoint_marker_publisher_ = this->create_publisher<geometry_msgs::msg::PoseArray>("~/waypoint_markers_out", qos);
+  diagnostics_publisher_     = this->create_publisher<fog_msgs::msg::ControlInterfaceDiagnostics>("~/diagnostics_out", qos);
 
   // subscribers
   gps_subscriber_            = this->create_subscription<px4_msgs::msg::VehicleGlobalPosition>("~/gps_in", rclcpp::SystemDefaultsQoS(),
@@ -304,7 +309,7 @@ ControlInterface::ControlInterface(rclcpp::NodeOptions options) : Node("control_
       this->create_service<fog_msgs::srv::PathToLocal>("~/path_to_local_in", std::bind(&ControlInterface::pathToLocalCallback, this, _1, _2));
 
   control_timer_ =
-      this->create_wall_timer(std::chrono::duration<double>(1.0 / control_loop_rate_), std::bind(&ControlInterface::controlRoutine, this), callback_group_);
+      this->create_wall_timer(std::chrono::duration<double>(1.0 / control_update_rate_), std::bind(&ControlInterface::controlRoutine, this), callback_group_);
 
   octomap_reset_client_ = this->create_client<std_srvs::srv::Empty>("~/octomap_reset_out");
 
@@ -931,15 +936,17 @@ void ControlInterface::printSensorsStatus() {
 /* publishDiagnostics //{ */
 void ControlInterface::publishDiagnostics() {
   fog_msgs::msg::ControlInterfaceDiagnostics msg;
-  msg.armed                = armed_;
-  msg.airborne             = !landed_;
-  msg.moving               = motion_started_;
-  msg.mission_finished     = mission_finished_;
-  msg.waypoints_to_go      = waypoint_buffer_.size();
-  msg.getting_gps          = getting_gps_;
-  msg.getting_odom         = getting_pixhawk_odom_;
-  msg.getting_control_mode = getting_control_mode_;
-  msg.getting_land_sensor  = getting_landed_info_;
+  msg.header.stamp           = this->get_clock()->now();
+  msg.header.frame_id        = world_frame_;
+  msg.armed                  = armed_;
+  msg.airborne               = !landed_;
+  msg.moving                 = motion_started_;
+  msg.mission_finished       = mission_finished_;
+  msg.buffered_mission_items = waypoint_buffer_.size();
+  msg.getting_gps            = getting_gps_;
+  msg.getting_odom           = getting_pixhawk_odom_;
+  msg.getting_control_mode   = getting_control_mode_;
+  msg.getting_land_sensor    = getting_landed_info_;
   diagnostics_publisher_->publish(msg);
 }
 //}
