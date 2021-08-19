@@ -41,7 +41,6 @@ def generate_launch_description():
                     ("~/vehicle_command_out", "/" + DRONE_DEVICE_ID + "/VehicleCommand_PubSubTopic"),
                     ("~/offboard_control_mode_out", "/" + DRONE_DEVICE_ID + "/OffboardControlMode_PubSubTopic"),
                     ("~/position_setpoint_triplet_out", "/" + DRONE_DEVICE_ID + "/PositionSetpointTriplet_PubSubTopic"),
-                    ("~/local_odom_out", "~/local_odom"),
                     ("~/diagnostics_out", "~/diagnostics"),
                     ("~/debug_markers_out", "~/debug/waypoint_markers"),
 

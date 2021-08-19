@@ -102,7 +102,6 @@ class ControlInterface : public rclcpp::Node
 
     // publishers
     rclcpp::Publisher<px4_msgs::msg::VehicleCommand>::SharedPtr vehicle_command_publisher_;
-    rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr local_odom_publisher_;
     rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr marker_publisher_;
     rclcpp::Publisher<fog_msgs::msg::ControlInterfaceDiagnostics>::SharedPtr diagnostics_publisher_;
 
@@ -157,9 +156,6 @@ class ControlInterface : public rclcpp::Node
 
     void addGlobalToMission(Eigen::Vector3d waypoint);
     void addLocalToMission(Eigen::Vector3d waypoint);
-    void publishTF();
-    void publishStaticTF();
-    void publishLocalOdom();
     void publishDebugMarkers();
 
     geometry_msgs::msg::PoseStamped transformBetween(std::string frame_from, std::string frame_to);
@@ -259,7 +255,6 @@ ControlInterface::ControlInterface(rclcpp::NodeOptions options) : Node("control_
 
     // publishers
     vehicle_command_publisher_ = this->create_publisher<px4_msgs::msg::VehicleCommand>("~/vehicle_command_out", 10);
-    local_odom_publisher_ = this->create_publisher<nav_msgs::msg::Odometry>("~/local_odom_out", 10);
     marker_publisher_ = this->create_publisher<visualization_msgs::msg::MarkerArray>("~/debug_markers_out", 10);
     diagnostics_publisher_ =
         this->create_publisher<fog_msgs::msg::ControlInterfaceDiagnostics>("~/diagnostics_out", 10);
@@ -787,8 +782,7 @@ void ControlInterface::controlRoutine(void)
 /* gettingPixhawkSensors //{ */
 bool ControlInterface::gettingPixhawkSensors()
 {
-    return getting_timesync_ && gps_origin_set_ && getting_odom_ && getting_control_mode_ &&
-           getting_landed_info_;
+    return getting_timesync_ && gps_origin_set_ && getting_odom_ && getting_control_mode_ && getting_landed_info_;
 }
 //}
 
@@ -972,80 +966,6 @@ void ControlInterface::addLocalToMission(Eigen::Vector3d waypoint)
 }
 //}
 
-/* publishStaticTF //{ */
-void ControlInterface::publishStaticTF()
-{
-
-    geometry_msgs::msg::TransformStamped tf_stamped;
-    tf2::Quaternion q;
-    q.setRPY(-M_PI, 0, 0);
-    tf_stamped.header.frame_id = ned_fcu_frame_;
-    tf_stamped.child_frame_id = fcu_frame_;
-    tf_stamped.transform.translation.x = 0.0;
-    tf_stamped.transform.translation.y = 0.0;
-    tf_stamped.transform.translation.z = 0.0;
-    tf_stamped.transform.rotation.x = q.getX();
-    tf_stamped.transform.rotation.y = q.getY();
-    tf_stamped.transform.rotation.z = q.getZ();
-    tf_stamped.transform.rotation.w = q.getW();
-    static_tf_broadcaster_->sendTransform(tf_stamped);
-
-    q.setRPY(M_PI, 0, M_PI / 2);
-    q = q.inverse();
-    tf_stamped.header.frame_id = world_frame_;
-    tf_stamped.child_frame_id = ned_origin_frame_;
-    tf_stamped.transform.translation.x = 0.0;
-    tf_stamped.transform.translation.y = 0.0;
-    tf_stamped.transform.translation.z = 0.0;
-    tf_stamped.transform.rotation.x = q.getX();
-    tf_stamped.transform.rotation.y = q.getY();
-    tf_stamped.transform.rotation.z = q.getZ();
-    tf_stamped.transform.rotation.w = q.getW();
-    static_tf_broadcaster_->sendTransform(tf_stamped);
-}
-//}
-
-/* publishTF //{ */
-void ControlInterface::publishTF()
-{
-    if (tf_broadcaster_ == nullptr)
-    {
-        tf_broadcaster_ = std::make_shared<tf2_ros::TransformBroadcaster>(this->shared_from_this());
-    }
-    geometry_msgs::msg::TransformStamped tf1;
-    tf1.header.stamp = this->get_clock()->now();
-    tf1.header.frame_id = ned_origin_frame_;
-    tf1.child_frame_id = ned_fcu_frame_;
-    tf1.transform.translation.x = pos_.x();
-    tf1.transform.translation.y = pos_.y();
-    tf1.transform.translation.z = pos_.z();
-    tf1.transform.rotation.w = ori_[0];
-    tf1.transform.rotation.x = ori_[1];
-    tf1.transform.rotation.y = ori_[2];
-    tf1.transform.rotation.z = ori_[3];
-    tf_broadcaster_->sendTransform(tf1);
-}
-//}
-
-/* publishLocalOdom //{ */
-void ControlInterface::publishLocalOdom()
-{
-    nav_msgs::msg::Odometry msg;
-    msg.header.stamp = this->get_clock()->now();
-    msg.header.frame_id = world_frame_;
-    msg.child_frame_id = fcu_frame_;
-    auto tf = transformBetween(fcu_frame_, world_frame_);
-    msg.pose.pose.position.x = tf.pose.position.x;
-    msg.pose.pose.position.y = tf.pose.position.y;
-    msg.pose.pose.position.z = tf.pose.position.z;
-    msg.pose.pose.orientation.w = tf.pose.orientation.w;
-    msg.pose.pose.orientation.x = tf.pose.orientation.x;
-    msg.pose.pose.orientation.y = tf.pose.orientation.y;
-    msg.pose.pose.orientation.z = tf.pose.orientation.z;
-    local_odom_publisher_->publish(msg);
-}
-//}
-
 /* publishDebugMarkers //{ */
 void ControlInterface::publishDebugMarkers()
 {
@@ -1074,28 +994,6 @@ void ControlInterface::publishDebugMarkers()
     }
     msg.markers.push_back(points_marker);
     marker_publisher_->publish(msg);
-}
-//}
-
-/* transformBetween //{ */
-geometry_msgs::msg::PoseStamped ControlInterface::transformBetween(std::string frame_from, std::string frame_to)
-{
-    geometry_msgs::msg::PoseStamped pose_out;
-    try
-    {
-        auto transform_stamped = tf_buffer_->lookupTransform(frame_to, frame_from, rclcpp::Time(0));
-        pose_out.pose.position.x = transform_stamped.transform.translation.x;
-        pose_out.pose.position.y = transform_stamped.transform.translation.y;
-        pose_out.pose.position.z = transform_stamped.transform.translation.z;
-        pose_out.pose.orientation.w = transform_stamped.transform.rotation.w;
-        pose_out.pose.orientation.x = transform_stamped.transform.rotation.x;
-        pose_out.pose.orientation.y = transform_stamped.transform.rotation.y;
-        pose_out.pose.orientation.z = transform_stamped.transform.rotation.z;
-    }
-    catch (...)
-    {
-    }
-    return pose_out;
 }
 //}
 
