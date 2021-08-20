@@ -1,6 +1,6 @@
 param_namespace:
   # device_url: "serial:///dev/ttyS7:921600"
-  device_url: "udp://:14540"
+  device_url: "udp://:14590"
   yaw_offset_correction: -1.5708 # [rad]
   takeoff_height: 1.0 # [m]
   reset_octomap_before_takeoff: true
