@@ -61,7 +61,6 @@ private:
   bool getting_landed_info_  = false;
   bool getting_control_mode_ = false;
   bool start_mission_        = false;
-  bool mission_received_     = false;
   bool armed_                = false;
   bool takeoff_requested_    = false;
   bool motion_started_       = false;
@@ -207,6 +206,7 @@ ControlInterface::ControlInterface(rclcpp::NodeOptions options) : Node("control_
   parse_param("waypoint_marker_scale", waypoint_marker_scale_);
   parse_param("waypoint_loiter_time", waypoint_loiter_time_);
   parse_param("reset_octomap_before_takeoff", reset_octomap_before_takeoff_);
+  parse_param("control_loop_rate", control_loop_rate_);
 
   /* frame definition */
   world_frame_      = "world";
