@@ -27,7 +27,6 @@
 #include <tf2_ros/static_transform_broadcaster.h>
 #include <tf2_ros/transform_broadcaster.h>
 #include <tf2_ros/transform_listener.h>
-#include <thread>
 #include <visualization_msgs/msg/marker_array.hpp>
 
 using namespace std::placeholders;
@@ -100,11 +99,11 @@ private:
   std::shared_ptr<mavsdk::geometry::CoordinateTransformation> coord_transform_;
 
   // config params
-  double takeoff_height_             = 2.5;
-  double waypoint_marker_scale_      = 0.3;
-  double control_loop_rate_          = 20.0;
-  double waypoint_loiter_time_       = 0.0;
-  bool reset_octomap_before_takeoff_ = true;
+  double takeoff_height_               = 2.5;
+  double waypoint_marker_scale_        = 0.3;
+  double control_loop_rate_            = 20.0;
+  double waypoint_loiter_time_         = 0.0;
+  bool   reset_octomap_before_takeoff_ = true;
 
   // publishers
   rclcpp::Publisher<px4_msgs::msg::VehicleCommand>::SharedPtr              vehicle_command_publisher_;
@@ -190,7 +189,7 @@ private:
 /* constructor //{ */
 ControlInterface::ControlInterface(rclcpp::NodeOptions options) : Node("control_interface", options) {
 
-  RCLCPP_INFO(this->get_logger(), "Initializing...");
+  RCLCPP_INFO(this->get_logger(), "[%s]: Initializing...", this->get_name());
 
   try {
     uav_name_ = std::string(std::getenv("DRONE_DEVICE_ID"));
@@ -307,84 +306,85 @@ ControlInterface::ControlInterface(rclcpp::NodeOptions options) : Node("control_
 //}
 
 /* parametersCallback //{ */
-rcl_interfaces::msg::SetParametersResult ControlInterface::parametersCallback(const std::vector<rclcpp::Parameter> &parameters){
+rcl_interfaces::msg::SetParametersResult ControlInterface::parametersCallback(const std::vector<rclcpp::Parameter> &parameters) {
   rcl_interfaces::msg::SetParametersResult result;
   result.successful = false;
-  result.reason = "";
+  result.reason     = "";
   char buff[300];
 
-  for (const auto &param: parameters){
+  for (const auto &param : parameters) {
 
     /* takeoff_height //{ */
-    if (param.get_name() == "takeoff_height"){
-      if (param.get_type() == rclcpp::ParameterType::PARAMETER_DOUBLE){
-        if (param.as_double() >= 0.5 && param.as_double() < 10){
-          takeoff_height_ = param.as_double();
+    if (param.get_name() == "takeoff_height") {
+      if (param.get_type() == rclcpp::ParameterType::PARAMETER_DOUBLE) {
+        if (param.as_double() >= 0.5 && param.as_double() < 10) {
+          takeoff_height_   = param.as_double();
           result.successful = true;
           RCLCPP_INFO(this->get_logger(), "[%s]: Parameter: '%s' set to %1.2f", this->get_name(), param.get_name().c_str(), param.as_double());
-        }else{
-          snprintf(buff, sizeof(buff), "parameter '%s' cannot be set to %1.2f because it is not in range <0.5;10>", param.get_name().c_str(), param.as_double());
+        } else {
+          snprintf(buff, sizeof(buff), "parameter '%s' cannot be set to %1.2f because it is not in range <0.5;10>", param.get_name().c_str(),
+                   param.as_double());
           result.reason = buff;
         }
-      }else{
+      } else {
         snprintf(buff, sizeof(buff), "parameter '%s' has to be type DOUBLE", param.get_name().c_str());
         result.reason = buff;
       }
-    //}
+      //}
 
-    /* waypoint_marker_scale //{ */
-    }else if (param.get_name() == "waypoint_marker_scale"){
-      if (param.get_type() == rclcpp::ParameterType::PARAMETER_DOUBLE){
-        if (param.as_double() > 0.0){
+      /* waypoint_marker_scale //{ */
+    } else if (param.get_name() == "waypoint_marker_scale") {
+      if (param.get_type() == rclcpp::ParameterType::PARAMETER_DOUBLE) {
+        if (param.as_double() > 0.0) {
           waypoint_marker_scale_ = param.as_double();
-          result.successful = true;
+          result.successful      = true;
           RCLCPP_INFO(this->get_logger(), "[%s]: Parameter: '%s' set to %1.2f", this->get_name(), param.get_name().c_str(), param.as_double());
-        }else{
+        } else {
           snprintf(buff, sizeof(buff), "parameter '%s' cannot be set to %1.2f because it is not >0", param.get_name().c_str(), param.as_double());
           result.reason = buff;
         }
-      }else{
+      } else {
         snprintf(buff, sizeof(buff), "parameter '%s' has to be type DOUBLE", param.get_name().c_str());
         result.reason = buff;
       }
-    //}
+      //}
 
-    /* waypoint_loiter_time //{ */
-    }else if (param.get_name() == "waypoint_loiter_time"){
-      if (param.get_type() == rclcpp::ParameterType::PARAMETER_DOUBLE){
-        if (param.as_double() >= 0.0){
+      /* waypoint_loiter_time //{ */
+    } else if (param.get_name() == "waypoint_loiter_time") {
+      if (param.get_type() == rclcpp::ParameterType::PARAMETER_DOUBLE) {
+        if (param.as_double() >= 0.0) {
           waypoint_loiter_time_ = param.as_double();
-          result.successful = true;
+          result.successful     = true;
           RCLCPP_INFO(this->get_logger(), "[%s]: Parameter: '%s' set to %1.2f", this->get_name(), param.get_name().c_str(), param.as_double());
-        }else{
-          snprintf(buff, sizeof(buff), "parameter '%s' cannot be set to %1.2f because it is not positive value", param.get_name().c_str(), param.as_double());
+        } else {
+          snprintf(buff, sizeof(buff), "parameter '%s' cannot be set to %1.2f because it is a negative value", param.get_name().c_str(), param.as_double());
           result.reason = buff;
         }
-      }else{
+      } else {
         snprintf(buff, sizeof(buff), "parameter '%s' has to be type DOUBLE", param.get_name().c_str());
         result.reason = buff;
       }
-    //}
+      //}
 
-    /* reset_octomap_before_takeoff //{ */
-    }else if (param.get_name() == "reset_octomap_before_takeoff"){
-      if (param.get_type() == rclcpp::ParameterType::PARAMETER_BOOL){
+      /* reset_octomap_before_takeoff //{ */
+    } else if (param.get_name() == "reset_octomap_before_takeoff") {
+      if (param.get_type() == rclcpp::ParameterType::PARAMETER_BOOL) {
         reset_octomap_before_takeoff_ = param.as_bool();
-        result.successful = true;
-        RCLCPP_INFO(this->get_logger(), "[%s]: Parameter: '%s' set to %s", this->get_name(), param.get_name().c_str(), param.as_bool()? "TRUE" : "FALSE");
-      }else{
+        result.successful             = true;
+        RCLCPP_INFO(this->get_logger(), "[%s]: Parameter: '%s' set to %s", this->get_name(), param.get_name().c_str(), param.as_bool() ? "TRUE" : "FALSE");
+      } else {
         snprintf(buff, sizeof(buff), "parameter '%s' has to be type BOOL", param.get_name().c_str());
         result.reason = buff;
       }
-    //}
+      //}
 
-    }else{
+    } else {
       snprintf(buff, sizeof(buff), "parameter '%s' cannot be changed dynamically", param.get_name().c_str());
       result.reason = buff;
     }
   }
 
-  if (!result.successful){
+  if (!result.successful) {
     RCLCPP_WARN(this->get_logger(), "[%s]: Failed to set parameter: %s", this->get_name(), result.reason.c_str());
   }
 
@@ -470,7 +470,7 @@ void ControlInterface::landDetectedCallback(const px4_msgs::msg::VehicleLandDete
   }
   getting_landed_info_ = true;
   // checking only ground_contact flag instead of landed due to a problem in simulation
-  landed_              = msg->ground_contact;
+  landed_ = msg->ground_contact;
 }
 //}
 
@@ -995,15 +995,15 @@ void ControlInterface::printSensorsStatus() {
 /* publishDiagnostics //{ */
 void ControlInterface::publishDiagnostics() {
   fog_msgs::msg::ControlInterfaceDiagnostics msg;
-  msg.armed                = armed_;
-  msg.airborne             = !landed_;
-  msg.moving               = motion_started_;
-  msg.mission_finished     = mission_finished_;
-  msg.waypoints_to_go      = waypoint_buffer_.size();
-  msg.getting_gps          = getting_gps_;
-  msg.getting_odom         = getting_pixhawk_odom_;
-  msg.getting_control_mode = getting_control_mode_;
-  msg.getting_land_sensor  = getting_landed_info_;
+  msg.armed                  = armed_;
+  msg.airborne               = !landed_;
+  msg.moving                 = motion_started_;
+  msg.mission_finished       = mission_finished_;
+  msg.buffered_mission_items = waypoint_buffer_.size();
+  msg.getting_gps            = getting_gps_;
+  msg.getting_odom           = getting_pixhawk_odom_;
+  msg.getting_control_mode   = getting_control_mode_;
+  msg.getting_land_sensor    = getting_landed_info_;
   diagnostics_publisher_->publish(msg);
 }
 //}
@@ -1017,7 +1017,7 @@ bool ControlInterface::takeoff() {
   }
 
   if (reset_octomap_before_takeoff_) {
-    auto reset_srv = std::make_shared<std_srvs::srv::Empty::Request>();
+    auto reset_srv   = std::make_shared<std_srvs::srv::Empty::Request>();
     auto call_result = octomap_reset_client_->async_send_request(reset_srv);
     RCLCPP_INFO(this->get_logger(), "[%s]: Resetting octomap server", this->get_name());
   }
@@ -1276,10 +1276,10 @@ template <class T>
 bool ControlInterface::parse_param(const std::string &param_name, T &param_dest) {
   this->declare_parameter(param_name);
   if (!this->get_parameter(param_name, param_dest)) {
-    RCLCPP_ERROR(this->get_logger(), "Could not load param '%s'", param_name.c_str());
+    RCLCPP_ERROR(this->get_logger(), "[%s]: Could not load param '%s'", this->get_name(), param_name.c_str());
     return false;
   } else {
-    RCLCPP_INFO_STREAM(this->get_logger(), "Loaded '" << param_name << "' = '" << param_dest << "'");
+    RCLCPP_INFO_STREAM(this->get_logger(), "[" << this->get_name() << "]: Loaded '" << param_name << "' = '" << param_dest << "'");
   }
   return true;
 }
