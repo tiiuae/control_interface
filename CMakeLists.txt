@@ -58,6 +58,8 @@ ament_target_dependencies(control_interface
 target_link_libraries(control_interface
   MAVSDK::mavsdk_action
   MAVSDK::mavsdk_mission
+  MAVSDK::mavsdk_telemetry
+  MAVSDK::mavsdk_param
   MAVSDK::mavsdk
   )
 

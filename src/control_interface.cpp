@@ -10,6 +10,7 @@
 #include <mavsdk/mavsdk.h>
 #include <mavsdk/plugins/action/action.h>
 #include <mavsdk/plugins/mission/mission.h>
+#include <mavsdk/plugins/param/param.h>
 #include <nav_msgs/msg/odometry.hpp>
 #include <px4_msgs/msg/mission_result.hpp>
 #include <px4_msgs/msg/vehicle_command.hpp>
@@ -30,6 +31,10 @@
 #include <tf2_ros/transform_broadcaster.h>
 #include <tf2_ros/transform_listener.h>
 #include <visualization_msgs/msg/marker_array.hpp>
+#include <fog_msgs/srv/get_px4_param_int.hpp>
+#include <fog_msgs/srv/set_px4_param_int.hpp>
+#include <fog_msgs/srv/get_origin.hpp>
+#include <fog_msgs/srv/get_bool.hpp>
 
 using namespace std::placeholders;
 
@@ -66,8 +71,6 @@ public:
 
 private:
   bool is_initialized_       = false;
-  bool getting_gps_          = false;
-  bool getting_pixhawk_odom_ = false;
   bool getting_landed_info_  = false;
   bool getting_control_mode_ = false;
   bool start_mission_        = false;
@@ -76,35 +79,26 @@ private:
   bool motion_started_       = false;
   bool landed_               = true;
 
+  std::atomic_bool gps_origin_set_      = false;
+  std::atomic_bool gps_origin_called_   = false;
+  std::atomic_bool getting_odom_        = false;
+  std::atomic_bool getting_odom_called_ = false;
+
   bool     mission_finished_      = true;
   unsigned last_mission_instance_ = 1;
 
-  std::string uav_name_         = "";
-  std::string world_frame_      = "";
-  std::string ned_origin_frame_ = "";
-  std::string ned_fcu_frame_    = "";
-  std::string fcu_frame_        = "";
+  std::string uav_name_    = "";
+  std::string world_frame_ = "";
 
   std::string                      device_url_;
   mavsdk::Mavsdk                   mavsdk_;
   std::shared_ptr<mavsdk::System>  system_;
   std::shared_ptr<mavsdk::Action>  action_;
   std::shared_ptr<mavsdk::Mission> mission_;
+  std::shared_ptr<mavsdk::Param>   param_;
   mavsdk::Mission::MissionPlan     mission_plan_;
 
   std::vector<waypoint_t> waypoint_buffer_;
-
-  std::shared_ptr<tf2_ros::Buffer>                     tf_buffer_;
-  std::shared_ptr<tf2_ros::TransformListener>          tf_listener_;
-  std::shared_ptr<tf2_ros::TransformBroadcaster>       tf_broadcaster_;
-  std::shared_ptr<tf2_ros::StaticTransformBroadcaster> static_tf_broadcaster_;
-
-  // vehicle global position
-  float latitude_, longitude_, altitude_;
-
-  // vehicle local position
-  float pos_[3];
-  float ori_[4];
 
   // use takeoff lat and long to initialize local frame
   std::shared_ptr<mavsdk::geometry::CoordinateTransformation> coord_transform_;
@@ -121,22 +115,17 @@ private:
 
   // publishers
   rclcpp::Publisher<px4_msgs::msg::VehicleCommand>::SharedPtr              vehicle_command_publisher_;
-  rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr                    local_odom_publisher_;
   rclcpp::Publisher<geometry_msgs::msg::PoseArray>::SharedPtr              waypoint_marker_publisher_;
   rclcpp::Publisher<fog_msgs::msg::ControlInterfaceDiagnostics>::SharedPtr diagnostics_publisher_;
 
   // subscribers
-  rclcpp::Subscription<px4_msgs::msg::VehicleGlobalPosition>::SharedPtr gps_subscriber_;
-  rclcpp::Subscription<px4_msgs::msg::VehicleOdometry>::SharedPtr       pixhawk_odom_subscriber_;
-  rclcpp::Subscription<px4_msgs::msg::VehicleControlMode>::SharedPtr    control_mode_subscriber_;
-  rclcpp::Subscription<px4_msgs::msg::VehicleLandDetected>::SharedPtr   land_detected_subscriber_;
-  rclcpp::Subscription<px4_msgs::msg::MissionResult>::SharedPtr         mission_result_subscriber_;
+  rclcpp::Subscription<px4_msgs::msg::VehicleControlMode>::SharedPtr  control_mode_subscriber_;
+  rclcpp::Subscription<px4_msgs::msg::VehicleLandDetected>::SharedPtr land_detected_subscriber_;
+  rclcpp::Subscription<px4_msgs::msg::MissionResult>::SharedPtr       mission_result_subscriber_;
 
   OnSetParametersCallbackHandle::SharedPtr callback_handle_;
 
   // subscriber callbacks
-  void gpsCallback(const px4_msgs::msg::VehicleGlobalPosition::UniquePtr msg);
-  void pixhawkOdomCallback(const px4_msgs::msg::VehicleOdometry::UniquePtr msg);
   void controlModeCallback(const px4_msgs::msg::VehicleControlMode::UniquePtr msg);
   void landDetectedCallback(const px4_msgs::msg::VehicleLandDetected::UniquePtr msg);
   void missionResultCallback(const px4_msgs::msg::MissionResult::UniquePtr msg);
@@ -151,8 +140,13 @@ private:
   rclcpp::Service<fog_msgs::srv::Path>::SharedPtr            gps_path_service_;
   rclcpp::Service<fog_msgs::srv::WaypointToLocal>::SharedPtr waypoint_to_local_service_;
   rclcpp::Service<fog_msgs::srv::PathToLocal>::SharedPtr     path_to_local_service_;
+  rclcpp::Service<fog_msgs::srv::SetPx4ParamInt>::SharedPtr  set_px4_param_int_;
+  rclcpp::Service<fog_msgs::srv::GetPx4ParamInt>::SharedPtr  get_px4_param_int_;
 
-  rclcpp::Client<std_srvs::srv::Empty>::SharedPtr octomap_reset_client_;
+  // service clients
+  rclcpp::Client<fog_msgs::srv::GetOrigin>::SharedPtr get_origin_client_;
+  rclcpp::Client<fog_msgs::srv::GetBool>::SharedPtr   getting_odom_client_;
+  rclcpp::Client<std_srvs::srv::Empty>::SharedPtr     octomap_reset_client_;
 
   // service callbacks
   bool armingCallback(const std::shared_ptr<std_srvs::srv::SetBool::Request> request, std::shared_ptr<std_srvs::srv::SetBool::Response> response);
@@ -166,6 +160,13 @@ private:
                                std::shared_ptr<fog_msgs::srv::WaypointToLocal::Response>      response);
   bool pathToLocalCallback(const std::shared_ptr<fog_msgs::srv::PathToLocal::Request> request, std::shared_ptr<fog_msgs::srv::PathToLocal::Response> response);
 
+  bool setPx4ParamIntCallback(const std::shared_ptr<fog_msgs::srv::SetPx4ParamInt::Request> request,
+                              std::shared_ptr<fog_msgs::srv::SetPx4ParamInt::Response>      response);
+  bool getPx4ParamIntCallback(const std::shared_ptr<fog_msgs::srv::GetPx4ParamInt::Request> request,
+                              std::shared_ptr<fog_msgs::srv::GetPx4ParamInt::Response>      response);
+  bool gpsOriginCallback(rclcpp::Client<fog_msgs::srv::GetOrigin>::SharedFuture future);
+  bool odomAvailableCallback(rclcpp::Client<fog_msgs::srv::GetBool>::SharedFuture future);
+
   // parameter callback
   rcl_interfaces::msg::SetParametersResult parametersCallback(const std::vector<rclcpp::Parameter> &parameters);
 
@@ -173,7 +174,7 @@ private:
   double getYaw(const Eigen::Quaterniond &q);
   double getYaw(const geometry_msgs::msg::Quaternion &q);
 
-  bool gettingPixhawkSensors();
+  bool gettingPixhawkSensors();  // TODO FIXME possible problem -> switch to gettingOdom
   void printSensorsStatus();
   void publishDiagnostics();
 
@@ -184,13 +185,9 @@ private:
   bool stopPreviousMission();
 
   void addToMission(waypoint_t w);
-  void publishTF();
-  void publishStaticTF();
-  void publishLocalOdom();
   void publishDebugMarkers();
 
-  geometry_msgs::msg::PoseStamped transformBetween(std::string frame_from, std::string frame_to);
-  std_msgs::msg::ColorRGBA        generateColor(const double r, const double g, const double b, const double a);
+  std_msgs::msg::ColorRGBA generateColor(const double r, const double g, const double b, const double a);
 
   // timers
   rclcpp::CallbackGroup::SharedPtr callback_group_;
@@ -232,11 +229,8 @@ ControlInterface::ControlInterface(rclcpp::NodeOptions options) : Node("control_
     RCLCPP_WARN(this->get_logger(), "[%s]: Control update rate set too slow. Defaulting to 5 Hz", this->get_name());
   }
 
-  /* frame definition */
-  world_frame_      = "world";
-  fcu_frame_        = uav_name_ + "/fcu";
-  ned_fcu_frame_    = uav_name_ + "/ned_fcu";
-  ned_origin_frame_ = uav_name_ + "/ned_origin";
+  world_frame_ = "world";  // TODO FIXME hardcoded??
+
   //}
 
   /* estabilish connection with PX4 //{ */
@@ -278,20 +272,16 @@ ControlInterface::ControlInterface(rclcpp::NodeOptions options) : Node("control_
   RCLCPP_INFO(this->get_logger(), "[%s]: Target connected", this->get_name());
   action_  = std::make_shared<mavsdk::Action>(system_);
   mission_ = std::make_shared<mavsdk::Mission>(system_);
+  param_   = std::make_shared<mavsdk::Param>(system_);
   //}
 
   rclcpp::QoS qos(rclcpp::KeepLast(3));
   // publishers
   vehicle_command_publisher_ = this->create_publisher<px4_msgs::msg::VehicleCommand>("~/vehicle_command_out", qos);
-  local_odom_publisher_      = this->create_publisher<nav_msgs::msg::Odometry>("~/local_odom_out", qos);
   waypoint_marker_publisher_ = this->create_publisher<geometry_msgs::msg::PoseArray>("~/waypoint_markers_out", qos);
   diagnostics_publisher_     = this->create_publisher<fog_msgs::msg::ControlInterfaceDiagnostics>("~/diagnostics_out", qos);
 
   // subscribers
-  gps_subscriber_            = this->create_subscription<px4_msgs::msg::VehicleGlobalPosition>("~/gps_in", rclcpp::SystemDefaultsQoS(),
-                                                                                    std::bind(&ControlInterface::gpsCallback, this, _1));
-  pixhawk_odom_subscriber_   = this->create_subscription<px4_msgs::msg::VehicleOdometry>("~/pixhawk_odom_in", rclcpp::SystemDefaultsQoS(),
-                                                                                       std::bind(&ControlInterface::pixhawkOdomCallback, this, _1));
   control_mode_subscriber_   = this->create_subscription<px4_msgs::msg::VehicleControlMode>("~/control_mode_in", rclcpp::SystemDefaultsQoS(),
                                                                                           std::bind(&ControlInterface::controlModeCallback, this, _1));
   land_detected_subscriber_  = this->create_subscription<px4_msgs::msg::VehicleLandDetected>("~/land_detected_in", rclcpp::SystemDefaultsQoS(),
@@ -300,6 +290,11 @@ ControlInterface::ControlInterface(rclcpp::NodeOptions options) : Node("control_
                                                                                        std::bind(&ControlInterface::missionResultCallback, this, _1));
 
   callback_handle_ = this->add_on_set_parameters_callback(std::bind(&ControlInterface::parametersCallback, this, _1));
+
+  // service clients
+  get_origin_client_    = this->create_client<fog_msgs::srv::GetOrigin>("~/get_origin");
+  getting_odom_client_  = this->create_client<fog_msgs::srv::GetBool>("~/getting_odom");
+  octomap_reset_client_ = this->create_client<std_srvs::srv::Empty>("~/octomap_reset_out");
 
   // service handlers
   arming_service_         = this->create_service<std_srvs::srv::SetBool>("~/arming_in", std::bind(&ControlInterface::armingCallback, this, _1, _2));
@@ -313,18 +308,13 @@ ControlInterface::ControlInterface(rclcpp::NodeOptions options) : Node("control_
       this->create_service<fog_msgs::srv::WaypointToLocal>("~/waypoint_to_local_in", std::bind(&ControlInterface::waypointToLocalCallback, this, _1, _2));
   path_to_local_service_ =
       this->create_service<fog_msgs::srv::PathToLocal>("~/path_to_local_in", std::bind(&ControlInterface::pathToLocalCallback, this, _1, _2));
+  set_px4_param_int_ =
+      this->create_service<fog_msgs::srv::SetPx4ParamInt>("~/set_px4_param_int", std::bind(&ControlInterface::setPx4ParamIntCallback, this, _1, _2));
+  get_px4_param_int_ =
+      this->create_service<fog_msgs::srv::GetPx4ParamInt>("~/get_px4_param_int", std::bind(&ControlInterface::getPx4ParamIntCallback, this, _1, _2));
 
   control_timer_ =
       this->create_wall_timer(std::chrono::duration<double>(1.0 / control_update_rate_), std::bind(&ControlInterface::controlRoutine, this), callback_group_);
-
-  octomap_reset_client_ = this->create_client<std_srvs::srv::Empty>("~/octomap_reset_out");
-
-  tf_broadcaster_        = nullptr;
-  static_tf_broadcaster_ = nullptr;
-
-  tf_buffer_ = std::make_shared<tf2_ros::Buffer>(this->get_clock());
-  tf_buffer_->setUsingDedicatedThread(true);
-  tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_, this, false);
 
   is_initialized_ = true;
   RCLCPP_INFO(this->get_logger(), "[%s]: Initialized", this->get_name());
@@ -415,55 +405,6 @@ rcl_interfaces::msg::SetParametersResult ControlInterface::parametersCallback(co
   }
 
   return result;
-}
-//}
-
-/* gpsCallback //{ */
-void ControlInterface::gpsCallback(const px4_msgs::msg::VehicleGlobalPosition::UniquePtr msg) {
-  if (!is_initialized_) {
-    return;
-  }
-
-  if (!getting_gps_) {
-    mavsdk::geometry::CoordinateTransformation::GlobalCoordinate ref;
-    ref.latitude_deg  = msg->lat;
-    ref.longitude_deg = msg->lon;
-    coord_transform_  = std::make_shared<mavsdk::geometry::CoordinateTransformation>(mavsdk::geometry::CoordinateTransformation(ref));
-  }
-
-  this->latitude_  = msg->lat;
-  this->longitude_ = msg->lon;
-  this->altitude_  = msg->alt;
-  getting_gps_     = true;
-  RCLCPP_INFO_ONCE(this->get_logger(), "[%s]: Getting gps!", this->get_name());
-}
-//}
-
-/* pixhawkOdomCallback //{ */
-void ControlInterface::pixhawkOdomCallback(const px4_msgs::msg::VehicleOdometry::UniquePtr msg) {
-  if (!is_initialized_) {
-    return;
-  }
-
-  pos_[0] = msg->x;
-  pos_[1] = msg->y;
-  pos_[2] = msg->z;
-  ori_[0] = msg->q[0];
-  ori_[1] = msg->q[1];
-  ori_[2] = msg->q[2];
-  ori_[3] = msg->q[3];
-
-  publishTF();
-  publishLocalOdom();
-
-  getting_pixhawk_odom_ = true;
-  RCLCPP_INFO_ONCE(this->get_logger(), "[%s]: Getting pixhawk odometry!", this->get_name());
-
-  // one-shot publish static TF
-  if (static_tf_broadcaster_ == nullptr) {
-    static_tf_broadcaster_ = std::make_shared<tf2_ros::StaticTransformBroadcaster>(this->shared_from_this());
-    publishStaticTF();
-  }
 }
 //}
 
@@ -874,8 +815,8 @@ bool ControlInterface::waypointToLocalCallback(const std::shared_ptr<fog_msgs::s
   response->yaw        = request->yaw;
 
   std::stringstream ss;
-  ss << "Transformed GPS [" << request->latitude_deg << ", " << request->longitude_deg << "] into local: [" << response->local_x << ", " << response->local_y
-     << "]";
+  ss << "Transformed GPS [" << request->latitude_deg << ", " << request->longitude_deg << ", " << request->relative_altitude_m << "] into local: ["
+     << response->local_x << ", " << response->local_y << ", " << response->local_z << "]";
   response->message = ss.str();
   response->success = true;
   RCLCPP_INFO(this->get_logger(), "[%s]: %s", this->get_name(), response->message.c_str());
@@ -953,6 +894,152 @@ bool ControlInterface::pathToLocalCallback(const std::shared_ptr<fog_msgs::srv::
 }
 //}
 
+/* setPx4ParamIntCallback //{ */
+bool ControlInterface::setPx4ParamIntCallback([[maybe_unused]] const std::shared_ptr<fog_msgs::srv::SetPx4ParamInt::Request> request,
+                                              std::shared_ptr<fog_msgs::srv::SetPx4ParamInt::Response>                       response) {
+
+  if (!is_initialized_) {
+    response->success = false;
+    response->message = "Parameter cannot be set, not initialized";
+    RCLCPP_ERROR(this->get_logger(), "[%s]: %s", this->get_name(), response->message.c_str());
+    return true;
+  }
+
+  auto result = param_->set_param_int(request->param_name, request->value);
+
+  if (result == mavsdk::Param::Result::Success) {
+    response->message    = "Parameter set successfully";
+    response->param_name = request->param_name;
+    response->value      = request->value;
+    response->success    = true;
+    RCLCPP_INFO(this->get_logger(), "[ControlInterface]: PX4 parameter %s successfully set to %d", request->param_name.c_str(), request->value);
+  } else if (result == mavsdk::Param::Result::Unknown) {
+    response->message    = "Parameter did not set - unknown error";
+    response->param_name = request->param_name;
+    response->value      = request->value;
+    response->success    = false;
+    RCLCPP_ERROR(this->get_logger(), "[ControlInterface]: PX4 parameter set uknown error");
+  } else if (result == mavsdk::Param::Result::Timeout) {
+    response->message    = "Parameter did not set - time out";
+    response->param_name = request->param_name;
+    response->value      = request->value;
+    response->success    = false;
+    RCLCPP_ERROR(this->get_logger(), "[ControlInterface]: PX4 parameter set request time out");
+  } else if (result == mavsdk::Param::Result::ConnectionError) {
+    response->message    = "Parameter did not set - connection error";
+    response->param_name = request->param_name;
+    response->value      = request->value;
+    response->success    = false;
+    RCLCPP_ERROR(this->get_logger(), "[ControlInterface]: PX4 parameter set request connection error");
+  } else if (result == mavsdk::Param::Result::WrongType) {
+    response->message    = "Parameter did not set - request wrong type";
+    response->param_name = request->param_name;
+    response->value      = request->value;
+    response->success    = false;
+    RCLCPP_ERROR(this->get_logger(), "[ControlInterface]: PX4 parameter set request wrong type");
+  } else if (result == mavsdk::Param::Result::ParamNameTooLong) {
+    response->message    = "Parameter did not set - param name too long";
+    response->param_name = request->param_name;
+    response->value      = request->value;
+    response->success    = false;
+    RCLCPP_ERROR(this->get_logger(), "[ControlInterface]: PX4 parameter set request param name too long");
+  }
+
+  return true;
+}
+//}
+
+/* getPx4ParamIntCallback //{ */
+bool ControlInterface::getPx4ParamIntCallback([[maybe_unused]] const std::shared_ptr<fog_msgs::srv::GetPx4ParamInt::Request> request,
+                                              std::shared_ptr<fog_msgs::srv::GetPx4ParamInt::Response>                       response) {
+
+  if (!is_initialized_) {
+    response->success = false;
+    response->message = "Parameter cannot be get, not initialized";
+    RCLCPP_ERROR(this->get_logger(), "[%s]: %s", this->get_name(), response->message.c_str());
+    return true;
+  }
+
+  auto result = param_->get_param_int(request->param_name);
+
+  if (result.first == mavsdk::Param::Result::Success) {
+    response->message    = "Parameter get successfully";
+    response->value      = result.second;
+    response->param_name = request->param_name;
+    response->success    = true;
+
+    RCLCPP_INFO(this->get_logger(), "[ControlInterface]: PX4 parameter %s successfully get with value %d", request->param_name.c_str(), response->value);
+  } else if (result.first == mavsdk::Param::Result::Unknown) {
+    response->message    = "Did not get the parameter - unknown error";
+    response->param_name = request->param_name;
+    response->success    = false;
+    RCLCPP_ERROR(this->get_logger(), "[ControlInterface]: PX4 parameter get uknown error");
+  } else if (result.first == mavsdk::Param::Result::Timeout) {
+    response->message    = "Did not get the parameter - time out";
+    response->param_name = request->param_name;
+    response->success    = false;
+    RCLCPP_ERROR(this->get_logger(), "[ControlInterface]: PX4 parameter get request time out");
+  } else if (result.first == mavsdk::Param::Result::ConnectionError) {
+    response->message    = "Did not get the parameter - connection error";
+    response->param_name = request->param_name;
+    response->success    = false;
+    RCLCPP_ERROR(this->get_logger(), "[ControlInterface]: PX4 parameter get request connection error");
+  } else if (result.first == mavsdk::Param::Result::WrongType) {
+    response->message    = "Did not get the parameter - request wrong type";
+    response->param_name = request->param_name;
+    response->success    = false;
+    RCLCPP_ERROR(this->get_logger(), "[ControlInterface]: PX4 parameter get request wrong type");
+  } else if (result.first == mavsdk::Param::Result::ParamNameTooLong) {
+    response->message    = "Did not get the parameter - param name too long";
+    response->param_name = request->param_name;
+    response->success    = false;
+    RCLCPP_ERROR(this->get_logger(), "[ControlInterface]: PX4 parameter get request param name too long");
+  }
+
+  return true;
+}
+//}
+
+/* gpsOriginCallback //{ */
+bool ControlInterface::gpsOriginCallback(rclcpp::Client<fog_msgs::srv::GetOrigin>::SharedFuture future) {
+  std::shared_ptr<fog_msgs::srv::GetOrigin::Response> result = future.get();
+  if (result->success) {
+    mavsdk::geometry::CoordinateTransformation::GlobalCoordinate ref;
+    ref.latitude_deg  = result->latitude;
+    ref.longitude_deg = result->longitude;
+    coord_transform_  = std::make_shared<mavsdk::geometry::CoordinateTransformation>(mavsdk::geometry::CoordinateTransformation(ref));
+
+    RCLCPP_INFO(this->get_logger(), "[%s]: GPS origin set! Lat: %.3f, Lon: %.3f", this->get_name(), ref.latitude_deg, ref.longitude_deg);
+    gps_origin_set_ = true;
+  } else {
+
+    auto &clk = *this->get_clock();
+    RCLCPP_WARN_THROTTLE(this->get_logger(), clk, 1000, "[%s]: Waiting for GPS origin.", this->get_name());
+    gps_origin_called_ = false;
+    return false;
+  }
+  gps_origin_called_ = false;
+  return true;
+}
+//}
+
+/* odomAvailableCallback //{ */
+bool ControlInterface::odomAvailableCallback(rclcpp::Client<fog_msgs::srv::GetBool>::SharedFuture future) {
+  std::shared_ptr<fog_msgs::srv::GetBool::Response> result = future.get();
+  if (result->value) {
+    RCLCPP_INFO(this->get_logger(), "[%s]: Odometry available!", this->get_name());
+    getting_odom_ = true;
+  } else {
+    auto &clk = *this->get_clock();
+    RCLCPP_WARN_THROTTLE(this->get_logger(), clk, 1000, "[%s]: Waiting for Odometry", this->get_name());
+    getting_odom_called_ = false;
+    return false;
+  }
+  getting_odom_called_ = false;
+  return true;
+}
+//}
+
 /* controlRoutine //{ */
 void ControlInterface::controlRoutine(void) {
 
@@ -1006,6 +1093,20 @@ void ControlInterface::controlRoutine(void) {
       //}
 
     } else {
+      // Check the availability of the GPS origin
+      if (!gps_origin_set_ && !gps_origin_called_) {
+        gps_origin_called_ = true;
+        auto request       = std::make_shared<fog_msgs::srv::GetOrigin::Request>();
+        auto call_result   = get_origin_client_->async_send_request(request, std::bind(&ControlInterface::gpsOriginCallback, this, std::placeholders::_1));
+        RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 1000, "[%s]: GPS origin service called", this->get_name());
+      }
+      // Check the availability of the Odometry
+      if (!getting_odom_ && !getting_odom_called_) {
+        getting_odom_called_ = true;
+        auto request         = std::make_shared<fog_msgs::srv::GetBool::Request>();
+        auto call_result = getting_odom_client_->async_send_request(request, std::bind(&ControlInterface::odomAvailableCallback, this, std::placeholders::_1));
+        RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 1000, "[%s]: Odometry availability service called", this->get_name());
+      }
       printSensorsStatus();
     }
   }
@@ -1014,15 +1115,18 @@ void ControlInterface::controlRoutine(void) {
 
 /* gettingPixhawkSensors //{ */
 bool ControlInterface::gettingPixhawkSensors() {
-  return getting_gps_ && getting_pixhawk_odom_ && getting_control_mode_ && getting_landed_info_;
+  // TODO FIXME
+  return gps_origin_set_;
+  /* return getting_gps_ && getting_pixhawk_odom_ && getting_control_mode_ && getting_landed_info_; */
 }
 //}
 
 /* printSensorsStatus //{ */
 void ControlInterface::printSensorsStatus() {
-  RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 1000, "[%s]: GPS:%s, ODOM:%s, CTRL:%s, LAND:%s", this->get_name(),
-                       getting_gps_ ? "TRUE" : "FALSE", getting_pixhawk_odom_ ? "TRUE" : "FALSE", getting_control_mode_ ? "TRUE" : "FALSE",
-                       getting_landed_info_ ? "TRUE" : "FALSE");
+
+  // TODO FIXME
+  // leave the checks up to odometry
+  RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 1000, "[%s]: GPS origin set:%s", this->get_name(), gps_origin_set_ ? "TRUE" : "FALSE");
 }
 //}
 
@@ -1036,8 +1140,8 @@ void ControlInterface::publishDiagnostics() {
   msg.moving                 = motion_started_;
   msg.mission_finished       = mission_finished_;
   msg.buffered_mission_items = waypoint_buffer_.size();
-  msg.getting_gps            = getting_gps_;
-  msg.getting_odom           = getting_pixhawk_odom_;
+  msg.gps_origin_set         = gps_origin_set_;
+  msg.getting_odom           = getting_odom_;
   msg.getting_control_mode   = getting_control_mode_;
   msg.getting_land_sensor    = getting_landed_info_;
   diagnostics_publisher_->publish(msg);
@@ -1064,8 +1168,10 @@ bool ControlInterface::takeoff() {
     return false;
   }
   waypoint_t current_goal;
-  current_goal.x    = pos_[1];
-  current_goal.y    = pos_[0];
+  /* current_goal.x    = pos_[1]; */  // TODO FIXME
+  /* current_goal.y    = pos_[0]; */
+  current_goal.x    = 0;  // FIXME
+  current_goal.y    = 0;  // FIXME
   current_goal.z    = takeoff_height_;
   current_goal.yaw  = 0.0;
   current_goal.type = waypoint_type_t::LOCAL;
@@ -1183,76 +1289,6 @@ void ControlInterface::addToMission(waypoint_t w) {
 }
 //}
 
-/* publishStaticTF //{ */
-void ControlInterface::publishStaticTF() {
-
-  geometry_msgs::msg::TransformStamped tf_stamped;
-  tf2::Quaternion                      q;
-  q.setRPY(-M_PI, 0, 0);
-  tf_stamped.header.frame_id         = ned_fcu_frame_;
-  tf_stamped.child_frame_id          = fcu_frame_;
-  tf_stamped.transform.translation.x = 0.0;
-  tf_stamped.transform.translation.y = 0.0;
-  tf_stamped.transform.translation.z = 0.0;
-  tf_stamped.transform.rotation.x    = q.getX();
-  tf_stamped.transform.rotation.y    = q.getY();
-  tf_stamped.transform.rotation.z    = q.getZ();
-  tf_stamped.transform.rotation.w    = q.getW();
-  static_tf_broadcaster_->sendTransform(tf_stamped);
-
-  q.setRPY(M_PI, 0, M_PI / 2);
-  q                                  = q.inverse();
-  tf_stamped.header.frame_id         = world_frame_;
-  tf_stamped.child_frame_id          = ned_origin_frame_;
-  tf_stamped.transform.translation.x = 0.0;
-  tf_stamped.transform.translation.y = 0.0;
-  tf_stamped.transform.translation.z = 0.0;
-  tf_stamped.transform.rotation.x    = q.getX();
-  tf_stamped.transform.rotation.y    = q.getY();
-  tf_stamped.transform.rotation.z    = q.getZ();
-  tf_stamped.transform.rotation.w    = q.getW();
-  static_tf_broadcaster_->sendTransform(tf_stamped);
-}
-//}
-
-/* publishTF //{ */
-void ControlInterface::publishTF() {
-  if (tf_broadcaster_ == nullptr) {
-    tf_broadcaster_ = std::make_shared<tf2_ros::TransformBroadcaster>(this->shared_from_this());
-  }
-  geometry_msgs::msg::TransformStamped tf1;
-  tf1.header.stamp            = this->get_clock()->now();
-  tf1.header.frame_id         = ned_origin_frame_;
-  tf1.child_frame_id          = ned_fcu_frame_;
-  tf1.transform.translation.x = pos_[0];
-  tf1.transform.translation.y = pos_[1];
-  tf1.transform.translation.z = pos_[2];
-  tf1.transform.rotation.w    = ori_[0];
-  tf1.transform.rotation.x    = ori_[1];
-  tf1.transform.rotation.y    = ori_[2];
-  tf1.transform.rotation.z    = ori_[3];
-  tf_broadcaster_->sendTransform(tf1);
-}
-//}
-
-/* publishLocalOdom //{ */
-void ControlInterface::publishLocalOdom() {
-  nav_msgs::msg::Odometry msg;
-  msg.header.stamp            = this->get_clock()->now();
-  msg.header.frame_id         = world_frame_;
-  msg.child_frame_id          = fcu_frame_;
-  auto tf                     = transformBetween(fcu_frame_, world_frame_);
-  msg.pose.pose.position.x    = tf.pose.position.x;
-  msg.pose.pose.position.y    = tf.pose.position.y;
-  msg.pose.pose.position.z    = tf.pose.position.z;
-  msg.pose.pose.orientation.w = tf.pose.orientation.w;
-  msg.pose.pose.orientation.x = tf.pose.orientation.x;
-  msg.pose.pose.orientation.y = tf.pose.orientation.y;
-  msg.pose.pose.orientation.z = tf.pose.orientation.z;
-  local_odom_publisher_->publish(msg);
-}
-//}
-
 /* publishDebugMarkers //{ */
 void ControlInterface::publishDebugMarkers() {
 
@@ -1283,25 +1319,6 @@ void ControlInterface::publishDebugMarkers() {
     msg.poses.push_back(p);
   }
   waypoint_marker_publisher_->publish(msg);
-}
-//}
-
-/* transformBetween //{ */
-geometry_msgs::msg::PoseStamped ControlInterface::transformBetween(std::string frame_from, std::string frame_to) {
-  geometry_msgs::msg::PoseStamped pose_out;
-  try {
-    auto transform_stamped      = tf_buffer_->lookupTransform(frame_to, frame_from, rclcpp::Time(0));
-    pose_out.pose.position.x    = transform_stamped.transform.translation.x;
-    pose_out.pose.position.y    = transform_stamped.transform.translation.y;
-    pose_out.pose.position.z    = transform_stamped.transform.translation.z;
-    pose_out.pose.orientation.w = transform_stamped.transform.rotation.w;
-    pose_out.pose.orientation.x = transform_stamped.transform.rotation.x;
-    pose_out.pose.orientation.y = transform_stamped.transform.rotation.y;
-    pose_out.pose.orientation.z = transform_stamped.transform.rotation.z;
-  }
-  catch (...) {
-  }
-  return pose_out;
 }
 //}
 

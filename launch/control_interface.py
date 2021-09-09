@@ -40,14 +40,13 @@ def generate_launch_description():
                 ],
                 remappings=[
                     ("~/vehicle_command_out", "/" + DRONE_DEVICE_ID + "/VehicleCommand_PubSubTopic"),
-                    ("~/local_odom_out", "~/local_odom"),
                     ("~/diagnostics_out", "~/diagnostics"),
                     ("~/debug_markers_out", "~/debug/waypoint_markers"),
 
                     ("~/octomap_reset_out", "/" + DRONE_DEVICE_ID + "/octomap_server/reset"),
 
-                    ("~/gps_in", "/" + DRONE_DEVICE_ID + "/VehicleGlobalPosition_PubSubTopic"),
-                    ("~/pixhawk_odom_in", "/" + DRONE_DEVICE_ID + "/VehicleOdometry_PubSubTopic"),
+                    ("~/diagnostics_out", "~/diagnostics"),
+                    ("~/debug_markers_out", "~/debug/waypoint_markers"),
                     ("~/control_mode_in", "/" + DRONE_DEVICE_ID + "/VehicleControlMode_PubSubTopic"),
                     ("~/land_detected_in", "/" + DRONE_DEVICE_ID + "/VehicleLandDetected_PubSubTopic"),
                     ("~/mission_result_in", "/" + DRONE_DEVICE_ID + "/MissionResult_PubSubTopic"),
@@ -62,6 +61,13 @@ def generate_launch_description():
                     
                     ("~/waypoint_to_local_in", "~/waypoint_to_local"),
                     ("~/path_to_local_in", "~/path_to_local"),
+
+                    ("~/get_origin", "/" + DRONE_DEVICE_ID + "/odometry2/get_origin"),
+                    ("~/getting_odom", "/" + DRONE_DEVICE_ID + "/odometry2/getting_odom"),
+
+                    ("~/get_px4_param_int", "/" + DRONE_DEVICE_ID + "/odometry2/get_px4_param_int"),
+                    ("~/set_px4_param_int", "/" + DRONE_DEVICE_ID + "/odometry2/set_px4_param_int"),
+
                 ],
             ),
         ],
