@@ -19,6 +19,7 @@
 #include <px4_msgs/msg/vehicle_odometry.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <rclcpp/time.hpp>
+#include <rcl_interfaces/msg/set_parameters_result.hpp>
 #include <std_msgs/msg/color_rgba.hpp>
 #include <std_srvs/srv/set_bool.hpp>
 #include <std_srvs/srv/trigger.hpp>
@@ -28,7 +29,6 @@
 #include <tf2_ros/static_transform_broadcaster.h>
 #include <tf2_ros/transform_broadcaster.h>
 #include <tf2_ros/transform_listener.h>
-#include <thread>
 #include <visualization_msgs/msg/marker_array.hpp>
 
 using namespace std::placeholders;
@@ -71,7 +71,6 @@ private:
   bool getting_landed_info_  = false;
   bool getting_control_mode_ = false;
   bool start_mission_        = false;
-  bool mission_received_     = false;
   bool armed_                = false;
   bool takeoff_requested_    = false;
   bool motion_started_       = false;
@@ -112,13 +111,13 @@ private:
 
   // config params
   double yaw_offset_correction_      = M_PI / 2;
-  double takeoff_height_             = 2.5;
-  double waypoint_marker_scale_      = 0.3;
-  double control_update_rate_        = 10.0;
-  double waypoint_loiter_time_       = 0.0;
-  bool reset_octomap_before_takeoff_ = true;
   double waypoint_acceptance_radius_ = 0.3;
   double target_velocity_            = 1.0;
+  double takeoff_height_               = 2.5;
+  double waypoint_marker_scale_        = 0.3;
+  double control_update_rate_            = 20.0;
+  double waypoint_loiter_time_         = 0.0;
+  bool   reset_octomap_before_takeoff_ = true;
 
   // publishers
   rclcpp::Publisher<px4_msgs::msg::VehicleCommand>::SharedPtr              vehicle_command_publisher_;
@@ -132,6 +131,8 @@ private:
   rclcpp::Subscription<px4_msgs::msg::VehicleControlMode>::SharedPtr    control_mode_subscriber_;
   rclcpp::Subscription<px4_msgs::msg::VehicleLandDetected>::SharedPtr   land_detected_subscriber_;
   rclcpp::Subscription<px4_msgs::msg::MissionResult>::SharedPtr         mission_result_subscriber_;
+
+  OnSetParametersCallbackHandle::SharedPtr callback_handle_;
 
   // subscriber callbacks
   void gpsCallback(const px4_msgs::msg::VehicleGlobalPosition::UniquePtr msg);
@@ -165,6 +166,9 @@ private:
                                std::shared_ptr<fog_msgs::srv::WaypointToLocal::Response>      response);
   bool pathToLocalCallback(const std::shared_ptr<fog_msgs::srv::PathToLocal::Request> request, std::shared_ptr<fog_msgs::srv::PathToLocal::Response> response);
 
+  // parameter callback
+  rcl_interfaces::msg::SetParametersResult parametersCallback(const std::vector<rclcpp::Parameter> &parameters);
+
   // internal functions
   double getYaw(const Eigen::Quaterniond &q);
   double getYaw(const geometry_msgs::msg::Quaternion &q);
@@ -195,14 +199,14 @@ private:
 
   // utils
   template <class T>
-  bool parse_param(std::string param_name, T &param_dest);
+  bool parse_param(const std::string &param_name, T &param_dest);
 };
 //}
 
 /* constructor //{ */
 ControlInterface::ControlInterface(rclcpp::NodeOptions options) : Node("control_interface", options) {
 
-  RCLCPP_INFO(this->get_logger(), "Initializing...");
+  RCLCPP_INFO(this->get_logger(), "[%s]: Initializing...", this->get_name());
 
   try {
     uav_name_ = std::string(std::getenv("DRONE_DEVICE_ID"));
@@ -295,6 +299,8 @@ ControlInterface::ControlInterface(rclcpp::NodeOptions options) : Node("control_
   mission_result_subscriber_ = this->create_subscription<px4_msgs::msg::MissionResult>("~/mission_result_in", rclcpp::SystemDefaultsQoS(),
                                                                                        std::bind(&ControlInterface::missionResultCallback, this, _1));
 
+  callback_handle_ = this->add_on_set_parameters_callback(std::bind(&ControlInterface::parametersCallback, this, _1));
+
   // service handlers
   arming_service_         = this->create_service<std_srvs::srv::SetBool>("~/arming_in", std::bind(&ControlInterface::armingCallback, this, _1, _2));
   takeoff_service_        = this->create_service<std_srvs::srv::Trigger>("~/takeoff_in", std::bind(&ControlInterface::takeoffCallback, this, _1, _2));
@@ -322,6 +328,93 @@ ControlInterface::ControlInterface(rclcpp::NodeOptions options) : Node("control_
 
   is_initialized_ = true;
   RCLCPP_INFO(this->get_logger(), "[%s]: Initialized", this->get_name());
+}
+//}
+
+/* parametersCallback //{ */
+rcl_interfaces::msg::SetParametersResult ControlInterface::parametersCallback(const std::vector<rclcpp::Parameter> &parameters) {
+  rcl_interfaces::msg::SetParametersResult result;
+  result.successful = false;
+  result.reason     = "";
+  char buff[300];
+
+  for (const auto &param : parameters) {
+
+    /* takeoff_height //{ */
+    if (param.get_name() == "takeoff_height") {
+      if (param.get_type() == rclcpp::ParameterType::PARAMETER_DOUBLE) {
+        if (param.as_double() >= 0.5 && param.as_double() < 10) {
+          takeoff_height_   = param.as_double();
+          result.successful = true;
+          RCLCPP_INFO(this->get_logger(), "[%s]: Parameter: '%s' set to %1.2f", this->get_name(), param.get_name().c_str(), param.as_double());
+        } else {
+          snprintf(buff, sizeof(buff), "parameter '%s' cannot be set to %1.2f because it is not in range <0.5;10>", param.get_name().c_str(),
+                   param.as_double());
+          result.reason = buff;
+        }
+      } else {
+        snprintf(buff, sizeof(buff), "parameter '%s' has to be type DOUBLE", param.get_name().c_str());
+        result.reason = buff;
+      }
+      //}
+
+      /* waypoint_marker_scale //{ */
+    } else if (param.get_name() == "waypoint_marker_scale") {
+      if (param.get_type() == rclcpp::ParameterType::PARAMETER_DOUBLE) {
+        if (param.as_double() > 0.0) {
+          waypoint_marker_scale_ = param.as_double();
+          result.successful      = true;
+          RCLCPP_INFO(this->get_logger(), "[%s]: Parameter: '%s' set to %1.2f", this->get_name(), param.get_name().c_str(), param.as_double());
+        } else {
+          snprintf(buff, sizeof(buff), "parameter '%s' cannot be set to %1.2f because it is not >0", param.get_name().c_str(), param.as_double());
+          result.reason = buff;
+        }
+      } else {
+        snprintf(buff, sizeof(buff), "parameter '%s' has to be type DOUBLE", param.get_name().c_str());
+        result.reason = buff;
+      }
+      //}
+
+      /* waypoint_loiter_time //{ */
+    } else if (param.get_name() == "waypoint_loiter_time") {
+      if (param.get_type() == rclcpp::ParameterType::PARAMETER_DOUBLE) {
+        if (param.as_double() >= 0.0) {
+          waypoint_loiter_time_ = param.as_double();
+          result.successful     = true;
+          RCLCPP_INFO(this->get_logger(), "[%s]: Parameter: '%s' set to %1.2f", this->get_name(), param.get_name().c_str(), param.as_double());
+        } else {
+          snprintf(buff, sizeof(buff), "parameter '%s' cannot be set to %1.2f because it is a negative value", param.get_name().c_str(), param.as_double());
+          result.reason = buff;
+        }
+      } else {
+        snprintf(buff, sizeof(buff), "parameter '%s' has to be type DOUBLE", param.get_name().c_str());
+        result.reason = buff;
+      }
+      //}
+
+      /* reset_octomap_before_takeoff //{ */
+    } else if (param.get_name() == "reset_octomap_before_takeoff") {
+      if (param.get_type() == rclcpp::ParameterType::PARAMETER_BOOL) {
+        reset_octomap_before_takeoff_ = param.as_bool();
+        result.successful             = true;
+        RCLCPP_INFO(this->get_logger(), "[%s]: Parameter: '%s' set to %s", this->get_name(), param.get_name().c_str(), param.as_bool() ? "TRUE" : "FALSE");
+      } else {
+        snprintf(buff, sizeof(buff), "parameter '%s' has to be type BOOL", param.get_name().c_str());
+        result.reason = buff;
+      }
+      //}
+
+    } else {
+      snprintf(buff, sizeof(buff), "parameter '%s' cannot be changed dynamically", param.get_name().c_str());
+      result.reason = buff;
+    }
+  }
+
+  if (!result.successful) {
+    RCLCPP_WARN(this->get_logger(), "[%s]: Failed to set parameter: %s", this->get_name(), result.reason.c_str());
+  }
+
+  return result;
 }
 //}
 
@@ -403,7 +496,7 @@ void ControlInterface::landDetectedCallback(const px4_msgs::msg::VehicleLandDete
   }
   getting_landed_info_ = true;
   // checking only ground_contact flag instead of landed due to a problem in simulation
-  landed_              = msg->ground_contact;
+  landed_ = msg->ground_contact;
 }
 //}
 
@@ -960,7 +1053,7 @@ bool ControlInterface::takeoff() {
   }
 
   if (reset_octomap_before_takeoff_) {
-    auto reset_srv = std::make_shared<std_srvs::srv::Empty::Request>();
+    auto reset_srv   = std::make_shared<std_srvs::srv::Empty::Request>();
     auto call_result = octomap_reset_client_->async_send_request(reset_srv);
     RCLCPP_INFO(this->get_logger(), "[%s]: Resetting octomap server", this->get_name());
   }
@@ -1239,10 +1332,9 @@ double ControlInterface::getYaw(const geometry_msgs::msg::Quaternion &q) {
 
 /* parse_param //{ */
 template <class T>
-bool ControlInterface::parse_param(std::string param_name, T &param_dest) {
-  const std::string param_path = "param_namespace." + param_name;
-  this->declare_parameter(param_path);
-  if (!this->get_parameter(param_path, param_dest)) {
+bool ControlInterface::parse_param(const std::string &param_name, T &param_dest) {
+  this->declare_parameter(param_name);
+  if (!this->get_parameter(param_name, param_dest)) {
     RCLCPP_ERROR(this->get_logger(), "[%s]: Could not load param '%s'", this->get_name(), param_name.c_str());
     return false;
   } else {
@@ -1253,12 +1345,12 @@ bool ControlInterface::parse_param(std::string param_name, T &param_dest) {
 //}
 
 /* parse_param impl //{ */
-template bool ControlInterface::parse_param<int>(std::string param_name, int &param_dest);
-template bool ControlInterface::parse_param<double>(std::string param_name, double &param_dest);
-template bool ControlInterface::parse_param<float>(std::string param_name, float &param_dest);
-template bool ControlInterface::parse_param<std::string>(std::string param_name, std::string &param_dest);
-template bool ControlInterface::parse_param<unsigned int>(std::string param_name, unsigned int &param_dest);
-template bool ControlInterface::parse_param<bool>(std::string param_name, bool &param_dest);
+template bool ControlInterface::parse_param<int>(const std::string &param_name, int &param_dest);
+template bool ControlInterface::parse_param<double>(const std::string &param_name, double &param_dest);
+template bool ControlInterface::parse_param<float>(const std::string &param_name, float &param_dest);
+template bool ControlInterface::parse_param<std::string>(const std::string &param_name, std::string &param_dest);
+template bool ControlInterface::parse_param<unsigned int>(const std::string &param_name, unsigned int &param_dest);
+template bool ControlInterface::parse_param<bool>(const std::string &param_name, bool &param_dest);
 //}
 
 }  // namespace control_interface

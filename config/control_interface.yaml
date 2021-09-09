@@ -1,11 +1,13 @@
-param_namespace:
-  # device_url: "serial:///dev/ttyS7:921600"
-  device_url: "udp://:14590"
-  yaw_offset_correction: -1.5708 # [rad]
-  takeoff_height: 1.0 # [m]
-  reset_octomap_before_takeoff: true
-  waypoint_marker_scale: 0.3
-  waypoint_loiter_time: 0.0 # [s]
-  waypoint_acceptance_radius: 0.2 # [m]
-  control_update_rate: 10.0 # [Hz]
-  target_velocity: 1.5 # [m/s]
+# device_url: "serial:///dev/ttyS7:921600"
+device_url: "udp://:14540"
+takeoff_height: 1.0 # [m]
+reset_octomap_before_takeoff: true
+waypoint_marker_scale: 0.3
+yaw_offset_correction: -1.5708 # [rad]
+takeoff_height: 1.0 # [m]
+reset_octomap_before_takeoff: true
+waypoint_marker_scale: 0.3
+waypoint_loiter_time: 0.0 # [s]
+waypoint_acceptance_radius: 0.2 # [m]
+target_velocity: 1.5 # [m/s]
+control_loop_rate: 20.0 # [Hz]
