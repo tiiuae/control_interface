@@ -295,9 +295,9 @@ ControlInterface::ControlInterface(rclcpp::NodeOptions options) : Node("control_
     set_waypoints_service_ = this->create_service<fog_msgs::srv::Path>(
         "~/waypoints_in", std::bind(&ControlInterface::setWaypointsCallback, this, _1, _2));
     set_px4_param_int_ = this->create_service<fog_msgs::srv::SetPx4ParamInt>(
-        "~/set_px4_param_int_in", std::bind(&ControlInterface::setPx4ParamIntCallback, this, _1, _2));
+        "~/set_px4_param_int", std::bind(&ControlInterface::setPx4ParamIntCallback, this, _1, _2));
     get_px4_param_int_ = this->create_service<fog_msgs::srv::GetPx4ParamInt>(
-        "~/get_px4_param_int_in", std::bind(&ControlInterface::getPx4ParamIntCallback, this, _1, _2));
+        "~/get_px4_param_int", std::bind(&ControlInterface::getPx4ParamIntCallback, this, _1, _2));
 
     control_timer_ = this->create_wall_timer(std::chrono::duration<double>(1.0 / control_loop_rate_),
                                              std::bind(&ControlInterface::controlRoutine, this),
@@ -673,7 +673,7 @@ bool ControlInterface::setPx4ParamIntCallback(
         response->success = true;
         RCLCPP_INFO(this->get_logger(),
                     "[ControlInterface]: PX4 parameter %s successfully set to %d",
-                    request->param_name,
+                    request->param_name.c_str(),
                     request->value);
     }
     else if (result == mavsdk::Param::Result::Unknown)
@@ -746,7 +746,7 @@ bool ControlInterface::getPx4ParamIntCallback(
 
         RCLCPP_INFO(this->get_logger(),
                     "[ControlInterface]: PX4 parameter %s successfully get with value %d",
-                    request->param_name,
+                    request->param_name.c_str(),
                     response->value);
     }
     else if (result.first == mavsdk::Param::Result::Unknown)
