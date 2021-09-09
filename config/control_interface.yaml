@@ -1,9 +1,9 @@
 # device_url: "serial:///dev/ttyS7:921600"
-device_url: "udp://:14540"
+device_url: "udp://:14590"
 takeoff_height: 1.0 # [m]
 reset_octomap_before_takeoff: true
 waypoint_marker_scale: 0.3
-yaw_offset_correction: -1.5708 # [rad]
+yaw_offset_correction: -1.5708 # [rad] NOTE: MAVSDK 0.42 represents yaw=0 as heading aligned with Y axis. We want to align with X axis at yaw=0
 takeoff_height: 1.0 # [m]
 reset_octomap_before_takeoff: true
 waypoint_marker_scale: 0.3

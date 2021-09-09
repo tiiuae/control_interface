@@ -110,12 +110,12 @@ private:
   std::shared_ptr<mavsdk::geometry::CoordinateTransformation> coord_transform_;
 
   // config params
-  double yaw_offset_correction_      = M_PI / 2;
-  double waypoint_acceptance_radius_ = 0.3;
-  double target_velocity_            = 1.0;
+  double yaw_offset_correction_        = M_PI / 2;
+  double waypoint_acceptance_radius_   = 0.3;
+  double target_velocity_              = 1.0;
   double takeoff_height_               = 2.5;
   double waypoint_marker_scale_        = 0.3;
-  double control_update_rate_            = 20.0;
+  double control_update_rate_          = 20.0;
   double waypoint_loiter_time_         = 0.0;
   bool   reset_octomap_before_takeoff_ = true;
 
