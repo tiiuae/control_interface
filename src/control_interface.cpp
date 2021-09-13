@@ -33,6 +33,7 @@
 #include <visualization_msgs/msg/marker_array.hpp>
 #include <fog_msgs/srv/get_px4_param_int.hpp>
 #include <fog_msgs/srv/set_px4_param_int.hpp>
+#include <fog_msgs/srv/set_px4_param_float.hpp>
 #include <fog_msgs/srv/get_origin.hpp>
 #include <fog_msgs/srv/get_bool.hpp>
 
@@ -142,6 +143,7 @@ private:
   rclcpp::Service<fog_msgs::srv::PathToLocal>::SharedPtr     path_to_local_service_;
   rclcpp::Service<fog_msgs::srv::SetPx4ParamInt>::SharedPtr  set_px4_param_int_;
   rclcpp::Service<fog_msgs::srv::GetPx4ParamInt>::SharedPtr  get_px4_param_int_;
+  rclcpp::Service<fog_msgs::srv::SetPx4ParamFloat>::SharedPtr  set_px4_param_float_;
 
   // service clients
   rclcpp::Client<fog_msgs::srv::GetOrigin>::SharedPtr get_origin_client_;
@@ -162,6 +164,8 @@ private:
 
   bool setPx4ParamIntCallback(const std::shared_ptr<fog_msgs::srv::SetPx4ParamInt::Request> request,
                               std::shared_ptr<fog_msgs::srv::SetPx4ParamInt::Response>      response);
+  bool setPx4ParamFloatCallback(const std::shared_ptr<fog_msgs::srv::SetPx4ParamFloat::Request> request,
+                              std::shared_ptr<fog_msgs::srv::SetPx4ParamFloat::Response>      response);
   bool getPx4ParamIntCallback(const std::shared_ptr<fog_msgs::srv::GetPx4ParamInt::Request> request,
                               std::shared_ptr<fog_msgs::srv::GetPx4ParamInt::Response>      response);
   bool gpsOriginCallback(rclcpp::Client<fog_msgs::srv::GetOrigin>::SharedFuture future);
@@ -312,6 +316,8 @@ ControlInterface::ControlInterface(rclcpp::NodeOptions options) : Node("control_
       this->create_service<fog_msgs::srv::SetPx4ParamInt>("~/set_px4_param_int", std::bind(&ControlInterface::setPx4ParamIntCallback, this, _1, _2));
   get_px4_param_int_ =
       this->create_service<fog_msgs::srv::GetPx4ParamInt>("~/get_px4_param_int", std::bind(&ControlInterface::getPx4ParamIntCallback, this, _1, _2));
+  set_px4_param_float_ =
+      this->create_service<fog_msgs::srv::SetPx4ParamFloat>("~/set_px4_param_float", std::bind(&ControlInterface::setPx4ParamFloatCallback, this, _1, _2));
 
   control_timer_ =
       this->create_wall_timer(std::chrono::duration<double>(1.0 / control_update_rate_), std::bind(&ControlInterface::controlRoutine, this), callback_group_);
@@ -994,6 +1000,61 @@ bool ControlInterface::getPx4ParamIntCallback([[maybe_unused]] const std::shared
     response->param_name = request->param_name;
     response->success    = false;
     RCLCPP_ERROR(this->get_logger(), "[ControlInterface]: PX4 parameter get request param name too long");
+  }
+
+  return true;
+}
+//}
+
+/* setPx4ParamFloatCallback //{ */
+bool ControlInterface::setPx4ParamFloatCallback([[maybe_unused]] const std::shared_ptr<fog_msgs::srv::SetPx4ParamFloat::Request> request,
+                                              std::shared_ptr<fog_msgs::srv::SetPx4ParamFloat::Response>                       response) {
+
+  if (!is_initialized_) {
+    response->success = false;
+    response->message = "Parameter cannot be set, not initialized";
+    RCLCPP_ERROR(this->get_logger(), "[%s]: %s", this->get_name(), response->message.c_str());
+    return true;
+  }
+
+  auto result = param_->set_param_float(request->param_name, request->value);
+
+  if (result == mavsdk::Param::Result::Success) {
+    response->message    = "Parameter set successfully";
+    response->param_name = request->param_name;
+    response->value      = request->value;
+    response->success    = true;
+    RCLCPP_INFO(this->get_logger(), "[ControlInterface]: PX4 parameter %s successfully set to %f", request->param_name.c_str(), request->value);
+  } else if (result == mavsdk::Param::Result::Unknown) {
+    response->message    = "Parameter did not set - unknown error";
+    response->param_name = request->param_name;
+    response->value      = request->value;
+    response->success    = false;
+    RCLCPP_ERROR(this->get_logger(), "[ControlInterface]: PX4 parameter set uknown error");
+  } else if (result == mavsdk::Param::Result::Timeout) {
+    response->message    = "Parameter did not set - time out";
+    response->param_name = request->param_name;
+    response->value      = request->value;
+    response->success    = false;
+    RCLCPP_ERROR(this->get_logger(), "[ControlInterface]: PX4 parameter set request time out");
+  } else if (result == mavsdk::Param::Result::ConnectionError) {
+    response->message    = "Parameter did not set - connection error";
+    response->param_name = request->param_name;
+    response->value      = request->value;
+    response->success    = false;
+    RCLCPP_ERROR(this->get_logger(), "[ControlInterface]: PX4 parameter set request connection error");
+  } else if (result == mavsdk::Param::Result::WrongType) {
+    response->message    = "Parameter did not set - request wrong type";
+    response->param_name = request->param_name;
+    response->value      = request->value;
+    response->success    = false;
+    RCLCPP_ERROR(this->get_logger(), "[ControlInterface]: PX4 parameter set request wrong type");
+  } else if (result == mavsdk::Param::Result::ParamNameTooLong) {
+    response->message    = "Parameter did not set - param name too long";
+    response->param_name = request->param_name;
+    response->value      = request->value;
+    response->success    = false;
+    RCLCPP_ERROR(this->get_logger(), "[ControlInterface]: PX4 parameter set request param name too long");
   }
 
   return true;

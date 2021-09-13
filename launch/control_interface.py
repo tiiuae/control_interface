@@ -65,8 +65,9 @@ def generate_launch_description():
                     ("~/get_origin", "/" + DRONE_DEVICE_ID + "/odometry2/get_origin"),
                     ("~/getting_odom", "/" + DRONE_DEVICE_ID + "/odometry2/getting_odom"),
 
-                    ("~/get_px4_param_int", "/" + DRONE_DEVICE_ID + "/odometry2/get_px4_param_int"),
-                    ("~/set_px4_param_int", "/" + DRONE_DEVICE_ID + "/odometry2/set_px4_param_int"),
+                    ("~/get_px4_param_int", "~/get_px4_param_int"),
+                    ("~/set_px4_param_int", "~/set_px4_param_int"),
+                    ("~/set_px4_param_float", "~/set_px4_param_float"),
 
                 ],
             ),
