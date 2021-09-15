@@ -41,6 +41,7 @@ def generate_launch_description():
                 remappings=[
                     ("~/vehicle_command_out", "/" + DRONE_DEVICE_ID + "/VehicleCommand_PubSubTopic"),
                     ("~/local_odom_out", "~/local_odom"),
+                    ("~/desired_pose_out", "~/desired_pose"),
                     ("~/diagnostics_out", "~/diagnostics"),
                     ("~/debug_markers_out", "~/debug/waypoint_markers"),
 
