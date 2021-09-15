@@ -180,7 +180,7 @@ private:
   mavsdk::Mission::MissionPlan     mission_plan_;
 
   std::deque<local_waypoint_t> waypoint_buffer_;
-  Eigen::Vector4d              desired_pose_(0, 0, 0, 0);
+  Eigen::Vector4d              desired_pose_;
 
   std::shared_ptr<tf2_ros::Buffer>                     tf_buffer_;
   std::shared_ptr<tf2_ros::TransformListener>          tf_listener_;
@@ -401,6 +401,8 @@ ControlInterface::ControlInterface(rclcpp::NodeOptions options) : Node("control_
 
   tf_broadcaster_        = nullptr;
   static_tf_broadcaster_ = nullptr;
+
+  desired_pose_ = Eigen::Vector4d(0.0, 0.0, 0.0, 0.0);
 
   tf_buffer_ = std::make_shared<tf2_ros::Buffer>(this->get_clock());
   tf_buffer_->setUsingDedicatedThread(true);
