@@ -60,8 +60,13 @@ double getYaw(const Eigen::Quaterniond &q) {
 }
 
 double getYaw(const geometry_msgs::msg::Quaternion &q) {
-  /* return atan2(2.0 * (q.z * q.w + q.x * q.y), -1.0 + 2.0 * (q.w * q.w + q.x * q.x)); */
   Eigen::Quaterniond eq(q.w, q.x, q.y, q.z);
+  auto               euler = eq.toRotationMatrix().eulerAngles(0, 1, 2);
+  return euler[2];
+}
+
+double getYaw(const float q[4]) {
+  Eigen::Quaterniond eq(q[0], q[1], q[2], q[3]);
   auto               euler = eq.toRotationMatrix().eulerAngles(0, 1, 2);
   return euler[2];
 }
@@ -1060,7 +1065,7 @@ bool ControlInterface::takeoff() {
   current_goal.x   = pos_[1];
   current_goal.y   = pos_[0];
   current_goal.z   = takeoff_height_;
-  current_goal.yaw = 0.0;
+  current_goal.yaw = getYaw(ori_) - yaw_offset_correction_;
   waypoint_buffer_.push_back(current_goal);
   motion_started_ = true;
   RCLCPP_INFO(this->get_logger(), "[%s]: Taking off", this->get_name());
