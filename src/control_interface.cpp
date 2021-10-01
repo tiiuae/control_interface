@@ -583,6 +583,7 @@ void ControlInterface::odometryCallback(const nav_msgs::msg::Odometry::UniquePtr
   ori_[1] = msg->pose.pose.orientation.x;
   ori_[2] = msg->pose.pose.orientation.y;
   ori_[3] = msg->pose.pose.orientation.z;
+  
 }
 //}
 
@@ -1220,6 +1221,7 @@ void ControlInterface::controlRoutine(void) {
 
   if (is_initialized_) {
     publishDiagnostics();
+    publishDesiredPose();
 
     if (gps_origin_set_.load()) {
 
