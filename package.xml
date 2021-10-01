@@ -3,7 +3,7 @@
 <package format="3">
 
   <name>control_interface</name>
-  <version>0.0.5</version>
+  <version>0.0.7</version>
   <description>ROS2 interface to send commands to PX4 through MavSDK</description>
   <maintainer email="petr.stibinger@fly4future.com">stibipet</maintainer>
   
@@ -16,6 +16,7 @@
   <depend>rclcpp</depend>
   <depend>rclcpp_components</depend>
   <depend>rclcpp_lifecycle</depend>
+  <depend>rcl_interfaces</depend>
   <depend>launch</depend>
   <depend>launch_ros</depend>
   <depend>builtin_interfaces</depend>

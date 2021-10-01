@@ -14,10 +14,11 @@ add_definitions("-g")
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(rclcpp_components REQUIRED)
+find_package(rcl_interfaces REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(std_srvs REQUIRED)
 find_package(px4_msgs REQUIRED)
-find_package(fog_msgs 0.0.6 REQUIRED)
+find_package(fog_msgs 0.0.7 REQUIRED)
 find_package(nav_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(visualization_msgs REQUIRED)
@@ -40,6 +41,7 @@ target_compile_definitions(control_interface
 ament_target_dependencies(control_interface
   rclcpp
   rclcpp_components
+  rcl_interfaces
   std_msgs
   nav_msgs
   std_srvs
@@ -56,6 +58,8 @@ ament_target_dependencies(control_interface
 target_link_libraries(control_interface
   MAVSDK::mavsdk_action
   MAVSDK::mavsdk_mission
+  MAVSDK::mavsdk_telemetry
+  MAVSDK::mavsdk_param
   MAVSDK::mavsdk
   )
 
