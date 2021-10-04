@@ -11,3 +11,4 @@ waypoint_loiter_time: 0.0 # [s]
 waypoint_acceptance_radius: 0.2 # [m]
 target_velocity: 1.5 # [m/s]
 control_update_rate: 20.0 # [Hz]
+takeoff_position_samples: 20 # before takeoff, the first waypoint will be set to the average of these samples

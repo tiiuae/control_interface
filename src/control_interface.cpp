@@ -1,4 +1,5 @@
 #include <eigen3/Eigen/Dense>
+#include <eigen3/Eigen/src/Geometry/Quaternion.h>
 #include <fog_msgs/srv/waypoint_to_local.hpp>
 #include <fog_msgs/srv/path_to_local.hpp>
 #include <fog_msgs/srv/path.hpp>
@@ -173,6 +174,9 @@ private:
   bool motion_started_       = false;
   bool landed_               = true;
 
+  std::atomic_bool manual_control_flag_ = true;
+  std::atomic_bool auto_control_flag_   = true;
+
   std::atomic_bool gps_origin_set_      = false;
   std::atomic_bool gps_origin_called_   = false;
   std::atomic_bool getting_odom_        = false;
@@ -207,10 +211,12 @@ private:
   bool   reset_octomap_before_takeoff_ = true;
   double waypoint_acceptance_radius_   = 0.3;
   double target_velocity_              = 1.0;
+  size_t takeoff_position_samples_     = 20;
 
   // vehicle local position
-  float pos_[3];
-  float ori_[4];
+  std::vector<std::tuple<float, float, float>> pos_samples_;
+  float                                        pos_[3];
+  float                                        ori_[4];
 
   // publishers
   rclcpp::Publisher<px4_msgs::msg::VehicleCommand>::SharedPtr   vehicle_command_publisher_;
@@ -284,6 +290,7 @@ private:
   bool startMission();
   bool uploadMission();
   bool stopPreviousMission();
+  bool isInManualControl();
 
   void addToMission(local_waypoint_t w);
   void publishDebugMarkers();
@@ -325,6 +332,7 @@ ControlInterface::ControlInterface(rclcpp::NodeOptions options) : Node("control_
   parse_param("waypoint_acceptance_radius", waypoint_acceptance_radius_);
   parse_param("target_velocity", target_velocity_);
   parse_param("control_update_rate", control_update_rate_);
+  parse_param("takeoff_position_samples", takeoff_position_samples_);
 
   if (control_update_rate_ < 5.0) {
     control_update_rate_ = 5.0;
@@ -526,6 +534,8 @@ void ControlInterface::controlModeCallback(const px4_msgs::msg::VehicleControlMo
   }
 
   getting_control_mode_ = true;
+  manual_control_flag_.store(msg->flag_control_manual_enabled);
+  auto_control_flag_.store(msg->flag_control_auto_enabled);
 
   if (armed_ != msg->flag_armed) {
     armed_ = msg->flag_armed;
@@ -583,7 +593,12 @@ void ControlInterface::odometryCallback(const nav_msgs::msg::Odometry::UniquePtr
   ori_[1] = msg->pose.pose.orientation.x;
   ori_[2] = msg->pose.pose.orientation.y;
   ori_[3] = msg->pose.pose.orientation.z;
-  
+
+  std::tuple<float, float, float> pos = std::make_tuple(msg->pose.pose.position.x, msg->pose.pose.position.y, msg->pose.pose.position.z);
+  pos_samples_.push_back(pos);
+  if (pos_samples_.size() > takeoff_position_samples_) {
+    pos_samples_.erase(pos_samples_.begin());
+  }
 }
 //}
 
@@ -1237,6 +1252,11 @@ void ControlInterface::controlRoutine(void) {
         return;
       }
 
+      if (isInManualControl()) {
+        RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 1000, "[%s]: Vehicle is in manual control, not interfering", this->get_name());
+        return;
+      }
+
       /* handle motion //{ */
       if (motion_started_) {
 
@@ -1343,11 +1363,28 @@ bool ControlInterface::takeoff() {
     return false;
   }
 
+  if (pos_samples_.size() < takeoff_position_samples_) {
+    RCLCPP_WARN(this->get_logger(), "[%s]: Takeoff rejected. Need %ld odometry samples, only have %ld", this->get_name(), takeoff_position_samples_,
+                pos_samples_.size());
+    return false;
+  }
+
   local_waypoint_t current_goal;
-  current_goal.x   = pos_[1];
-  current_goal.y   = pos_[0];
+
+  //{ takeoff waypoint averaging
+  current_goal.x = 0;
+  current_goal.y = 0;
+
+  for (const auto &p : pos_samples_) {
+    current_goal.x += std::get<0>(p);
+    current_goal.y += std::get<1>(p);
+  }
+  current_goal.x /= pos_samples_.size();
+  current_goal.y /= pos_samples_.size();
+  //}
+
   current_goal.z   = takeoff_height_;
-  current_goal.yaw = getYaw(ori_) - yaw_offset_correction_;
+  current_goal.yaw = getYaw(ori_);
   waypoint_buffer_.push_back(current_goal);
   motion_started_ = true;
   RCLCPP_INFO(this->get_logger(), "[%s]: Taking off", this->get_name());
@@ -1414,6 +1451,12 @@ bool ControlInterface::stopPreviousMission() {
   }
   RCLCPP_INFO(this->get_logger(), "[%s]: Previous mission stopped", this->get_name());
   return true;
+}
+//}
+
+/* isInManualControl //{ */
+bool ControlInterface::isInManualControl() {
+  return manual_control_flag_.load() && !auto_control_flag_.load();
 }
 //}
 
