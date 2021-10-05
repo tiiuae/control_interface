@@ -176,6 +176,7 @@ private:
 
   std::atomic_bool manual_control_flag_ = true;
   std::atomic_bool auto_control_flag_   = true;
+  std::atomic_bool stop_commanding_     = true;
 
   std::atomic_bool gps_origin_set_      = false;
   std::atomic_bool gps_origin_called_   = false;
@@ -209,7 +210,7 @@ private:
   double control_update_rate_          = 10.0;
   double waypoint_loiter_time_         = 0.0;
   bool   reset_octomap_before_takeoff_ = true;
-  double waypoint_acceptance_radius_   = 0.3;
+  float  waypoint_acceptance_radius_   = 0.3f;
   double target_velocity_              = 1.0;
   size_t takeoff_position_samples_     = 20;
 
@@ -544,8 +545,18 @@ void ControlInterface::controlModeCallback(const px4_msgs::msg::VehicleControlMo
   }
 
   getting_control_mode_ = true;
+
+  bool previous_manual_flag = manual_control_flag_.load();
+  bool current_manual_flag  = msg->flag_control_manual_enabled;
+
+  if (!previous_manual_flag && current_manual_flag) {
+    RCLCPP_INFO(this->get_logger(), "[%s]: Control flag switched to manual. Stop commanding", this->get_name());
+    stop_commanding_.store(true);
+  }
+
   manual_control_flag_.store(msg->flag_control_manual_enabled);
   auto_control_flag_.store(msg->flag_control_auto_enabled);
+
 
   if (armed_ != msg->flag_armed) {
     armed_ = msg->flag_armed;
@@ -1263,7 +1274,8 @@ void ControlInterface::controlRoutine(void) {
       }
 
       if (isInManualControl()) {
-        RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 1000, "[%s]: Vehicle is in manual control, not interfering", this->get_name());
+        /* RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 1000, "[%s]: Vehicle is in manual control, not interfering", this->get_name()); */
+        RCLCPP_WARN(this->get_logger(), "[%s]: Vehicle is in manual control, not interfering", this->get_name());
         return;
       }
 
@@ -1404,6 +1416,10 @@ bool ControlInterface::takeoff() {
 
 /* land //{ */
 bool ControlInterface::land() {
+
+  RCLCPP_INFO(this->get_logger(), "[%s]: Landing called. Stop commanding", this->get_name());
+  stop_commanding_.store(true);
+
   auto result = action_->land();
   if (result != mavsdk::Action::Result::Success) {
     RCLCPP_ERROR(this->get_logger(), "[%s]: Landing failed", this->get_name());
@@ -1416,6 +1432,12 @@ bool ControlInterface::land() {
 
 /* startMission //{ */
 bool ControlInterface::startMission() {
+
+  if (stop_commanding_.load()) {
+    RCLCPP_WARN(this->get_logger(), "[%s]: Mission start prevented by external trigger", this->get_name());
+    return false;
+  }
+
   auto result = mission_->start_mission();
   if (result != mavsdk::Mission::Result::Success) {
     RCLCPP_ERROR(this->get_logger(), "[%s]: Mission start rejected", this->get_name());
@@ -1428,6 +1450,11 @@ bool ControlInterface::startMission() {
 
 /* uploadMission //{ */
 bool ControlInterface::uploadMission() {
+
+  if (stop_commanding_.load()) {
+    RCLCPP_WARN(this->get_logger(), "[%s]: Mission upload prevented by external trigger", this->get_name());
+    return false;
+  }
 
   auto result = mission_->upload_mission(mission_plan_);
   if (result != mavsdk::Mission::Result::Success) {
@@ -1489,6 +1516,8 @@ void ControlInterface::addToMission(local_waypoint_t w) {
   mission_plan_.mission_items.push_back(item);
 
   RCLCPP_INFO(this->get_logger(), "[%s]: Added waypoint LOCAL: [%.2f, %.2f, %.2f, %.2f]", this->get_name(), w.x, w.y, w.z, w.yaw);
+  RCLCPP_INFO(this->get_logger(), "[%s]: GLOBAL: [%.2f, %.2f, %.2f, %.2f]", this->get_name(), item.latitude_deg, item.longitude_deg, item.relative_altitude_m,
+              item.yaw_deg);
 }
 //}
 
