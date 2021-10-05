@@ -222,6 +222,7 @@ private:
   rclcpp::Publisher<px4_msgs::msg::VehicleCommand>::SharedPtr   vehicle_command_publisher_;
   rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr desired_pose_publisher_;  // https://ctu-mrs.github.io/docs/system/relative_commands.html
   rclcpp::Publisher<geometry_msgs::msg::PoseArray>::SharedPtr   waypoint_marker_publisher_;
+  rclcpp::Publisher<geometry_msgs::msg::PoseArray>::SharedPtr   waypoint_there_and_back_publisher_;
 
   rclcpp::Publisher<fog_msgs::msg::ControlInterfaceDiagnostics>::SharedPtr diagnostics_publisher_;
 
@@ -257,6 +258,7 @@ private:
   rclcpp::Client<fog_msgs::srv::GetOrigin>::SharedPtr get_origin_client_;
   rclcpp::Client<fog_msgs::srv::GetBool>::SharedPtr   getting_odom_client_;
   rclcpp::Client<std_srvs::srv::Empty>::SharedPtr     octomap_reset_client_;
+  rclcpp::Client<fog_msgs::srv::SetPx4ParamFloat>::SharedPtr set_px4_param_float_client_;
 
   // service callbacks
   bool armingCallback(const std::shared_ptr<std_srvs::srv::SetBool::Request> request, std::shared_ptr<std_srvs::srv::SetBool::Response> response);
@@ -427,6 +429,8 @@ ControlInterface::ControlInterface(rclcpp::NodeOptions options) : Node("control_
       this->create_service<fog_msgs::srv::GetPx4ParamInt>("~/get_px4_param_int", std::bind(&ControlInterface::getPx4ParamIntCallback, this, _1, _2));
   set_px4_param_float_ =
       this->create_service<fog_msgs::srv::SetPx4ParamFloat>("~/set_px4_param_float", std::bind(&ControlInterface::setPx4ParamFloatCallback, this, _1, _2));
+      
+    set_px4_param_float_client_ = this->create_client<fog_msgs::srv::SetPx4ParamFloat>("~/set_px4_param_float");
 
   control_timer_ =
       this->create_wall_timer(std::chrono::duration<double>(1.0 / control_update_rate_), std::bind(&ControlInterface::controlRoutine, this), callback_group_);
@@ -434,6 +438,12 @@ ControlInterface::ControlInterface(rclcpp::NodeOptions options) : Node("control_
   octomap_reset_client_ = this->create_client<std_srvs::srv::Empty>("~/octomap_reset_out");
 
   desired_pose_ = Eigen::Vector4d(0.0, 0.0, 0.0, 0.0);
+
+  auto request = std::make_shared<fog_msgs::srv::SetPx4ParamFloat::Request>();
+  request->param_name = "NAV_ACC_RAD";
+  request->value = waypoint_acceptance_radius_;
+   RCLCPP_INFO(this->get_logger(), "[%s]: Setting %s, value: %f", this->get_name(), request->param_name, request->value);
+   auto call_result = set_px4_param_float_client_->async_send_request(request);
 
   is_initialized_ = true;
   RCLCPP_INFO(this->get_logger(), "[%s]: Initialized", this->get_name());
