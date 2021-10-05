@@ -175,8 +175,8 @@ private:
   bool landed_               = true;
 
   std::atomic_bool manual_control_flag_ = true;
-  std::atomic_bool auto_control_flag_   = true;
-  std::atomic_bool stop_commanding_     = true;
+  std::atomic_bool auto_control_flag_   = false;
+  std::atomic_bool stop_commanding_     = false;
 
   std::atomic_bool gps_origin_set_      = false;
   std::atomic_bool gps_origin_called_   = false;
@@ -256,9 +256,9 @@ private:
   rclcpp::Service<fog_msgs::srv::SetPx4ParamFloat>::SharedPtr set_px4_param_float_;
 
   // service clients
-  rclcpp::Client<fog_msgs::srv::GetOrigin>::SharedPtr get_origin_client_;
-  rclcpp::Client<fog_msgs::srv::GetBool>::SharedPtr   getting_odom_client_;
-  rclcpp::Client<std_srvs::srv::Empty>::SharedPtr     octomap_reset_client_;
+  rclcpp::Client<fog_msgs::srv::GetOrigin>::SharedPtr        get_origin_client_;
+  rclcpp::Client<fog_msgs::srv::GetBool>::SharedPtr          getting_odom_client_;
+  rclcpp::Client<std_srvs::srv::Empty>::SharedPtr            octomap_reset_client_;
   rclcpp::Client<fog_msgs::srv::SetPx4ParamFloat>::SharedPtr set_px4_param_float_client_;
 
   // service callbacks
@@ -293,7 +293,6 @@ private:
   bool startMission();
   bool uploadMission();
   bool stopPreviousMission();
-  bool isInManualControl();
 
   void addToMission(local_waypoint_t w);
   void publishDebugMarkers();
@@ -430,8 +429,8 @@ ControlInterface::ControlInterface(rclcpp::NodeOptions options) : Node("control_
       this->create_service<fog_msgs::srv::GetPx4ParamInt>("~/get_px4_param_int", std::bind(&ControlInterface::getPx4ParamIntCallback, this, _1, _2));
   set_px4_param_float_ =
       this->create_service<fog_msgs::srv::SetPx4ParamFloat>("~/set_px4_param_float", std::bind(&ControlInterface::setPx4ParamFloatCallback, this, _1, _2));
-      
-    set_px4_param_float_client_ = this->create_client<fog_msgs::srv::SetPx4ParamFloat>("~/set_px4_param_float");
+
+  set_px4_param_float_client_ = this->create_client<fog_msgs::srv::SetPx4ParamFloat>("~/set_px4_param_float");
 
   control_timer_ =
       this->create_wall_timer(std::chrono::duration<double>(1.0 / control_update_rate_), std::bind(&ControlInterface::controlRoutine, this), callback_group_);
@@ -440,11 +439,11 @@ ControlInterface::ControlInterface(rclcpp::NodeOptions options) : Node("control_
 
   desired_pose_ = Eigen::Vector4d(0.0, 0.0, 0.0, 0.0);
 
-  auto request = std::make_shared<fog_msgs::srv::SetPx4ParamFloat::Request>();
+  auto request        = std::make_shared<fog_msgs::srv::SetPx4ParamFloat::Request>();
   request->param_name = "NAV_ACC_RAD";
-  request->value = waypoint_acceptance_radius_;
-   RCLCPP_INFO(this->get_logger(), "[%s]: Setting %s, value: %f", this->get_name(), request->param_name, request->value);
-   auto call_result = set_px4_param_float_client_->async_send_request(request);
+  request->value      = waypoint_acceptance_radius_;
+  RCLCPP_INFO(this->get_logger(), "[%s]: Setting %s, value: %f", this->get_name(), request->param_name.c_str(), request->value);
+  auto call_result = set_px4_param_float_client_->async_send_request(request);
 
   is_initialized_ = true;
   RCLCPP_INFO(this->get_logger(), "[%s]: Initialized", this->get_name());
@@ -552,11 +551,12 @@ void ControlInterface::controlModeCallback(const px4_msgs::msg::VehicleControlMo
   if (!previous_manual_flag && current_manual_flag) {
     RCLCPP_INFO(this->get_logger(), "[%s]: Control flag switched to manual. Stop commanding", this->get_name());
     stop_commanding_.store(true);
+    if (!stopPreviousMission()) {
+      RCLCPP_ERROR(this->get_logger(), "[%s]: Previous mission cannot be stopped. Manual landing required", this->get_name());
+    }
   }
 
   manual_control_flag_.store(msg->flag_control_manual_enabled);
-  auto_control_flag_.store(msg->flag_control_auto_enabled);
-
 
   if (armed_ != msg->flag_armed) {
     armed_ = msg->flag_armed;
@@ -567,6 +567,10 @@ void ControlInterface::controlModeCallback(const px4_msgs::msg::VehicleControlMo
       start_mission_     = false;
       motion_started_    = false;
       RCLCPP_WARN(this->get_logger(), "[%s]: Vehicle disarmed", this->get_name());
+      if (landed_ && stop_commanding_.load()) {
+        RCLCPP_INFO(this->get_logger(), "[%s]: Auto control will be enabled", this->get_name());
+        stop_commanding_.store(false);
+      }
     }
   }
 }
@@ -787,6 +791,13 @@ bool ControlInterface::localWaypointCallback(const std::shared_ptr<fog_msgs::srv
     return true;
   }
 
+  if (stop_commanding_.load()) {
+    response->success = false;
+    response->message = "Waypoint not set, vehicle is under manual control";
+    RCLCPP_ERROR(this->get_logger(), "[%s]: %s", this->get_name(), response->message.c_str());
+    return true;
+  }
+
   if (!stopPreviousMission()) {
     response->success = false;
     response->message = "Waypoint not set, previous mission cannot be aborted";
@@ -826,6 +837,13 @@ bool ControlInterface::localPathCallback(const std::shared_ptr<fog_msgs::srv::Pa
     return true;
   }
 
+  if (stop_commanding_.load()) {
+    response->success = false;
+    response->message = "Waypoints not set, vehicle is under manual control";
+    RCLCPP_ERROR(this->get_logger(), "[%s]: %s", this->get_name(), response->message.c_str());
+    return true;
+  }
+
   if (request->path.poses.size() < 1) {
     response->success = false;
     response->message = "Waypoints not set, request is empty";
@@ -839,6 +857,7 @@ bool ControlInterface::localPathCallback(const std::shared_ptr<fog_msgs::srv::Pa
     RCLCPP_ERROR(this->get_logger(), "[%s]: %s", this->get_name(), response->message.c_str());
     return true;
   }
+
 
   RCLCPP_INFO(this->get_logger(), "[%s]: Got %d waypoints", this->get_name(), request->path.poses.size());
   for (size_t i = 0; i < request->path.poses.size(); i++) {
@@ -881,6 +900,13 @@ bool ControlInterface::gpsWaypointCallback(const std::shared_ptr<fog_msgs::srv::
     return true;
   }
 
+  if (stop_commanding_.load()) {
+    response->success = false;
+    response->message = "Waypoint not set, vehicle is under manual control";
+    RCLCPP_ERROR(this->get_logger(), "[%s]: %s", this->get_name(), response->message.c_str());
+    return true;
+  }
+
   if (!stopPreviousMission()) {
     response->success = false;
     response->message = "Waypoint not set, previous mission cannot be aborted";
@@ -916,6 +942,13 @@ bool ControlInterface::gpsPathCallback(const std::shared_ptr<fog_msgs::srv::Path
   if (!gps_origin_set_.load()) {
     response->success = false;
     response->message = "Waypoints not set, GPS origin not set";
+    RCLCPP_ERROR(this->get_logger(), "[%s]: %s", this->get_name(), response->message.c_str());
+    return true;
+  }
+
+  if (stop_commanding_.load()) {
+    response->success = false;
+    response->message = "Waypoints not set, vehicle is under manual control";
     RCLCPP_ERROR(this->get_logger(), "[%s]: %s", this->get_name(), response->message.c_str());
     return true;
   }
@@ -1273,9 +1306,8 @@ void ControlInterface::controlRoutine(void) {
         return;
       }
 
-      if (isInManualControl()) {
-        /* RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 1000, "[%s]: Vehicle is in manual control, not interfering", this->get_name()); */
-        RCLCPP_WARN(this->get_logger(), "[%s]: Vehicle is in manual control, not interfering", this->get_name());
+      if (stop_commanding_.load()) {
+        RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 1000, "[%s]: Control action prevented by an external trigger", this->get_name());
         return;
       }
 
@@ -1292,11 +1324,6 @@ void ControlInterface::controlRoutine(void) {
           addToMission(waypoint_buffer_.front());
           desired_pose_ = Eigen::Vector4d(waypoint_buffer_.front().x, waypoint_buffer_.front().y, waypoint_buffer_.front().z, waypoint_buffer_.front().yaw);
           waypoint_buffer_.pop_front();
-
-          /* for (auto &w : waypoint_buffer_) { */
-          /*   addToMission(w); */
-          /* } */
-          /* waypoint_buffer_.clear(); */
 
           start_mission_ = true;
         }
@@ -1361,6 +1388,7 @@ void ControlInterface::publishDiagnostics() {
   msg.getting_land_sensor    = getting_landed_info_;
   msg.gps_origin_set         = gps_origin_set_;
   msg.getting_odom           = getting_odom_;
+  msg.manual_control         = stop_commanding_.load();
   diagnostics_publisher_->publish(msg);
 }
 //}
@@ -1478,7 +1506,7 @@ bool ControlInterface::stopPreviousMission() {
   start_mission_    = false;
   mission_finished_ = true;
 
-  auto result = mission_->pause_mission();
+  auto result = mission_->clear_mission();
   mission_plan_.mission_items.clear();
   waypoint_buffer_.clear();
 
@@ -1491,12 +1519,6 @@ bool ControlInterface::stopPreviousMission() {
 }
 //}
 
-/* isInManualControl //{ */
-bool ControlInterface::isInManualControl() {
-  return manual_control_flag_.load() && !auto_control_flag_.load();
-}
-//}
-
 /* addToMission //{ */
 void ControlInterface::addToMission(local_waypoint_t w) {
   mavsdk::Mission::MissionItem item;
@@ -1505,7 +1527,8 @@ void ControlInterface::addToMission(local_waypoint_t w) {
   item.longitude_deg                  = global.longitude;
   item.relative_altitude_m            = global.altitude;
   item.yaw_deg                        = -radToDeg(global.yaw + yaw_offset_correction_);
-  item.speed_m_s                      = target_velocity_;  // NAN = use default values. This does NOT limit vehicle max speed
+  /* item.speed_m_s                      = target_velocity_;  // NAN = use default values. This does NOT limit vehicle max speed */
+  item.speed_m_s                      = NAN;  // NAN = use default values. This does NOT limit vehicle max speed
   item.is_fly_through                 = true;
   item.gimbal_pitch_deg               = 0.0f;
   item.gimbal_yaw_deg                 = 0.0f;
