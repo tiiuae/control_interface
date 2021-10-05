@@ -19,6 +19,7 @@
 #include <px4_msgs/msg/vehicle_global_position.hpp>
 #include <px4_msgs/msg/vehicle_land_detected.hpp>
 #include <px4_msgs/msg/vehicle_odometry.hpp>
+#include <rclcpp/qos.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <rclcpp/time.hpp>
 #include <rcl_interfaces/msg/set_parameters_result.hpp>
@@ -387,6 +388,10 @@ ControlInterface::ControlInterface(rclcpp::NodeOptions options) : Node("control_
   param_   = std::make_shared<mavsdk::Param>(system_);
   //}
 
+  callback_group_        = this->create_callback_group(rclcpp::CallbackGroupType::Reentrant);
+  auto sub_opt           = rclcpp::SubscriptionOptions();
+  sub_opt.callback_group = callback_group_;
+
   rclcpp::QoS qos(rclcpp::KeepLast(3));
   // publishers
   vehicle_command_publisher_ = this->create_publisher<px4_msgs::msg::VehicleCommand>("~/vehicle_command_out", qos);
@@ -396,13 +401,13 @@ ControlInterface::ControlInterface(rclcpp::NodeOptions options) : Node("control_
 
   // subscribers
   control_mode_subscriber_   = this->create_subscription<px4_msgs::msg::VehicleControlMode>("~/control_mode_in", rclcpp::SystemDefaultsQoS(),
-                                                                                          std::bind(&ControlInterface::controlModeCallback, this, _1));
+                                                                                          std::bind(&ControlInterface::controlModeCallback, this, _1), sub_opt);
   land_detected_subscriber_  = this->create_subscription<px4_msgs::msg::VehicleLandDetected>("~/land_detected_in", rclcpp::SystemDefaultsQoS(),
-                                                                                            std::bind(&ControlInterface::landDetectedCallback, this, _1));
+                                                                                            std::bind(&ControlInterface::landDetectedCallback, this, _1), sub_opt);
   mission_result_subscriber_ = this->create_subscription<px4_msgs::msg::MissionResult>("~/mission_result_in", rclcpp::SystemDefaultsQoS(),
-                                                                                       std::bind(&ControlInterface::missionResultCallback, this, _1));
+                                                                                       std::bind(&ControlInterface::missionResultCallback, this, _1), sub_opt);
   odometry_subscriber_       = this->create_subscription<nav_msgs::msg::Odometry>("~/local_odom_in", rclcpp::SystemDefaultsQoS(),
-                                                                            std::bind(&ControlInterface::odometryCallback, this, _1));
+                                                                            std::bind(&ControlInterface::odometryCallback, this, _1), sub_opt);
 
   callback_handle_ = this->add_on_set_parameters_callback(std::bind(&ControlInterface::parametersCallback, this, _1));
 
@@ -412,17 +417,17 @@ ControlInterface::ControlInterface(rclcpp::NodeOptions options) : Node("control_
   octomap_reset_client_ = this->create_client<std_srvs::srv::Empty>("~/octomap_reset_out");
 
   // service handlers
-  arming_service_         = this->create_service<std_srvs::srv::SetBool>("~/arming_in", std::bind(&ControlInterface::armingCallback, this, _1, _2));
-  takeoff_service_        = this->create_service<std_srvs::srv::Trigger>("~/takeoff_in", std::bind(&ControlInterface::takeoffCallback, this, _1, _2));
-  land_service_           = this->create_service<std_srvs::srv::Trigger>("~/land_in", std::bind(&ControlInterface::landCallback, this, _1, _2));
-  local_waypoint_service_ = this->create_service<fog_msgs::srv::Vec4>("~/local_waypoint_in", std::bind(&ControlInterface::localWaypointCallback, this, _1, _2));
-  local_path_service_     = this->create_service<fog_msgs::srv::Path>("~/local_path_in", std::bind(&ControlInterface::localPathCallback, this, _1, _2));
-  gps_waypoint_service_   = this->create_service<fog_msgs::srv::Vec4>("~/gps_waypoint_in", std::bind(&ControlInterface::gpsWaypointCallback, this, _1, _2));
-  gps_path_service_       = this->create_service<fog_msgs::srv::Path>("~/gps_path_in", std::bind(&ControlInterface::gpsPathCallback, this, _1, _2));
+  arming_service_         = this->create_service<std_srvs::srv::SetBool>("~/arming_in", std::bind(&ControlInterface::armingCallback, this, _1, _2), qos.get_rmw_qos_profile(), callback_group_);
+  takeoff_service_        = this->create_service<std_srvs::srv::Trigger>("~/takeoff_in", std::bind(&ControlInterface::takeoffCallback, this, _1, _2), qos.get_rmw_qos_profile(), callback_group_);
+  land_service_           = this->create_service<std_srvs::srv::Trigger>("~/land_in", std::bind(&ControlInterface::landCallback, this, _1, _2), qos.get_rmw_qos_profile(), callback_group_);
+  local_waypoint_service_ = this->create_service<fog_msgs::srv::Vec4>("~/local_waypoint_in", std::bind(&ControlInterface::localWaypointCallback, this, _1, _2), qos.get_rmw_qos_profile(), callback_group_);
+  local_path_service_     = this->create_service<fog_msgs::srv::Path>("~/local_path_in", std::bind(&ControlInterface::localPathCallback, this, _1, _2), qos.get_rmw_qos_profile(), callback_group_);
+  gps_waypoint_service_   = this->create_service<fog_msgs::srv::Vec4>("~/gps_waypoint_in", std::bind(&ControlInterface::gpsWaypointCallback, this, _1, _2), qos.get_rmw_qos_profile(), callback_group_);
+  gps_path_service_       = this->create_service<fog_msgs::srv::Path>("~/gps_path_in", std::bind(&ControlInterface::gpsPathCallback, this, _1, _2), qos.get_rmw_qos_profile(), callback_group_);
   waypoint_to_local_service_ =
-      this->create_service<fog_msgs::srv::WaypointToLocal>("~/waypoint_to_local_in", std::bind(&ControlInterface::waypointToLocalCallback, this, _1, _2));
+      this->create_service<fog_msgs::srv::WaypointToLocal>("~/waypoint_to_local_in", std::bind(&ControlInterface::waypointToLocalCallback, this, _1, _2), qos.get_rmw_qos_profile(), callback_group_);
   path_to_local_service_ =
-      this->create_service<fog_msgs::srv::PathToLocal>("~/path_to_local_in", std::bind(&ControlInterface::pathToLocalCallback, this, _1, _2));
+      this->create_service<fog_msgs::srv::PathToLocal>("~/path_to_local_in", std::bind(&ControlInterface::pathToLocalCallback, this, _1, _2), qos.get_rmw_qos_profile(), callback_group_);
   set_px4_param_int_ =
       this->create_service<fog_msgs::srv::SetPx4ParamInt>("~/set_px4_param_int", std::bind(&ControlInterface::setPx4ParamIntCallback, this, _1, _2));
   get_px4_param_int_ =
