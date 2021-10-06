@@ -218,7 +218,6 @@ private:
   size_t takeoff_position_samples_     = 20;
 
   // vehicle local position
-  std::mutex                                   pos_mutex_;
   std::vector<std::tuple<float, float, float>> pos_samples_;
   float                                        pos_[3];
   float                                        ori_[4];
@@ -635,12 +634,9 @@ void ControlInterface::odometryCallback(const nav_msgs::msg::Odometry::UniquePtr
   getting_odom_.store(true);
   RCLCPP_INFO_ONCE(this->get_logger(), "[%s]: Getting odometry", this->get_name());
 
-  {
-    std::scoped_lock lock(pos_mutex_);
-    pos_[0] = msg->pose.pose.position.x;
-    pos_[1] = msg->pose.pose.position.y;
-    pos_[2] = msg->pose.pose.position.z;
-  }
+  pos_[0] = msg->pose.pose.position.x;
+  pos_[1] = msg->pose.pose.position.y;
+  pos_[2] = msg->pose.pose.position.z;
   ori_[0] = msg->pose.pose.orientation.w;
   ori_[1] = msg->pose.pose.orientation.x;
   ori_[2] = msg->pose.pose.orientation.y;
@@ -1371,7 +1367,7 @@ void ControlInterface::controlRoutine(void) {
       if (motion_started_.load()) {
 
         {
-          std::scoped_lock lock(waypoint_buffer_mutex_);
+          std::scoped_lock lock(waypoint_buffer_mutex_, mission_mutex_);
 
           // create a new mission plan if there are unused points in buffer
           if (waypoint_buffer_.size() > 0 && mission_finished_.load()) {
@@ -1388,12 +1384,15 @@ void ControlInterface::controlRoutine(void) {
           }
         }
 
-        // upload and execute new mission
-        if (start_mission_.load() && mission_plan_.mission_items.size() > 0) {
-          uploadMission();
-          startMission();
-          mission_finished_.store(false);
-          start_mission_.store(false);
+        {
+          std::scoped_lock lock(mission_mutex_);
+          // upload and execute new mission
+          if (start_mission_.load() && mission_plan_.mission_items.size() > 0) {
+            uploadMission();
+            startMission();
+            mission_finished_.store(false);
+            start_mission_.store(false);
+          }
         }
 
         // stop if final goal is reached
@@ -1474,14 +1473,11 @@ bool ControlInterface::takeoff() {
     return false;
   }
 
-  {
-    std::scoped_lock lock_pos(pos_mutex_);
 
-    if (pos_samples_.size() < takeoff_position_samples_) {
-      RCLCPP_WARN(this->get_logger(), "[%s]: Takeoff rejected. Need %ld odometry samples, only have %ld", this->get_name(), takeoff_position_samples_,
-                  pos_samples_.size());
-      return false;
-    }
+  if (pos_samples_.size() < takeoff_position_samples_) {
+    RCLCPP_WARN(this->get_logger(), "[%s]: Takeoff rejected. Need %ld odometry samples, only have %ld", this->get_name(), takeoff_position_samples_,
+                pos_samples_.size());
+    return false;
   }
 
   local_waypoint_t current_goal;
@@ -1577,7 +1573,7 @@ bool ControlInterface::stopPreviousMission() {
   auto result = mission_->clear_mission();
 
   {
-    std::scoped_lock lock(waypoint_buffer_mutex_);
+    std::scoped_lock lock(waypoint_buffer_mutex_, mission_mutex_);
     mission_plan_.mission_items.clear();
     waypoint_buffer_.clear();
 
@@ -1609,10 +1605,7 @@ void ControlInterface::addToMission(local_waypoint_t w) {
   item.camera_photo_interval_s = 0.0f;
   item.acceptance_radius_m     = waypoint_acceptance_radius_;
 
-  {
-    std::scoped_lock lock(mission_mutex_);
-    mission_plan_.mission_items.push_back(item);
-  }
+  mission_plan_.mission_items.push_back(item);
 
   RCLCPP_INFO(this->get_logger(), "[%s]: Added waypoint LOCAL: [%.2f, %.2f, %.2f, %.2f]", this->get_name(), w.x, w.y, w.z, w.yaw);
   RCLCPP_INFO(this->get_logger(), "[%s]: GLOBAL: [%.2f, %.2f, %.2f, %.2f]", this->get_name(), item.latitude_deg, item.longitude_deg, item.relative_altitude_m,
@@ -1647,21 +1640,18 @@ void ControlInterface::publishDebugMarkers() {
   msg.header.stamp    = this->get_clock()->now();
   msg.header.frame_id = world_frame_;
 
-  {
-    std::scoped_lock lock(waypoint_buffer_mutex_);
-    for (auto &w : waypoint_buffer_) {
-      geometry_msgs::msg::Pose p;
-      p.position.x = w.x;
-      p.position.y = w.y;
-      p.position.z = w.z;
-      Eigen::Quaterniond q =
-          Eigen::AngleAxisd(0, Eigen::Vector3d::UnitX()) * Eigen::AngleAxisd(0, Eigen::Vector3d::UnitY()) * Eigen::AngleAxisd(w.yaw, Eigen::Vector3d::UnitZ());
-      p.orientation.w = q.w();
-      p.orientation.x = q.x();
-      p.orientation.y = q.y();
-      p.orientation.z = q.z();
-      msg.poses.push_back(p);
-    }
+  for (auto &w : waypoint_buffer_) {
+    geometry_msgs::msg::Pose p;
+    p.position.x = w.x;
+    p.position.y = w.y;
+    p.position.z = w.z;
+    Eigen::Quaterniond q =
+        Eigen::AngleAxisd(0, Eigen::Vector3d::UnitX()) * Eigen::AngleAxisd(0, Eigen::Vector3d::UnitY()) * Eigen::AngleAxisd(w.yaw, Eigen::Vector3d::UnitZ());
+    p.orientation.w = q.w();
+    p.orientation.x = q.x();
+    p.orientation.y = q.y();
+    p.orientation.z = q.z();
+    msg.poses.push_back(p);
   }
   waypoint_marker_publisher_->publish(msg);
 }
