@@ -226,7 +226,7 @@ private:
   // vehicle local position
   std::vector<Eigen::Vector3d> pos_samples_;
   float                        pos_[3];
-  tf2::Quaternion ori_;
+  tf2::Quaternion              ori_;
 
   // publishers
   rclcpp::Publisher<px4_msgs::msg::VehicleCommand>::SharedPtr   vehicle_command_publisher_;
@@ -1630,11 +1630,18 @@ bool ControlInterface::uploadMission() {
     return false;
   }
 
+  auto clear_result = mission_->clear_mission();
+  if (clear_result != mavsdk::Mission::Result::Success) {
+    RCLCPP_ERROR(this->get_logger(), "[%s]: Mission upload failed. Could not clear previous mission", this->get_name());
+    return false;
+  }
+
   auto result = mission_->upload_mission(mission_plan_);
   if (result != mavsdk::Mission::Result::Success) {
     RCLCPP_ERROR(this->get_logger(), "[%s]: Mission upload failed", this->get_name());
     return false;
   }
+
   RCLCPP_INFO(this->get_logger(), "[%s]: Mission uploaded", this->get_name());
 
   return true;
