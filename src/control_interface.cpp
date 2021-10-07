@@ -64,21 +64,21 @@ struct gps_waypoint_t
 };
 
 /* getYaw //{ */
-double getYaw(const Eigen::Quaterniond &q) {
-  auto euler = q.toRotationMatrix().eulerAngles(0, 1, 2);
-  return euler[2];
+double getYaw(const tf2::Quaternion &q) {
+  double roll, pitch, yaw;
+  tf2::Matrix3x3(q).getRPY(roll, pitch, yaw);
+  return yaw;
 }
 
 double getYaw(const geometry_msgs::msg::Quaternion &q) {
-  Eigen::Quaterniond eq(q.w, q.x, q.y, q.z);
-  auto               euler = eq.toRotationMatrix().eulerAngles(0, 1, 2);
-  return euler[2];
-}
-
-double getYaw(const float q[4]) {
-  Eigen::Quaterniond eq(q[0], q[1], q[2], q[3]);
-  auto               euler = eq.toRotationMatrix().eulerAngles(0, 1, 2);
-  return euler[2];
+  tf2::Quaternion tq;
+  tq.setX(q.x);
+  tq.setY(q.y);
+  tq.setZ(q.z);
+  tq.setW(q.w);
+  double roll, pitch, yaw;
+  tf2::Matrix3x3(tq).getRPY(roll, pitch, yaw);
+  return yaw;
 }
 //}
 
@@ -226,7 +226,7 @@ private:
   // vehicle local position
   std::vector<Eigen::Vector3d> pos_samples_;
   float                        pos_[3];
-  float                        ori_[4];
+  tf2::Quaternion ori_;
 
   // publishers
   rclcpp::Publisher<px4_msgs::msg::VehicleCommand>::SharedPtr   vehicle_command_publisher_;
@@ -672,10 +672,10 @@ void ControlInterface::odometryCallback(const nav_msgs::msg::Odometry::UniquePtr
   pos_[0] = msg->pose.pose.position.x;
   pos_[1] = msg->pose.pose.position.y;
   pos_[2] = msg->pose.pose.position.z;
-  ori_[0] = msg->pose.pose.orientation.w;
-  ori_[1] = msg->pose.pose.orientation.x;
-  ori_[2] = msg->pose.pose.orientation.y;
-  ori_[3] = msg->pose.pose.orientation.z;
+  ori_.setX(msg->pose.pose.orientation.x);
+  ori_.setY(msg->pose.pose.orientation.y);
+  ori_.setZ(msg->pose.pose.orientation.z);
+  ori_.setW(msg->pose.pose.orientation.w);
 
   Eigen::Vector3d pos(msg->pose.pose.position.x, msg->pose.pose.position.y, msg->pose.pose.position.z);
   pos_samples_.push_back(pos);
@@ -690,6 +690,11 @@ void ControlInterface::odometryCallback(const nav_msgs::msg::Odometry::UniquePtr
       takeoff_called_.store(false);
     }
   }
+
+  /* desired_pose_.x() = pos_[0]; */
+  /* desired_pose_.y() = pos_[1]; */
+  /* desired_pose_.z() = pos_[2]; */
+  /* desired_pose_.w() = getYaw(ori_); */
 }
 //}
 
@@ -1465,10 +1470,11 @@ void ControlInterface::controlRoutine(void) {
           std::scoped_lock lock(mission_mutex_);
           // upload and execute new mission
           if (start_mission_.load() && mission_plan_.mission_items.size() > 0) {
-            uploadMission();
-            startMission();
-            mission_finished_.store(false);
-            start_mission_.store(false);
+            bool success = uploadMission() && startMission();
+            if (success) {
+              mission_finished_.store(false);
+              start_mission_.store(false);
+            }
           }
         }
 
@@ -1696,9 +1702,9 @@ void ControlInterface::addToMission(local_waypoint_t w) {
 
 /* publishDesiredPose //{ */
 void ControlInterface::publishDesiredPose() {
-  if (desired_pose_.z() < 0.5) {
-    return;
-  }
+  /* if (desired_pose_.z() < 0.5) { */
+  /*   return; */
+  /* } */
   geometry_msgs::msg::PoseStamped msg;
   msg.header.stamp     = this->get_clock()->now();
   msg.header.frame_id  = world_frame_;
