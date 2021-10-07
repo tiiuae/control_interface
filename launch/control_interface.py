@@ -51,6 +51,7 @@ def generate_launch_description():
                     ("~/control_mode_in", "/" + DRONE_DEVICE_ID + "/VehicleControlMode_PubSubTopic"),
                     ("~/land_detected_in", "/" + DRONE_DEVICE_ID + "/VehicleLandDetected_PubSubTopic"),
                     ("~/mission_result_in", "/" + DRONE_DEVICE_ID + "/MissionResult_PubSubTopic"),
+                    ("~/home_position_in", "/" + DRONE_DEVICE_ID + "/HomePosition_PubSubTopic"),
                     
                     ("~/arming_in", "~/arming"),
                     ("~/takeoff_in", "~/takeoff"),

@@ -18,9 +18,10 @@
 #include <mavsdk/plugins/action/action.h>
 #include <mavsdk/plugins/mission/mission.h>
 #include <mavsdk/plugins/param/param.h>
-#include <mavsdk/plugins/telemetry/telemetry.h>
+/* #include <mavsdk/plugins/telemetry/telemetry.h> */
 #include <nav_msgs/msg/odometry.hpp>
 #include <px4_msgs/msg/mission_result.hpp>
+#include <px4_msgs/msg/home_position.hpp>
 #include <px4_msgs/msg/vehicle_command.hpp>
 #include <px4_msgs/msg/vehicle_control_mode.hpp>
 #include <px4_msgs/msg/vehicle_global_position.hpp>
@@ -171,7 +172,8 @@ private:
   std::atomic_bool getting_control_mode_ = false;
   std::atomic_bool start_mission_        = false;
   std::atomic_bool armed_                = false;
-  std::atomic_bool takeoff_requested_    = false;
+  std::atomic_bool takeoff_called_       = false;
+  std::atomic_bool takeoff_completed_    = false;
   std::atomic_bool motion_started_       = false;
   std::atomic_bool landed_               = true;
 
@@ -189,19 +191,20 @@ private:
   std::string uav_name_    = "";
   std::string world_frame_ = "";
 
-  std::string                        device_url_;
-  mavsdk::Mavsdk                     mavsdk_;
-  std::shared_ptr<mavsdk::System>    system_;
-  std::shared_ptr<mavsdk::Action>    action_;
-  std::shared_ptr<mavsdk::Mission>   mission_;
-  std::shared_ptr<mavsdk::Param>     param_;
-  mavsdk::Mission::MissionPlan       mission_plan_;
-  std::mutex                         mission_mutex_;
-  std::shared_ptr<mavsdk::Telemetry> telemetry_;
+  std::string                      device_url_;
+  mavsdk::Mavsdk                   mavsdk_;
+  std::shared_ptr<mavsdk::System>  system_;
+  std::shared_ptr<mavsdk::Action>  action_;
+  std::shared_ptr<mavsdk::Mission> mission_;
+  std::shared_ptr<mavsdk::Param>   param_;
+  mavsdk::Mission::MissionPlan     mission_plan_;
+  std::mutex                       mission_mutex_;
+  /* std::shared_ptr<mavsdk::Telemetry> telemetry_; */
 
   std::mutex                   waypoint_buffer_mutex_;
   std::deque<local_waypoint_t> waypoint_buffer_;
   Eigen::Vector4d              desired_pose_;
+  Eigen::Vector2d              home_position_offset_ = Eigen::Vector2d(0, 0);
 
   // use takeoff lat and long to initialize local frame
   std::shared_ptr<mavsdk::geometry::CoordinateTransformation> coord_transform_;
@@ -218,9 +221,9 @@ private:
   size_t takeoff_position_samples_     = 20;
 
   // vehicle local position
-  std::vector<std::tuple<float, float, float>> pos_samples_;
-  float                                        pos_[3];
-  float                                        ori_[4];
+  std::vector<Eigen::Vector3d> pos_samples_;
+  float                        pos_[3];
+  float                        ori_[4];
 
   // publishers
   rclcpp::Publisher<px4_msgs::msg::VehicleCommand>::SharedPtr   vehicle_command_publisher_;
@@ -234,6 +237,7 @@ private:
   rclcpp::Subscription<px4_msgs::msg::VehicleControlMode>::SharedPtr  control_mode_subscriber_;
   rclcpp::Subscription<px4_msgs::msg::VehicleLandDetected>::SharedPtr land_detected_subscriber_;
   rclcpp::Subscription<px4_msgs::msg::MissionResult>::SharedPtr       mission_result_subscriber_;
+  rclcpp::Subscription<px4_msgs::msg::HomePosition>::SharedPtr        home_position_subscriber_;
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr            odometry_subscriber_;
 
   OnSetParametersCallbackHandle::SharedPtr callback_handle_;
@@ -243,7 +247,8 @@ private:
   void landDetectedCallback(const px4_msgs::msg::VehicleLandDetected::UniquePtr msg);
   void missionResultCallback(const px4_msgs::msg::MissionResult::UniquePtr msg);
   void odometryCallback(const nav_msgs::msg::Odometry::UniquePtr msg);
-  void homeCallback(const mavsdk::Telemetry::Position home_position);
+  /* void homeCallback(const mavsdk::Telemetry::Position home_position); */
+  void homePositionCallback(const px4_msgs::msg::HomePosition::UniquePtr msg);
 
   // services provided
   rclcpp::Service<std_srvs::srv::SetBool>::SharedPtr          arming_service_;
@@ -386,11 +391,11 @@ ControlInterface::ControlInterface(rclcpp::NodeOptions options) : Node("control_
     return;
 
   RCLCPP_INFO(this->get_logger(), "[%s]: Target connected", this->get_name());
-  action_    = std::make_shared<mavsdk::Action>(system_);
-  mission_   = std::make_shared<mavsdk::Mission>(system_);
-  param_     = std::make_shared<mavsdk::Param>(system_);
-  telemetry_ = std::make_shared<mavsdk::Telemetry>(system_);
-  telemetry_->subscribe_home(std::bind(&ControlInterface::homeCallback, this, _1));
+  action_  = std::make_shared<mavsdk::Action>(system_);
+  mission_ = std::make_shared<mavsdk::Mission>(system_);
+  param_   = std::make_shared<mavsdk::Param>(system_);
+  /* telemetry_ = std::make_shared<mavsdk::Telemetry>(system_); */
+  /* telemetry_->subscribe_home(std::bind(&ControlInterface::homeCallback, this, _1)); */
   //}
 
   callback_group_        = this->create_callback_group(rclcpp::CallbackGroupType::Reentrant);
@@ -411,6 +416,8 @@ ControlInterface::ControlInterface(rclcpp::NodeOptions options) : Node("control_
       "~/land_detected_in", rclcpp::SystemDefaultsQoS(), std::bind(&ControlInterface::landDetectedCallback, this, _1), sub_opt);
   mission_result_subscriber_ = this->create_subscription<px4_msgs::msg::MissionResult>("~/mission_result_in", rclcpp::SystemDefaultsQoS(),
                                                                                        std::bind(&ControlInterface::missionResultCallback, this, _1), sub_opt);
+  home_position_subscriber_  = this->create_subscription<px4_msgs::msg::HomePosition>("~/home_position_in", rclcpp::SystemDefaultsQoS(),
+                                                                                     std::bind(&ControlInterface::homePositionCallback, this, _1), sub_opt);
   odometry_subscriber_       = this->create_subscription<nav_msgs::msg::Odometry>("~/local_odom_in", rclcpp::SystemDefaultsQoS(),
                                                                             std::bind(&ControlInterface::odometryCallback, this, _1), sub_opt);
 
@@ -585,7 +592,6 @@ void ControlInterface::controlModeCallback(const px4_msgs::msg::VehicleControlMo
     if (armed_.load()) {
       RCLCPP_WARN(this->get_logger(), "[%s]: Vehicle armed", this->get_name());
     } else {
-      takeoff_requested_.store(false);
       start_mission_.store(false);
       motion_started_.store(false);
       RCLCPP_WARN(this->get_logger(), "[%s]: Vehicle disarmed", this->get_name());
@@ -625,6 +631,28 @@ void ControlInterface::missionResultCallback(const px4_msgs::msg::MissionResult:
 }
 //}
 
+/* homePositionCallback //{ */
+void ControlInterface::homePositionCallback(const px4_msgs::msg::HomePosition::UniquePtr msg) {
+  if (!is_initialized_.load()) {
+    return;
+  }
+
+  /* if (!gps_origin_set_.load()) { */
+  mavsdk::geometry::CoordinateTransformation::GlobalCoordinate ref;
+  ref.latitude_deg  = msg->lat;
+  ref.longitude_deg = msg->lon;
+
+  coord_transform_ = std::make_shared<mavsdk::geometry::CoordinateTransformation>(mavsdk::geometry::CoordinateTransformation(ref));
+  RCLCPP_INFO(this->get_logger(), "[%s]: GPS origin set! Lat: %.6f, Lon: %.6f", this->get_name(), ref.latitude_deg, ref.longitude_deg);
+
+  home_position_offset_ = Eigen::Vector2d(msg->x, msg->y);
+  RCLCPP_INFO(this->get_logger(), "[%s]: Home position offset (local): %.2f, %.2f", this->get_name(), home_position_offset_.y(), home_position_offset_.x());
+
+  gps_origin_set_.store(true);
+  /* } */
+}
+//}
+
 /* odometryCallback //{ */
 void ControlInterface::odometryCallback(const nav_msgs::msg::Odometry::UniquePtr msg) {
   if (!is_initialized_.load()) {
@@ -642,10 +670,18 @@ void ControlInterface::odometryCallback(const nav_msgs::msg::Odometry::UniquePtr
   ori_[2] = msg->pose.pose.orientation.y;
   ori_[3] = msg->pose.pose.orientation.z;
 
-  std::tuple<float, float, float> pos = std::make_tuple(msg->pose.pose.position.x, msg->pose.pose.position.y, msg->pose.pose.position.z);
+  Eigen::Vector3d pos(msg->pose.pose.position.x, msg->pose.pose.position.y, msg->pose.pose.position.z);
   pos_samples_.push_back(pos);
   if (pos_samples_.size() > takeoff_position_samples_) {
     pos_samples_.erase(pos_samples_.begin());
+  }
+
+  if (takeoff_called_.load() && !stop_commanding_.load()) {
+    if (std::abs(msg->pose.pose.position.z - desired_pose_.z()) < 0.1) {
+      RCLCPP_INFO(this->get_logger(), "[ControlInterface]: Takeoff completed");
+      takeoff_completed_.store(true);
+      takeoff_called_.store(false);
+    }
   }
 }
 //}
@@ -750,12 +786,12 @@ bool ControlInterface::armingCallback([[maybe_unused]] const std::shared_ptr<std
     return true;
   }
 
-  if (!gps_origin_set_.load()) {
-    response->success = false;
-    response->message = "Arming rejected, GPS origin not set";
-    RCLCPP_ERROR(this->get_logger(), "[%s]: %s", this->get_name(), response->message.c_str());
-    return true;
-  }
+  /* if (!gps_origin_set_.load()) { */
+  /*   response->success = false; */
+  /*   response->message = "Arming rejected, GPS origin not set"; */
+  /*   RCLCPP_ERROR(this->get_logger(), "[%s]: %s", this->get_name(), response->message.c_str()); */
+  /*   return true; */
+  /* } */
 
   if (request->data) {
     auto result = action_->arm();
@@ -782,6 +818,7 @@ bool ControlInterface::armingCallback([[maybe_unused]] const std::shared_ptr<std
       response->message = "Vehicle disarmed";
       response->success = true;
       armed_.store(false);
+      takeoff_completed_.store(false);
       RCLCPP_WARN(this->get_logger(), "[%s]: %s", this->get_name(), response->message.c_str());
       return true;
     }
@@ -817,6 +854,13 @@ bool ControlInterface::localWaypointCallback(const std::shared_ptr<fog_msgs::srv
   if (stop_commanding_.load()) {
     response->success = false;
     response->message = "Waypoint not set, vehicle is under manual control";
+    RCLCPP_ERROR(this->get_logger(), "[%s]: %s", this->get_name(), response->message.c_str());
+    return true;
+  }
+
+  if (!takeoff_completed_.load()) {
+    response->success = false;
+    response->message = "Waypoint not set, vehicle not flying normally";
     RCLCPP_ERROR(this->get_logger(), "[%s]: %s", this->get_name(), response->message.c_str());
     return true;
   }
@@ -866,6 +910,13 @@ bool ControlInterface::localPathCallback(const std::shared_ptr<fog_msgs::srv::Pa
   if (stop_commanding_.load()) {
     response->success = false;
     response->message = "Waypoints not set, vehicle is under manual control";
+    RCLCPP_ERROR(this->get_logger(), "[%s]: %s", this->get_name(), response->message.c_str());
+    return true;
+  }
+
+  if (!takeoff_completed_.load()) {
+    response->success = false;
+    response->message = "Waypoints not set, vehicle not flying normally";
     RCLCPP_ERROR(this->get_logger(), "[%s]: %s", this->get_name(), response->message.c_str());
     return true;
   }
@@ -936,6 +987,13 @@ bool ControlInterface::gpsWaypointCallback(const std::shared_ptr<fog_msgs::srv::
     return true;
   }
 
+  if (!takeoff_completed_.load()) {
+    response->success = false;
+    response->message = "Waypoint not set, vehicle not flying normally";
+    RCLCPP_ERROR(this->get_logger(), "[%s]: %s", this->get_name(), response->message.c_str());
+    return true;
+  }
+
   if (!stopPreviousMission()) {
     response->success = false;
     response->message = "Waypoint not set, previous mission cannot be aborted";
@@ -981,6 +1039,13 @@ bool ControlInterface::gpsPathCallback(const std::shared_ptr<fog_msgs::srv::Path
   if (stop_commanding_.load()) {
     response->success = false;
     response->message = "Waypoints not set, vehicle is under manual control";
+    RCLCPP_ERROR(this->get_logger(), "[%s]: %s", this->get_name(), response->message.c_str());
+    return true;
+  }
+
+  if (!takeoff_completed_.load()) {
+    response->success = false;
+    response->message = "Waypoint not set, vehicle not flying normally";
     RCLCPP_ERROR(this->get_logger(), "[%s]: %s", this->get_name(), response->message.c_str());
     return true;
   }
@@ -1321,21 +1386,21 @@ bool ControlInterface::odomAvailableCallback(rclcpp::Client<fog_msgs::srv::GetBo
 }
 //}
 
-/* homeCallback //{ */
-void ControlInterface::homeCallback(const mavsdk::Telemetry::Position home_position) {
-  RCLCPP_INFO_ONCE(this->get_logger(), "[%s]: Getting home position from telemetry!", this->get_name());
+/* /1* homeCallback //{ *1/ */
+/* void ControlInterface::homeCallback(const mavsdk::Telemetry::Position home_position) { */
+/*   RCLCPP_INFO_ONCE(this->get_logger(), "[%s]: Getting home position from telemetry!", this->get_name()); */
 
-  if (!gps_origin_set_.load()) {
-    mavsdk::geometry::CoordinateTransformation::GlobalCoordinate ref;
-    ref.latitude_deg  = home_position.latitude_deg;
-    ref.longitude_deg = home_position.longitude_deg;
-    coord_transform_  = std::make_shared<mavsdk::geometry::CoordinateTransformation>(mavsdk::geometry::CoordinateTransformation(ref));
+/*   if (!gps_origin_set_.load()) { */
+/*     mavsdk::geometry::CoordinateTransformation::GlobalCoordinate ref; */
+/*     ref.latitude_deg  = home_position.latitude_deg; */
+/*     ref.longitude_deg = home_position.longitude_deg; */
+/*     coord_transform_  = std::make_shared<mavsdk::geometry::CoordinateTransformation>(mavsdk::geometry::CoordinateTransformation(ref)); */
 
-    RCLCPP_INFO(this->get_logger(), "[%s]: GPS origin set! Lat: %.3f, Lon: %.3f", this->get_name(), ref.latitude_deg, ref.longitude_deg);
-    gps_origin_set_.store(true);
-  }
-}
-//}
+/*     RCLCPP_INFO(this->get_logger(), "[%s]: GPS origin set! Lat: %.3f, Lon: %.3f", this->get_name(), ref.latitude_deg, ref.longitude_deg); */
+/*     gps_origin_set_.store(true); */
+/*   } */
+/* } */
+/* //} */
 
 /* controlRoutine //{ */
 void ControlInterface::controlRoutine(void) {
@@ -1436,7 +1501,7 @@ void ControlInterface::publishDiagnostics() {
   msg.header.stamp         = this->get_clock()->now();
   msg.header.frame_id      = world_frame_;
   msg.armed                = armed_.load();
-  msg.airborne             = !landed_.load();
+  msg.airborne             = !landed_.load() && takeoff_completed_;
   msg.moving               = motion_started_.load();
   msg.mission_finished     = mission_finished_.load();
   msg.getting_control_mode = getting_control_mode_.load();
@@ -1449,6 +1514,7 @@ void ControlInterface::publishDiagnostics() {
     std::scoped_lock lock(waypoint_buffer_mutex_);
     msg.buffered_mission_items = waypoint_buffer_.size();
   }
+
   diagnostics_publisher_->publish(msg);
 }
 //}
@@ -1482,25 +1548,22 @@ bool ControlInterface::takeoff() {
 
   local_waypoint_t current_goal;
 
-  //{ takeoff waypoint averaging
+  // averaging desired takeoff position
   current_goal.x = 0;
   current_goal.y = 0;
 
   for (const auto &p : pos_samples_) {
-    current_goal.x += std::get<0>(p);
-    current_goal.y += std::get<1>(p);
+    current_goal.x += p[0];
+    current_goal.y += p[1];
   }
   current_goal.x /= pos_samples_.size();
   current_goal.y /= pos_samples_.size();
-  //}
 
-  {
-    std::scoped_lock lock_waypoint_buffer(waypoint_buffer_mutex_);
-    current_goal.z   = takeoff_height_;
-    current_goal.yaw = getYaw(ori_);
-    waypoint_buffer_.push_back(current_goal);
-  }
-  motion_started_.store(true);
+  current_goal.z   = takeoff_height_;
+  current_goal.yaw = getYaw(ori_);
+  desired_pose_    = Eigen::Vector4d(current_goal.x, current_goal.y, current_goal.z, current_goal.yaw);
+
+  takeoff_called_.store(true);
   RCLCPP_INFO(this->get_logger(), "[%s]: Taking off", this->get_name());
   return true;
 }
@@ -1511,6 +1574,7 @@ bool ControlInterface::land() {
 
   RCLCPP_INFO(this->get_logger(), "[%s]: Landing called. Stop commanding", this->get_name());
   stop_commanding_.store(true);
+  takeoff_completed_.store(false);
 
   auto result = action_->land();
   if (result != mavsdk::Action::Result::Success) {
@@ -1589,6 +1653,11 @@ bool ControlInterface::stopPreviousMission() {
 
 /* addToMission //{ */
 void ControlInterface::addToMission(local_waypoint_t w) {
+
+  // apply home offset correction
+  w.x -= home_position_offset_.y();
+  w.y -= home_position_offset_.x();
+
   mavsdk::Mission::MissionItem item;
   gps_waypoint_t               global = localToGlobal(coord_transform_, w);
   item.latitude_deg                   = global.latitude;
