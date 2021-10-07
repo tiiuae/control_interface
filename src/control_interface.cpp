@@ -1460,9 +1460,9 @@ void ControlInterface::controlRoutine(void) {
 
             addToMission(waypoint_buffer_.front());
             desired_pose_ = Eigen::Vector4d(waypoint_buffer_.front().x, waypoint_buffer_.front().y, waypoint_buffer_.front().z, waypoint_buffer_.front().yaw);
-            waypoint_buffer_.pop_front();
 
             start_mission_.store(true);
+            mission_finished_.store(false);
           }
         }
 
@@ -1472,8 +1472,8 @@ void ControlInterface::controlRoutine(void) {
           if (start_mission_.load() && mission_plan_.mission_items.size() > 0) {
             bool success = uploadMission() && startMission();
             if (success) {
-              mission_finished_.store(false);
               start_mission_.store(false);
+              waypoint_buffer_.pop_front();
             }
           }
         }
