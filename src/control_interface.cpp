@@ -101,6 +101,7 @@ std::pair<double, double> globalToLocal(const std::shared_ptr<mavsdk::geometry::
   global.latitude_deg  = latitude_deg;
   global.longitude_deg = longitude_deg;
   auto local           = coord_transform->local_from_global(global);
+
   return {local.east_m, local.north_m};
 }
 
@@ -110,10 +111,11 @@ local_waypoint_t globalToLocal(const std::shared_ptr<mavsdk::geometry::Coordinat
   global.latitude_deg  = wg.latitude;
   global.longitude_deg = wg.longitude;
   auto local           = coord_transform->local_from_global(global);
-  wl.x                 = local.east_m;
-  wl.y                 = local.north_m;
-  wl.z                 = wg.altitude;
-  wl.yaw               = wg.yaw;
+
+  wl.x   = local.east_m;
+  wl.y   = local.north_m;
+  wl.z   = wg.altitude;
+  wl.yaw = wg.yaw;
   return wl;
 }
 
@@ -208,6 +210,7 @@ private:
 
   // use takeoff lat and long to initialize local frame
   std::shared_ptr<mavsdk::geometry::CoordinateTransformation> coord_transform_;
+  std::mutex                                                  coord_transform_mutex_;
 
   // config params
   double yaw_offset_correction_        = M_PI / 2;
@@ -642,7 +645,11 @@ void ControlInterface::homePositionCallback(const px4_msgs::msg::HomePosition::U
   ref.latitude_deg  = msg->lat;
   ref.longitude_deg = msg->lon;
 
-  coord_transform_ = std::make_shared<mavsdk::geometry::CoordinateTransformation>(mavsdk::geometry::CoordinateTransformation(ref));
+  {
+    std::scoped_lock lock(coord_transform_mutex_);
+    coord_transform_ = std::make_shared<mavsdk::geometry::CoordinateTransformation>(mavsdk::geometry::CoordinateTransformation(ref));
+  }
+
   RCLCPP_INFO(this->get_logger(), "[%s]: GPS origin set! Lat: %.6f, Lon: %.6f", this->get_name(), ref.latitude_deg, ref.longitude_deg);
 
   home_position_offset_ = Eigen::Vector2d(msg->x, msg->y);
@@ -1011,7 +1018,7 @@ bool ControlInterface::gpsWaypointCallback(const std::shared_ptr<fog_msgs::srv::
   w.altitude  = request->goal[2];
   w.yaw       = request->goal[3];
   {
-    std::scoped_lock lock(waypoint_buffer_mutex_);
+    std::scoped_lock lock(waypoint_buffer_mutex_, coord_transform_mutex_);
     waypoint_buffer_.push_back(globalToLocal(coord_transform_, w));
   }
   motion_started_.store(true);
@@ -1045,7 +1052,7 @@ bool ControlInterface::gpsPathCallback(const std::shared_ptr<fog_msgs::srv::Path
 
   if (!takeoff_completed_.load()) {
     response->success = false;
-    response->message = "Waypoint not set, vehicle not flying normally";
+    response->message = "Waypoints not set, vehicle not flying normally";
     RCLCPP_ERROR(this->get_logger(), "[%s]: %s", this->get_name(), response->message.c_str());
     return true;
   }
@@ -1065,7 +1072,7 @@ bool ControlInterface::gpsPathCallback(const std::shared_ptr<fog_msgs::srv::Path
   }
 
   {
-    std::scoped_lock lock(waypoint_buffer_mutex_);
+    std::scoped_lock lock(waypoint_buffer_mutex_, coord_transform_mutex_);
 
     RCLCPP_INFO(this->get_logger(), "[%s]: Got %d waypoints", this->get_name(), request->path.poses.size());
     for (size_t i = 0; i < request->path.poses.size(); i++) {
@@ -1108,12 +1115,15 @@ bool ControlInterface::waypointToLocalCallback(const std::shared_ptr<fog_msgs::s
   global.altitude  = request->relative_altitude_m;
   global.yaw       = request->yaw;
 
-  local_waypoint_t local = globalToLocal(coord_transform_, global);
+  {
+    std::scoped_lock lock(coord_transform_mutex_);
+    local_waypoint_t local = globalToLocal(coord_transform_, global);
 
-  response->local_x = local.x;
-  response->local_y = local.y;
-  response->local_z = local.z;
-  response->yaw     = local.yaw;
+    response->local_x = local.x;
+    response->local_y = local.y;
+    response->local_z = local.z;
+    response->yaw     = local.yaw;
+  }
 
   std::stringstream ss;
   ss << "Transformed GPS [" << request->latitude_deg << ", " << request->longitude_deg << ", " << request->relative_altitude_m << "] into local: ["
@@ -1153,13 +1163,15 @@ bool ControlInterface::pathToLocalCallback(const std::shared_ptr<fog_msgs::srv::
     global.longitude = p_in.y;
     global.altitude  = p_in.z;
 
-    local_waypoint_t local = globalToLocal(coord_transform_, global);
-
     geometry_msgs::msg::Point p_out;
+    {
+      std::scoped_lock lock(coord_transform_mutex_);
+      local_waypoint_t local = globalToLocal(coord_transform_, global);
 
-    p_out.x = local.x;
-    p_out.y = local.y;
-    p_out.z = local.z;
+      p_out.x = local.x;
+      p_out.y = local.y;
+      p_out.z = local.z;
+    }
 
     std::stringstream ss;
     ss << "Transformed GPS [" << global.latitude << ", " << global.longitude << "] into local: [" << p_out.x << ", " << p_out.y << "]";
