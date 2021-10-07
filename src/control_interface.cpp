@@ -627,7 +627,8 @@ void ControlInterface::missionResultCallback(const px4_msgs::msg::MissionResult:
 
   unsigned instance_count = msg->instance_count;
 
-  if (msg->finished && instance_count != last_mission_instance_) {
+  if (!start_mission_.load() && msg->finished && instance_count != last_mission_instance_) {
+    RCLCPP_INFO(this->get_logger(), "[ControlInterface]: Mission finished by callback");
     mission_finished_.store(true);
     last_mission_instance_ = msg->instance_count;
   }
