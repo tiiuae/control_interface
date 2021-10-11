@@ -215,6 +215,7 @@ private:
   // config params
   double yaw_offset_correction_        = M_PI / 2;
   double takeoff_height_               = 2.5;
+  double takeoff_height_tolerance_     = 0.4;
   double waypoint_marker_scale_        = 0.3;
   double control_update_rate_          = 10.0;
   double waypoint_loiter_time_         = 0.0;
@@ -347,6 +348,7 @@ ControlInterface::ControlInterface(rclcpp::NodeOptions options) : Node("control_
   parse_param("target_velocity", target_velocity_);
   parse_param("control_update_rate", control_update_rate_);
   parse_param("takeoff_position_samples", takeoff_position_samples_);
+  parse_param("takeoff_height_tolerance", takeoff_height_tolerance_);
 
   if (control_update_rate_ < 5.0) {
     control_update_rate_ = 5.0;
@@ -685,7 +687,7 @@ void ControlInterface::odometryCallback(const nav_msgs::msg::Odometry::UniquePtr
   }
 
   if (takeoff_called_.load() && !stop_commanding_.load()) {
-    if (std::abs(msg->pose.pose.position.z - desired_pose_.z()) < 0.1) {
+    if (std::abs(msg->pose.pose.position.z - desired_pose_.z()) < takeoff_height_tolerance_) {
       RCLCPP_INFO(this->get_logger(), "[ControlInterface]: Takeoff completed");
       takeoff_completed_.store(true);
       takeoff_called_.store(false);
