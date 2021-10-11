@@ -689,6 +689,7 @@ void ControlInterface::odometryCallback(const nav_msgs::msg::Odometry::UniquePtr
       RCLCPP_INFO(this->get_logger(), "[ControlInterface]: Takeoff completed");
       takeoff_completed_.store(true);
       takeoff_called_.store(false);
+      motion_started_.store(true);
     }
   }
 
@@ -1581,6 +1582,11 @@ bool ControlInterface::takeoff() {
   current_goal.z   = takeoff_height_;
   current_goal.yaw = getYaw(ori_);
   desired_pose_    = Eigen::Vector4d(current_goal.x, current_goal.y, current_goal.z, current_goal.yaw);
+
+  {
+    std::scoped_lock lock(waypoint_buffer_mutex_);
+    waypoint_buffer_.push_back(current_goal);
+  }
 
   takeoff_called_.store(true);
   RCLCPP_INFO(this->get_logger(), "[%s]: Taking off", this->get_name());
