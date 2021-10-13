@@ -206,7 +206,7 @@ private:
   std::mutex                   waypoint_buffer_mutex_;
   std::deque<local_waypoint_t> waypoint_buffer_;
   Eigen::Vector4d              desired_pose_;
-  Eigen::Vector2d              home_position_offset_ = Eigen::Vector2d(0, 0);
+  Eigen::Vector3d              home_position_offset_ = Eigen::Vector3d(0, 0, 0);
 
   // use takeoff lat and long to initialize local frame
   std::shared_ptr<mavsdk::geometry::CoordinateTransformation> coord_transform_;
@@ -468,11 +468,17 @@ ControlInterface::ControlInterface(rclcpp::NodeOptions options) : Node("control_
 
   desired_pose_ = Eigen::Vector4d(0.0, 0.0, 0.0, 0.0);
 
-  auto request        = std::make_shared<fog_msgs::srv::SetPx4ParamFloat::Request>();
-  request->param_name = "NAV_ACC_RAD";
-  request->value      = waypoint_acceptance_radius_;
-  RCLCPP_INFO(this->get_logger(), "[%s]: Setting %s, value: %f", this->get_name(), request->param_name.c_str(), request->value);
-  auto call_result = set_px4_param_float_client_->async_send_request(request);
+  auto request_nav_acc        = std::make_shared<fog_msgs::srv::SetPx4ParamFloat::Request>();
+  request_nav_acc->param_name = "NAV_ACC_RAD";
+  request_nav_acc->value      = waypoint_acceptance_radius_;
+  RCLCPP_INFO(this->get_logger(), "[%s]: Setting %s, value: %f", this->get_name(), request_nav_acc->param_name.c_str(), request_nav_acc->value);
+  auto call_result_nav_acc = set_px4_param_float_client_->async_send_request(request_nav_acc);
+
+  auto request_alt_acc        = std::make_shared<fog_msgs::srv::SetPx4ParamFloat::Request>();
+  request_alt_acc->param_name = "NAV_MC_ALT_RAD";
+  request_alt_acc->value      = waypoint_acceptance_radius_;
+  RCLCPP_INFO(this->get_logger(), "[%s]: Setting %s, value: %f", this->get_name(), request_alt_acc->param_name.c_str(), request_alt_acc->value);
+  auto call_result_alt_acc = set_px4_param_float_client_->async_send_request(request_alt_acc);
 
   is_initialized_.store(true);
   RCLCPP_INFO(this->get_logger(), "[%s]: Initialized", this->get_name());
@@ -655,8 +661,9 @@ void ControlInterface::homePositionCallback(const px4_msgs::msg::HomePosition::U
 
   RCLCPP_INFO(this->get_logger(), "[%s]: GPS origin set! Lat: %.6f, Lon: %.6f", this->get_name(), ref.latitude_deg, ref.longitude_deg);
 
-  home_position_offset_ = Eigen::Vector2d(msg->x, msg->y);
-  RCLCPP_INFO(this->get_logger(), "[%s]: Home position offset (local): %.2f, %.2f", this->get_name(), home_position_offset_.y(), home_position_offset_.x());
+  home_position_offset_ = Eigen::Vector3d(msg->y, msg->x, -msg->z);
+  RCLCPP_INFO(this->get_logger(), "[%s]: Home position offset (local): %.2f, %.2f, %.2f", this->get_name(), home_position_offset_.x(),
+              home_position_offset_.y(), home_position_offset_.z());
 
   gps_origin_set_.store(true);
   /* } */
@@ -1689,8 +1696,9 @@ bool ControlInterface::stopPreviousMission() {
 void ControlInterface::addToMission(local_waypoint_t w) {
 
   // apply home offset correction
-  w.x -= home_position_offset_.y();
-  w.y -= home_position_offset_.x();
+  w.x -= home_position_offset_.x();
+  w.y -= home_position_offset_.y();
+  w.z -= home_position_offset_.z();
 
   mavsdk::Mission::MissionItem item;
   gps_waypoint_t               global = localToGlobal(coord_transform_, w);
