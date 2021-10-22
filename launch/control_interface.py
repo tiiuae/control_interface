@@ -39,19 +39,19 @@ def generate_launch_description():
                     {"use_sim_time": launch.substitutions.LaunchConfiguration("use_sim_time")},
                 ],
                 remappings=[
-                    ("~/vehicle_command_out", "/" + DRONE_DEVICE_ID + "/VehicleCommand_PubSubTopic"),
+                    ("~/vehicle_command_out", "/" + DRONE_DEVICE_ID + "/fmu/vehicle_command/in"),
                     ("~/local_odom_out", "~/local_odom"),
                     ("~/diagnostics_out", "~/diagnostics"),
                     ("~/debug_markers_out", "~/debug/waypoint_markers"),
 
                     ("~/octomap_reset_out", "/" + DRONE_DEVICE_ID + "/octomap_server/reset"),
 
-                    ("~/gps_in", "/" + DRONE_DEVICE_ID + "/VehicleGlobalPosition_PubSubTopic"),
-                    ("~/pixhawk_odom_in", "/" + DRONE_DEVICE_ID + "/VehicleOdometry_PubSubTopic"),
-                    ("~/control_mode_in", "/" + DRONE_DEVICE_ID + "/VehicleControlMode_PubSubTopic"),
-                    ("~/land_detected_in", "/" + DRONE_DEVICE_ID + "/VehicleLandDetected_PubSubTopic"),
-                    ("~/mission_result_in", "/" + DRONE_DEVICE_ID + "/MissionResult_PubSubTopic"),
-                    
+                    ("~/gps_in", "/" + DRONE_DEVICE_ID + "/fmu/vehicle_global_position/out"),
+                    ("~/pixhawk_odom_in", "/" + DRONE_DEVICE_ID + "/fmu/vehicle_odometry/out"),
+                    ("~/control_mode_in", "/" + DRONE_DEVICE_ID + "/fmu/vehicle_control_mode/out"),
+                    ("~/land_detected_in", "/" + DRONE_DEVICE_ID + "/fmu/vehicle_land_detected/out"),
+                    ("~/mission_result_in", "/" + DRONE_DEVICE_ID + "/fmu/mission_result/out"),
+
                     ("~/arming_in", "~/arming"),
                     ("~/takeoff_in", "~/takeoff"),
                     ("~/land_in", "~/land"),
