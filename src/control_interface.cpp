@@ -18,7 +18,6 @@
 #include <mavsdk/plugins/action/action.h>
 #include <mavsdk/plugins/mission/mission.h>
 #include <mavsdk/plugins/param/param.h>
-/* #include <mavsdk/plugins/telemetry/telemetry.h> */
 #include <nav_msgs/msg/odometry.hpp>
 #include <px4_msgs/msg/mission_result.hpp>
 #include <px4_msgs/msg/home_position.hpp>
@@ -205,8 +204,10 @@ private:
 
   std::mutex                   waypoint_buffer_mutex_;
   std::deque<local_waypoint_t> waypoint_buffer_;
-  Eigen::Vector4d              desired_pose_;
-  Eigen::Vector3d              home_position_offset_ = Eigen::Vector3d(0, 0, 0);
+  size_t                       last_mission_size_ = 0;
+
+  Eigen::Vector4d desired_pose_;
+  Eigen::Vector3d home_position_offset_ = Eigen::Vector3d(0, 0, 0);
 
   // use takeoff lat and long to initialize local frame
   std::shared_ptr<mavsdk::geometry::CoordinateTransformation> coord_transform_;
@@ -221,6 +222,7 @@ private:
   double waypoint_loiter_time_         = 0.0;
   bool   reset_octomap_before_takeoff_ = true;
   float  waypoint_acceptance_radius_   = 0.3f;
+  float  altitude_acceptance_radius_   = 0.2f;
   double target_velocity_              = 1.0;
   size_t takeoff_position_samples_     = 20;
 
@@ -345,6 +347,7 @@ ControlInterface::ControlInterface(rclcpp::NodeOptions options) : Node("control_
   parse_param("waypoint_loiter_time", waypoint_loiter_time_);
   parse_param("reset_octomap_before_takeoff", reset_octomap_before_takeoff_);
   parse_param("waypoint_acceptance_radius", waypoint_acceptance_radius_);
+  parse_param("altitude_acceptance_radius", altitude_acceptance_radius_);
   parse_param("target_velocity", target_velocity_);
   parse_param("control_update_rate", control_update_rate_);
   parse_param("takeoff_position_samples", takeoff_position_samples_);
@@ -474,9 +477,14 @@ ControlInterface::ControlInterface(rclcpp::NodeOptions options) : Node("control_
   RCLCPP_INFO(this->get_logger(), "[%s]: Setting %s, value: %f", this->get_name(), request_nav_acc->param_name.c_str(), request_nav_acc->value);
   auto call_result_nav_acc = set_px4_param_float_client_->async_send_request(request_nav_acc);
 
+  auto request_nav_loit        = std::make_shared<fog_msgs::srv::SetPx4ParamFloat::Request>();
+  request_nav_loit->param_name = "NAV_LOITER_RAD";
+  request_nav_loit->value      = waypoint_acceptance_radius_;
+  RCLCPP_INFO(this->get_logger(), "[%s]: Setting %s, value: %f", this->get_name(), request_nav_loit->param_name.c_str(), request_nav_loit->value);
+
   auto request_alt_acc        = std::make_shared<fog_msgs::srv::SetPx4ParamFloat::Request>();
   request_alt_acc->param_name = "NAV_MC_ALT_RAD";
-  request_alt_acc->value      = waypoint_acceptance_radius_;
+  request_alt_acc->value      = altitude_acceptance_radius_;
   RCLCPP_INFO(this->get_logger(), "[%s]: Setting %s, value: %f", this->get_name(), request_alt_acc->param_name.c_str(), request_alt_acc->value);
   auto call_result_alt_acc = set_px4_param_float_client_->async_send_request(request_alt_acc);
 
@@ -1414,22 +1422,6 @@ bool ControlInterface::odomAvailableCallback(rclcpp::Client<fog_msgs::srv::GetBo
 }
 //}
 
-/* /1* homeCallback //{ *1/ */
-/* void ControlInterface::homeCallback(const mavsdk::Telemetry::Position home_position) { */
-/*   RCLCPP_INFO_ONCE(this->get_logger(), "[%s]: Getting home position from telemetry!", this->get_name()); */
-
-/*   if (!gps_origin_set_.load()) { */
-/*     mavsdk::geometry::CoordinateTransformation::GlobalCoordinate ref; */
-/*     ref.latitude_deg  = home_position.latitude_deg; */
-/*     ref.longitude_deg = home_position.longitude_deg; */
-/*     coord_transform_  = std::make_shared<mavsdk::geometry::CoordinateTransformation>(mavsdk::geometry::CoordinateTransformation(ref)); */
-
-/*     RCLCPP_INFO(this->get_logger(), "[%s]: GPS origin set! Lat: %.3f, Lon: %.3f", this->get_name(), ref.latitude_deg, ref.longitude_deg); */
-/*     gps_origin_set_.store(true); */
-/*   } */
-/* } */
-/* //} */
-
 /* controlRoutine //{ */
 void ControlInterface::controlRoutine(void) {
 
@@ -1469,8 +1461,10 @@ void ControlInterface::controlRoutine(void) {
             mission_->pause_mission();
             mission_plan_.mission_items.clear();
 
-            addToMission(waypoint_buffer_.front());
-            desired_pose_ = Eigen::Vector4d(waypoint_buffer_.front().x, waypoint_buffer_.front().y, waypoint_buffer_.front().z, waypoint_buffer_.front().yaw);
+            for (size_t i = 0; i < waypoint_buffer_.size(); i++) {
+              addToMission(waypoint_buffer_.at(i));
+              desired_pose_ = Eigen::Vector4d(waypoint_buffer_.at(i).x, waypoint_buffer_.at(i).y, waypoint_buffer_.at(i).z, waypoint_buffer_.at(i).yaw);
+            }
 
             start_mission_.store(true);
             mission_finished_.store(false);
@@ -1478,13 +1472,14 @@ void ControlInterface::controlRoutine(void) {
         }
 
         {
-          std::scoped_lock lock(mission_mutex_);
+          std::scoped_lock lock(waypoint_buffer_mutex_, mission_mutex_);
           // upload and execute new mission
           if (start_mission_.load() && mission_plan_.mission_items.size() > 0) {
             bool success = uploadMission() && startMission();
             if (success) {
               start_mission_.store(false);
-              waypoint_buffer_.pop_front();
+              last_mission_size_ = waypoint_buffer_.size();
+              waypoint_buffer_.clear();
             }
           }
         }
@@ -1541,7 +1536,7 @@ void ControlInterface::publishDiagnostics() {
 
   {
     std::scoped_lock lock(waypoint_buffer_mutex_);
-    msg.buffered_mission_items = waypoint_buffer_.size();
+    msg.last_mission_size = last_mission_size_;
   }
 
   diagnostics_publisher_->publish(msg);
@@ -1726,9 +1721,6 @@ void ControlInterface::addToMission(local_waypoint_t w) {
 
 /* publishDesiredPose //{ */
 void ControlInterface::publishDesiredPose() {
-  /* if (desired_pose_.z() < 0.5) { */
-  /*   return; */
-  /* } */
   geometry_msgs::msg::PoseStamped msg;
   msg.header.stamp     = this->get_clock()->now();
   msg.header.frame_id  = world_frame_;
@@ -1791,8 +1783,6 @@ bool ControlInterface::parse_param(const std::string &param_name, T &param_dest)
   }
   return true;
 }
-//}
-
 //}
 
 }  // namespace control_interface
