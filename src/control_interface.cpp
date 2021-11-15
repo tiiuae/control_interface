@@ -218,6 +218,7 @@ private:
   double yaw_offset_correction_        = M_PI / 2;
   double takeoff_height_               = 2.5;
   double takeoff_height_tolerance_     = 0.4;
+  double takeoff_blocking_timeout_     = 3.0;
   double waypoint_marker_scale_        = 0.3;
   double control_update_rate_          = 10.0;
   double waypoint_loiter_time_         = 0.0;
