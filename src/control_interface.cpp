@@ -188,6 +188,7 @@ private:
 
   std::atomic_bool mission_finished_      = true;
   unsigned         last_mission_instance_ = 1;
+  rclcpp::Time     takeoff_time_;
 
   std::string uav_name_    = "";
   std::string world_frame_ = "";
@@ -352,6 +353,7 @@ ControlInterface::ControlInterface(rclcpp::NodeOptions options) : Node("control_
   parse_param("control_update_rate", control_update_rate_);
   parse_param("takeoff_position_samples", takeoff_position_samples_);
   parse_param("takeoff_height_tolerance", takeoff_height_tolerance_);
+  parse_param("takeoff_blocking_timeout", takeoff_blocking_timeout_);
 
   if (control_update_rate_ < 5.0) {
     control_update_rate_ = 5.0;
@@ -702,7 +704,8 @@ void ControlInterface::odometryCallback(const nav_msgs::msg::Odometry::UniquePtr
   }
 
   if (takeoff_called_.load() && !stop_commanding_.load()) {
-    if (std::abs(msg->pose.pose.position.z - desired_pose_.z()) < takeoff_height_tolerance_) {
+    double time_since_takeoff = this->get_clock()->now().seconds() - takeoff_time_.seconds();
+    if (std::abs(msg->pose.pose.position.z - desired_pose_.z()) < takeoff_height_tolerance_ || time_since_takeoff > takeoff_blocking_timeout_) {
       RCLCPP_INFO(this->get_logger(), "[ControlInterface]: Takeoff completed");
       takeoff_completed_.store(true);
       takeoff_called_.store(false);
@@ -1593,6 +1596,7 @@ bool ControlInterface::takeoff() {
   }
 
   takeoff_called_.store(true);
+  takeoff_time_ = this->get_clock()->now();
   RCLCPP_INFO(this->get_logger(), "[%s]: Taking off", this->get_name());
   return true;
 }
