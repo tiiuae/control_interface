@@ -186,8 +186,9 @@ private:
   std::atomic_bool getting_odom_        = false;
   std::atomic_bool getting_odom_called_ = false;
 
-  std::atomic_bool mission_finished_      = true;
-  unsigned         last_mission_instance_ = 1;
+  std::atomic_bool mission_finished_        = true;
+  unsigned         last_mission_instance_   = 1;
+  int              mission_upload_attempts_ = 0;
   rclcpp::Time     takeoff_time_;
 
   std::string uav_name_    = "";
@@ -215,18 +216,19 @@ private:
   std::mutex                                                  coord_transform_mutex_;
 
   // config params
-  double yaw_offset_correction_        = M_PI / 2;
-  double takeoff_height_               = 2.5;
-  double takeoff_height_tolerance_     = 0.4;
-  double takeoff_blocking_timeout_     = 3.0;
-  double waypoint_marker_scale_        = 0.3;
-  double control_update_rate_          = 10.0;
-  double waypoint_loiter_time_         = 0.0;
-  bool   reset_octomap_before_takeoff_ = true;
-  float  waypoint_acceptance_radius_   = 0.3f;
-  float  altitude_acceptance_radius_   = 0.2f;
-  double target_velocity_              = 1.0;
-  size_t takeoff_position_samples_     = 20;
+  double yaw_offset_correction_             = M_PI / 2;
+  double takeoff_height_                    = 2.5;
+  double takeoff_height_tolerance_          = 0.4;
+  double takeoff_blocking_timeout_          = 3.0;
+  double waypoint_marker_scale_             = 0.3;
+  double control_update_rate_               = 10.0;
+  double waypoint_loiter_time_              = 0.0;
+  bool   reset_octomap_before_takeoff_      = true;
+  float  waypoint_acceptance_radius_        = 0.3f;
+  float  altitude_acceptance_radius_        = 0.2f;
+  double target_velocity_                   = 1.0;
+  size_t takeoff_position_samples_          = 20;
+  int    mission_upload_attempts_threshold_ = 5;
 
   // vehicle local position
   std::vector<Eigen::Vector3d> pos_samples_;
@@ -355,6 +357,7 @@ ControlInterface::ControlInterface(rclcpp::NodeOptions options) : Node("control_
   parse_param("takeoff_position_samples", takeoff_position_samples_);
   parse_param("takeoff_height_tolerance", takeoff_height_tolerance_);
   parse_param("takeoff_blocking_timeout", takeoff_blocking_timeout_);
+  parse_param("mission_upload_attempts_threshold", mission_upload_attempts_threshold_);
 
   if (control_update_rate_ < 5.0) {
     control_update_rate_ = 5.0;
@@ -1475,12 +1478,23 @@ void ControlInterface::controlRoutine(void) {
           }
         }
 
+
         {
           std::scoped_lock lock(waypoint_buffer_mutex_, mission_mutex_);
+
+          // prevent deadlock when pixhawk is continuously rejecting missions
+          if (mission_upload_attempts_ >= mission_upload_attempts_threshold_) {
+            mission_upload_attempts_ = 0;
+            start_mission_.store(false);
+            waypoint_buffer_.clear();
+            RCLCPP_WARN(this->get_logger(), "[%s]: Mission upload failed too many times. Clearing waypoint buffer.", this->get_name());
+          }
+
           // upload and execute new mission
           if (start_mission_.load() && mission_plan_.mission_items.size() > 0) {
             bool success = uploadMission() && startMission();
             if (success) {
+              mission_upload_attempts_ = 0;
               start_mission_.store(false);
               last_mission_size_ = waypoint_buffer_.size();
               waypoint_buffer_.clear();
@@ -1653,8 +1667,9 @@ bool ControlInterface::uploadMission() {
   }
 
   auto result = mission_->upload_mission(mission_plan_);
+  mission_upload_attempts_++;
   if (result != mavsdk::Mission::Result::Success) {
-    RCLCPP_ERROR(this->get_logger(), "[%s]: Mission upload failed", this->get_name());
+    RCLCPP_ERROR(this->get_logger(), "[%s]: Mission upload failed with exit symbol %d", this->get_name(), result);
     return false;
   }
 
