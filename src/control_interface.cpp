@@ -202,7 +202,6 @@ private:
   std::shared_ptr<mavsdk::Param>   param_;
   mavsdk::Mission::MissionPlan     mission_plan_;
   std::mutex                       mission_mutex_;
-  /* std::shared_ptr<mavsdk::Telemetry> telemetry_; */
 
   std::mutex                   waypoint_buffer_mutex_;
   std::deque<local_waypoint_t> waypoint_buffer_;
@@ -240,7 +239,6 @@ private:
   rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr desired_pose_publisher_;  // https://ctu-mrs.github.io/docs/system/relative_commands.html
   rclcpp::Publisher<geometry_msgs::msg::PoseArray>::SharedPtr   waypoint_marker_publisher_;
   rclcpp::Publisher<geometry_msgs::msg::PoseArray>::SharedPtr   waypoint_there_and_back_publisher_;
-
   rclcpp::Publisher<fog_msgs::msg::ControlInterfaceDiagnostics>::SharedPtr diagnostics_publisher_;
 
   // subscribers
@@ -257,7 +255,6 @@ private:
   void landDetectedCallback(const px4_msgs::msg::VehicleLandDetected::UniquePtr msg);
   void missionResultCallback(const px4_msgs::msg::MissionResult::UniquePtr msg);
   void odometryCallback(const nav_msgs::msg::Odometry::UniquePtr msg);
-  /* void homeCallback(const mavsdk::Telemetry::Position home_position); */
   void homePositionCallback(const px4_msgs::msg::HomePosition::UniquePtr msg);
 
   // services provided
@@ -304,7 +301,6 @@ private:
   // parameter callback
   rcl_interfaces::msg::SetParametersResult parametersCallback(const std::vector<rclcpp::Parameter> &parameters);
 
-  void printSensorsStatus();
   void publishDiagnostics();
 
   bool takeoff();
@@ -316,8 +312,6 @@ private:
   void addToMission(local_waypoint_t w);
   void publishDebugMarkers();
   void publishDesiredPose();
-
-  std_msgs::msg::ColorRGBA generateColor(const double r, const double g, const double b, const double a);
 
   // timers
   rclcpp::CallbackGroup::SharedPtr callback_group_;
@@ -408,8 +402,6 @@ ControlInterface::ControlInterface(rclcpp::NodeOptions options) : Node("control_
   action_  = std::make_shared<mavsdk::Action>(system_);
   mission_ = std::make_shared<mavsdk::Mission>(system_);
   param_   = std::make_shared<mavsdk::Param>(system_);
-  /* telemetry_ = std::make_shared<mavsdk::Telemetry>(system_); */
-  /* telemetry_->subscribe_home(std::bind(&ControlInterface::homeCallback, this, _1)); */
   //}
 
   callback_group_        = this->create_callback_group(rclcpp::CallbackGroupType::Reentrant);
@@ -635,8 +627,7 @@ void ControlInterface::landDetectedCallback(const px4_msgs::msg::VehicleLandDete
     return;
   }
   getting_landed_info_.store(true);
-  // checking only ground_contact flag instead of landed due to a problem in
-  // simulation
+  // checking only ground_contact flag instead of landed due to a problem in simulation
   landed_.store(msg->ground_contact);
 }
 //}
@@ -650,7 +641,7 @@ void ControlInterface::missionResultCallback(const px4_msgs::msg::MissionResult:
   unsigned instance_count = msg->instance_count;
 
   if (!start_mission_.load() && msg->finished && instance_count != last_mission_instance_) {
-    RCLCPP_INFO(this->get_logger(), "[ControlInterface]: Mission finished by callback");
+    RCLCPP_INFO(this->get_logger(), "[%s]: Mission finished by callback", this->get_name());
     mission_finished_.store(true);
     last_mission_instance_ = msg->instance_count;
   }
@@ -663,7 +654,6 @@ void ControlInterface::homePositionCallback(const px4_msgs::msg::HomePosition::U
     return;
   }
 
-  /* if (!gps_origin_set_.load()) { */
   mavsdk::geometry::CoordinateTransformation::GlobalCoordinate ref;
   ref.latitude_deg  = msg->lat;
   ref.longitude_deg = msg->lon;
@@ -680,7 +670,6 @@ void ControlInterface::homePositionCallback(const px4_msgs::msg::HomePosition::U
               home_position_offset_.y(), home_position_offset_.z());
 
   gps_origin_set_.store(true);
-  /* } */
 }
 //}
 
@@ -710,17 +699,12 @@ void ControlInterface::odometryCallback(const nav_msgs::msg::Odometry::UniquePtr
   if (takeoff_called_.load() && !stop_commanding_.load()) {
     double time_since_takeoff = this->get_clock()->now().seconds() - takeoff_time_.seconds();
     if (std::abs(msg->pose.pose.position.z - desired_pose_.z()) < takeoff_height_tolerance_ || time_since_takeoff > takeoff_blocking_timeout_) {
-      RCLCPP_INFO(this->get_logger(), "[ControlInterface]: Takeoff completed");
+      RCLCPP_INFO(this->get_logger(), "[%s]: Takeoff completed", this->get_name());
       takeoff_completed_.store(true);
       takeoff_called_.store(false);
       motion_started_.store(true);
     }
   }
-
-  /* desired_pose_.x() = pos_[0]; */
-  /* desired_pose_.y() = pos_[1]; */
-  /* desired_pose_.z() = pos_[2]; */
-  /* desired_pose_.w() = getYaw(ori_); */
 }
 //}
 
@@ -780,13 +764,6 @@ bool ControlInterface::landCallback([[maybe_unused]] const std::shared_ptr<std_s
     return true;
   }
 
-  if (!gps_origin_set_.load()) {
-    response->success = false;
-    response->message = "Landing rejected, GPS origin not set";
-    RCLCPP_ERROR(this->get_logger(), "[%s]: %s", this->get_name(), response->message.c_str());
-    return true;
-  }
-
   if (!armed_.load()) {
     response->success = false;
     response->message = "Landing rejected, vehicle not armed";
@@ -823,13 +800,6 @@ bool ControlInterface::armingCallback([[maybe_unused]] const std::shared_ptr<std
     RCLCPP_ERROR(this->get_logger(), "[%s]: %s", this->get_name(), response->message.c_str());
     return true;
   }
-
-  /* if (!gps_origin_set_.load()) { */
-  /*   response->success = false; */
-  /*   response->message = "Arming rejected, GPS origin not set"; */
-  /*   RCLCPP_ERROR(this->get_logger(), "[%s]: %s", this->get_name(), response->message.c_str()); */
-  /*   return true; */
-  /* } */
 
   if (request->data) {
     auto result = action_->arm();
@@ -1246,37 +1216,37 @@ bool ControlInterface::setPx4ParamIntCallback([[maybe_unused]] const std::shared
     response->param_name = request->param_name;
     response->value      = request->value;
     response->success    = true;
-    RCLCPP_INFO(this->get_logger(), "[ControlInterface]: PX4 parameter %s successfully set to %d", request->param_name.c_str(), request->value);
+    RCLCPP_INFO(this->get_logger(), "[%s]: PX4 parameter %s successfully set to %d", this->get_name(), request->param_name.c_str(), request->value);
   } else if (result == mavsdk::Param::Result::Unknown) {
     response->message    = "Parameter did not set - unknown error";
     response->param_name = request->param_name;
     response->value      = request->value;
     response->success    = false;
-    RCLCPP_ERROR(this->get_logger(), "[ControlInterface]: PX4 parameter set uknown error");
+    RCLCPP_ERROR(this->get_logger(), "[%s]: PX4 parameter set uknown error", this->get_name());
   } else if (result == mavsdk::Param::Result::Timeout) {
     response->message    = "Parameter did not set - time out";
     response->param_name = request->param_name;
     response->value      = request->value;
     response->success    = false;
-    RCLCPP_ERROR(this->get_logger(), "[ControlInterface]: PX4 parameter set request time out");
+    RCLCPP_ERROR(this->get_logger(), "[%s]: PX4 parameter set request time out", this->get_name());
   } else if (result == mavsdk::Param::Result::ConnectionError) {
     response->message    = "Parameter did not set - connection error";
     response->param_name = request->param_name;
     response->value      = request->value;
     response->success    = false;
-    RCLCPP_ERROR(this->get_logger(), "[ControlInterface]: PX4 parameter set request connection error");
+    RCLCPP_ERROR(this->get_logger(), "[%s]: PX4 parameter set request connection error", this->get_name());
   } else if (result == mavsdk::Param::Result::WrongType) {
     response->message    = "Parameter did not set - request wrong type";
     response->param_name = request->param_name;
     response->value      = request->value;
     response->success    = false;
-    RCLCPP_ERROR(this->get_logger(), "[ControlInterface]: PX4 parameter set request wrong type");
+    RCLCPP_ERROR(this->get_logger(), "[%s]: PX4 parameter set request wrong type", this->get_name());
   } else if (result == mavsdk::Param::Result::ParamNameTooLong) {
     response->message    = "Parameter did not set - param name too long";
     response->param_name = request->param_name;
     response->value      = request->value;
     response->success    = false;
-    RCLCPP_ERROR(this->get_logger(), "[ControlInterface]: PX4 parameter set request param name too long");
+    RCLCPP_ERROR(this->get_logger(), "[%s]: PX4 parameter set request param name too long", this->get_name());
   }
 
   return true;
@@ -1302,32 +1272,32 @@ bool ControlInterface::getPx4ParamIntCallback([[maybe_unused]] const std::shared
     response->param_name = request->param_name;
     response->success    = true;
 
-    RCLCPP_INFO(this->get_logger(), "[ControlInterface]: PX4 parameter %s successfully get with value %d", request->param_name.c_str(), response->value);
+    RCLCPP_INFO(this->get_logger(), "[%s]: PX4 parameter %s successfully get with value %d", this->get_name(), request->param_name.c_str(), response->value);
   } else if (result.first == mavsdk::Param::Result::Unknown) {
     response->message    = "Did not get the parameter - unknown error";
     response->param_name = request->param_name;
     response->success    = false;
-    RCLCPP_ERROR(this->get_logger(), "[ControlInterface]: PX4 parameter get uknown error");
+    RCLCPP_ERROR(this->get_logger(), "[%s]: PX4 parameter get uknown error", this->get_name());
   } else if (result.first == mavsdk::Param::Result::Timeout) {
     response->message    = "Did not get the parameter - time out";
     response->param_name = request->param_name;
     response->success    = false;
-    RCLCPP_ERROR(this->get_logger(), "[ControlInterface]: PX4 parameter get request time out");
+    RCLCPP_ERROR(this->get_logger(), "[%s]: PX4 parameter get request time out", this->get_name());
   } else if (result.first == mavsdk::Param::Result::ConnectionError) {
     response->message    = "Did not get the parameter - connection error";
     response->param_name = request->param_name;
     response->success    = false;
-    RCLCPP_ERROR(this->get_logger(), "[ControlInterface]: PX4 parameter get request connection error");
+    RCLCPP_ERROR(this->get_logger(), "[%s]: PX4 parameter get request connection error", this->get_name());
   } else if (result.first == mavsdk::Param::Result::WrongType) {
     response->message    = "Did not get the parameter - request wrong type";
     response->param_name = request->param_name;
     response->success    = false;
-    RCLCPP_ERROR(this->get_logger(), "[ControlInterface]: PX4 parameter get request wrong type");
+    RCLCPP_ERROR(this->get_logger(), "[%s]: PX4 parameter get request wrong type", this->get_name());
   } else if (result.first == mavsdk::Param::Result::ParamNameTooLong) {
     response->message    = "Did not get the parameter - param name too long";
     response->param_name = request->param_name;
     response->success    = false;
-    RCLCPP_ERROR(this->get_logger(), "[ControlInterface]: PX4 parameter get request param name too long");
+    RCLCPP_ERROR(this->get_logger(), "[%s]: PX4 parameter get request param name too long", this->get_name());
   }
 
   return true;
@@ -1352,37 +1322,37 @@ bool ControlInterface::setPx4ParamFloatCallback([[maybe_unused]] const std::shar
     response->param_name = request->param_name;
     response->value      = request->value;
     response->success    = true;
-    RCLCPP_INFO(this->get_logger(), "[ControlInterface]: PX4 parameter %s successfully set to %f", request->param_name.c_str(), request->value);
+    RCLCPP_INFO(this->get_logger(), "[%s]: PX4 parameter %s successfully set to %f", this->get_name(), request->param_name.c_str(), request->value);
   } else if (result == mavsdk::Param::Result::Unknown) {
     response->message    = "Parameter did not set - unknown error";
     response->param_name = request->param_name;
     response->value      = request->value;
     response->success    = false;
-    RCLCPP_ERROR(this->get_logger(), "[ControlInterface]: PX4 parameter set uknown error");
+    RCLCPP_ERROR(this->get_logger(), "[%s]: PX4 parameter set uknown error", this->get_name());
   } else if (result == mavsdk::Param::Result::Timeout) {
     response->message    = "Parameter did not set - time out";
     response->param_name = request->param_name;
     response->value      = request->value;
     response->success    = false;
-    RCLCPP_ERROR(this->get_logger(), "[ControlInterface]: PX4 parameter set request time out");
+    RCLCPP_ERROR(this->get_logger(), "[%s]: PX4 parameter set request time out", this->get_name());
   } else if (result == mavsdk::Param::Result::ConnectionError) {
     response->message    = "Parameter did not set - connection error";
     response->param_name = request->param_name;
     response->value      = request->value;
     response->success    = false;
-    RCLCPP_ERROR(this->get_logger(), "[ControlInterface]: PX4 parameter set request connection error");
+    RCLCPP_ERROR(this->get_logger(), "[%s]: PX4 parameter set request connection error", this->get_name());
   } else if (result == mavsdk::Param::Result::WrongType) {
     response->message    = "Parameter did not set - request wrong type";
     response->param_name = request->param_name;
     response->value      = request->value;
     response->success    = false;
-    RCLCPP_ERROR(this->get_logger(), "[ControlInterface]: PX4 parameter set request wrong type");
+    RCLCPP_ERROR(this->get_logger(), "[%s]: PX4 parameter set request wrong type", this->get_name());
   } else if (result == mavsdk::Param::Result::ParamNameTooLong) {
     response->message    = "Parameter did not set - param name too long";
     response->param_name = request->param_name;
     response->value      = request->value;
     response->success    = false;
-    RCLCPP_ERROR(this->get_logger(), "[ControlInterface]: PX4 parameter set request param name too long");
+    RCLCPP_ERROR(this->get_logger(), "[%s]: PX4 parameter set request param name too long", this->get_name());
   }
 
   return true;
@@ -1402,8 +1372,7 @@ bool ControlInterface::gpsOriginCallback(rclcpp::Client<fog_msgs::srv::GetOrigin
     gps_origin_set_.store(true);
   } else {
 
-    auto &clk = *this->get_clock();
-    RCLCPP_WARN_THROTTLE(this->get_logger(), clk, 1000, "[%s]: Waiting for GPS origin.", this->get_name());
+    RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 1000, "[%s]: Waiting for GPS origin.", this->get_name());
     gps_origin_called_.store(false);
     return false;
   }
@@ -1419,8 +1388,7 @@ bool ControlInterface::odomAvailableCallback(rclcpp::Client<fog_msgs::srv::GetBo
     RCLCPP_INFO(this->get_logger(), "[%s]: Odometry available!", this->get_name());
     getting_odom_.store(true);
   } else {
-    auto &clk = *this->get_clock();
-    RCLCPP_WARN_THROTTLE(this->get_logger(), clk, 1000, "[%s]: Waiting for Odometry", this->get_name());
+    RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 1000, "[%s]: Waiting for Odometry", this->get_name());
     getting_odom_called_.store(false);
     return false;
   }
@@ -1515,6 +1483,7 @@ void ControlInterface::controlRoutine(void) {
       if (!gps_origin_set_.load()) {
         RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 1000, "[%s]: GPS origin not set", this->get_name());
       }
+
       // Check the availability of the Odometry
       if (!getting_odom_.load() && !getting_odom_called_.load()) {
         getting_odom_called_.store(true);
@@ -1522,18 +1491,8 @@ void ControlInterface::controlRoutine(void) {
         auto call_result = getting_odom_client_->async_send_request(request, std::bind(&ControlInterface::odomAvailableCallback, this, std::placeholders::_1));
         RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 1000, "[%s]: Odometry availability service called", this->get_name());
       }
-      printSensorsStatus();
     }
   }
-}
-//}
-
-/* printSensorsStatus //{ */
-void ControlInterface::printSensorsStatus() {
-
-  // TODO FIXME
-  // leave the checks up to odometry
-  RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 1000, "[%s]: GPS origin set:%s", this->get_name(), gps_origin_set_.load() ? "TRUE" : "FALSE");
 }
 //}
 
@@ -1777,17 +1736,6 @@ void ControlInterface::publishDebugMarkers() {
     msg.poses.push_back(p);
   }
   waypoint_marker_publisher_->publish(msg);
-}
-//}
-
-/* generateColor//{ */
-std_msgs::msg::ColorRGBA ControlInterface::generateColor(const double r, const double g, const double b, const double a) {
-  std_msgs::msg::ColorRGBA c;
-  c.r = r;
-  c.g = g;
-  c.b = b;
-  c.a = a;
-  return c;
 }
 //}
 
