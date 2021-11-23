@@ -37,17 +37,16 @@ def generate_launch_description():
                 parameters=[
                     pkg_share_path + '/config/control_interface.yaml',
                     {"use_sim_time": launch.substitutions.LaunchConfiguration("use_sim_time")},
+                    {"device_url": launch.substitutions.LaunchConfiguration("device_url")},
                 ],
                 remappings=[
-                    ("~/vehicle_command_out", "/" + DRONE_DEVICE_ID + "/VehicleCommand_PubSubTopic"),
                     ("~/desired_pose_out", "~/desired_pose"),
                     ("~/diagnostics_out", "~/diagnostics"),
-                    ("~/debug_markers_out", "~/debug/waypoint_markers"),
+                    ("~/waypoint_markers_out", "~/waypoint_markers"),
 
                     ("~/octomap_reset_out", "/" + DRONE_DEVICE_ID + "/octomap_server/reset"),
 
                     ("~/diagnostics_out", "~/diagnostics"),
-                    ("~/debug_markers_out", "~/debug/waypoint_markers"),
                     ("~/control_mode_in", "/" + DRONE_DEVICE_ID + "/VehicleControlMode_PubSubTopic"),
                     ("~/land_detected_in", "/" + DRONE_DEVICE_ID + "/VehicleLandDetected_PubSubTopic"),
                     ("~/mission_result_in", "/" + DRONE_DEVICE_ID + "/MissionResult_PubSubTopic"),

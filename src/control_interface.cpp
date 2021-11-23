@@ -19,13 +19,10 @@
 #include <mavsdk/plugins/mission/mission.h>
 #include <mavsdk/plugins/param/param.h>
 #include <nav_msgs/msg/odometry.hpp>
+#include <px4_msgs/msg/vehicle_control_mode.hpp>
 #include <px4_msgs/msg/mission_result.hpp>
 #include <px4_msgs/msg/home_position.hpp>
-#include <px4_msgs/msg/vehicle_command.hpp>
-#include <px4_msgs/msg/vehicle_control_mode.hpp>
-#include <px4_msgs/msg/vehicle_global_position.hpp>
 #include <px4_msgs/msg/vehicle_land_detected.hpp>
-#include <px4_msgs/msg/vehicle_odometry.hpp>
 #include <rcl_interfaces/msg/set_parameters_result.hpp>
 #include <rclcpp/qos.hpp>
 #include <rclcpp/rclcpp.hpp>
@@ -235,10 +232,8 @@ private:
   tf2::Quaternion              ori_;
 
   // publishers
-  rclcpp::Publisher<px4_msgs::msg::VehicleCommand>::SharedPtr   vehicle_command_publisher_;
   rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr desired_pose_publisher_;  // https://ctu-mrs.github.io/docs/system/relative_commands.html
   rclcpp::Publisher<geometry_msgs::msg::PoseArray>::SharedPtr   waypoint_marker_publisher_;
-  rclcpp::Publisher<geometry_msgs::msg::PoseArray>::SharedPtr   waypoint_there_and_back_publisher_;
   rclcpp::Publisher<fog_msgs::msg::ControlInterfaceDiagnostics>::SharedPtr diagnostics_publisher_;
 
   // subscribers
@@ -254,8 +249,8 @@ private:
   void controlModeCallback(const px4_msgs::msg::VehicleControlMode::UniquePtr msg);
   void landDetectedCallback(const px4_msgs::msg::VehicleLandDetected::UniquePtr msg);
   void missionResultCallback(const px4_msgs::msg::MissionResult::UniquePtr msg);
-  void odometryCallback(const nav_msgs::msg::Odometry::UniquePtr msg);
   void homePositionCallback(const px4_msgs::msg::HomePosition::UniquePtr msg);
+  void odometryCallback(const nav_msgs::msg::Odometry::UniquePtr msg);
 
   // services provided
   rclcpp::Service<std_srvs::srv::SetBool>::SharedPtr          arming_service_;
@@ -386,12 +381,10 @@ ControlInterface::ControlInterface(rclcpp::NodeOptions options) : Node("control_
       rclcpp::sleep_for(std::chrono::seconds(1));
     }
     for (unsigned i = 0; i < mavsdk_.systems().size(); i++) {
-      if (mavsdk_.systems().at(i)->get_system_id() == 1) {
-        RCLCPP_INFO(this->get_logger(), "[%s]: ID: %u", this->get_name(), mavsdk_.systems().at(i)->get_system_id());
-        connected = true;
-        system_   = mavsdk_.systems().at(i);
-        break;
-      }
+      RCLCPP_INFO(this->get_logger(), "[%s]: ID: %u", this->get_name(), mavsdk_.systems().at(i)->get_system_id());
+      connected = true;
+      system_   = mavsdk_.systems().at(i);
+      break;
     }
   }
 
@@ -410,7 +403,6 @@ ControlInterface::ControlInterface(rclcpp::NodeOptions options) : Node("control_
 
   rclcpp::QoS qos(rclcpp::KeepLast(3));
   // publishers
-  vehicle_command_publisher_ = this->create_publisher<px4_msgs::msg::VehicleCommand>("~/vehicle_command_out", qos);
   desired_pose_publisher_    = this->create_publisher<geometry_msgs::msg::PoseStamped>("~/desired_pose_out", qos);
   waypoint_marker_publisher_ = this->create_publisher<geometry_msgs::msg::PoseArray>("~/waypoint_markers_out", qos);
   diagnostics_publisher_     = this->create_publisher<fog_msgs::msg::ControlInterfaceDiagnostics>("~/diagnostics_out", qos);
