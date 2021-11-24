@@ -1637,7 +1637,7 @@ bool ControlInterface::startMission() {
 
   auto result = mission_->start_mission();
   if (result != mavsdk::Mission::Result::Success) {
-    RCLCPP_ERROR(this->get_logger(), "[%s]: Mission start rejected", this->get_name());
+    RCLCPP_ERROR(this->get_logger(), "[%s]: Mission start rejected with exit symbol %d", this->get_name(), result);
     return false;
   }
   RCLCPP_INFO(this->get_logger(), "[%s]: Mission started", this->get_name());
