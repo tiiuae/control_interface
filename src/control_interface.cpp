@@ -267,7 +267,6 @@ private:
   rclcpp::Service<fog_msgs::srv::GetPx4ParamFloat>::SharedPtr get_px4_param_float_service_;
 
   // service clients
-  rclcpp::Client<fog_msgs::srv::GetOrigin>::SharedPtr        get_origin_client_;
   rclcpp::Client<fog_msgs::srv::GetBool>::SharedPtr          getting_odom_client_;
   rclcpp::Client<std_srvs::srv::Empty>::SharedPtr            octomap_reset_client_;
   rclcpp::Client<fog_msgs::srv::SetPx4ParamFloat>::SharedPtr set_px4_param_float_client_;
@@ -428,7 +427,6 @@ ControlInterface::ControlInterface(rclcpp::NodeOptions options) : Node("control_
   parameters_callback_handle_ = this->add_on_set_parameters_callback(std::bind(&ControlInterface::parametersCallback, this, _1));
 
   // service clients
-  get_origin_client_    = this->create_client<fog_msgs::srv::GetOrigin>("~/get_origin");
   getting_odom_client_  = this->create_client<fog_msgs::srv::GetBool>("~/getting_odom");
   octomap_reset_client_ = this->create_client<std_srvs::srv::Empty>("~/octomap_reset_out");
 

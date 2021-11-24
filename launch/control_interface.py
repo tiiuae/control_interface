@@ -46,7 +46,6 @@ def generate_launch_description():
                     ("~/desired_pose_out", "~/desired_pose"),
                     ("~/diagnostics_out", "~/diagnostics"),
                     ("~/waypoint_markers_out", "~/waypoint_markers"),
-                    ("~/diagnostics_out", "~/diagnostics"),
 
                     ("~/octomap_reset_out", "/" + DRONE_DEVICE_ID + "/octomap_server/reset"),
 
@@ -67,7 +66,6 @@ def generate_launch_description():
                     ("~/waypoint_to_local_in", "~/waypoint_to_local"),
                     ("~/path_to_local_in", "~/path_to_local"),
 
-                    ("~/get_origin", "/" + DRONE_DEVICE_ID + "/odometry2/get_origin"),
                     ("~/getting_odom", "/" + DRONE_DEVICE_ID + "/odometry2/getting_odom"),
 
                     ("~/get_px4_param_int", "~/get_px4_param_int"),
