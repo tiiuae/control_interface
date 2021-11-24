@@ -45,7 +45,7 @@ def generate_launch_description():
                 remappings=[
                     ("~/desired_pose_out", "~/desired_pose"),
                     ("~/diagnostics_out", "~/diagnostics"),
-                    ("~/waypoint_markers_out", "~/waypoint_markers"),
+                    ("~/waypoints_out", "~/waypoints"),
 
                     ("~/octomap_reset_out", "/" + DRONE_DEVICE_ID + "/octomap_server/reset"),
 
@@ -53,6 +53,7 @@ def generate_launch_description():
                     ("~/land_detected_in", "/" + DRONE_DEVICE_ID + "/VehicleLandDetected_PubSubTopic"),
                     ("~/mission_result_in", "/" + DRONE_DEVICE_ID + "/MissionResult_PubSubTopic"),
                     ("~/home_position_in", "/" + DRONE_DEVICE_ID + "/HomePosition_PubSubTopic"),
+                    ("~/local_odom_in", "/" + DRONE_DEVICE_ID + "/odometry2/local_odom"),
                     
                     ("~/arming_in", "~/arming"),
                     ("~/takeoff_in", "~/takeoff"),
@@ -61,15 +62,13 @@ def generate_launch_description():
                     ("~/local_path_in", "~/local_path"),
                     ("~/gps_waypoint_in", "~/gps_waypoint"),
                     ("~/gps_path_in", "~/gps_path"),
-                    ("~/local_odom_in", "/" + DRONE_DEVICE_ID + "/odometry2/local_odom"),
                     
                     ("~/waypoint_to_local_in", "~/waypoint_to_local"),
                     ("~/path_to_local_in", "~/path_to_local"),
 
-                    ("~/getting_odom", "/" + DRONE_DEVICE_ID + "/odometry2/getting_odom"),
-
                     ("~/get_px4_param_int", "~/get_px4_param_int"),
                     ("~/set_px4_param_int", "~/set_px4_param_int"),
+                    ("~/get_px4_param_float", "~/get_px4_param_float"),
                     ("~/set_px4_param_float", "~/set_px4_param_float"),
 
                 ],

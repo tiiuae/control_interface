@@ -2,7 +2,6 @@
 #include <eigen3/Eigen/src/Geometry/Quaternion.h>
 #include <fog_msgs/msg/control_interface_diagnostics.hpp>
 #include <fog_msgs/srv/get_bool.hpp>
-#include <fog_msgs/srv/get_origin.hpp>
 #include <fog_msgs/srv/path.hpp>
 #include <fog_msgs/srv/path_to_local.hpp>
 #include <fog_msgs/srv/get_px4_param_int.hpp>
@@ -178,10 +177,8 @@ private:
   std::atomic_bool manual_control_flag_ = true;
   std::atomic_bool stop_commanding_     = false;
 
-  std::atomic_bool gps_origin_set_      = false;
-  std::atomic_bool gps_origin_called_   = false;
-  std::atomic_bool getting_odom_        = false;
-  std::atomic_bool getting_odom_called_ = false;
+  std::atomic_bool gps_origin_set_ = false;
+  std::atomic_bool getting_odom_   = false;
 
   std::atomic_bool mission_finished_        = true;
   unsigned         last_mission_instance_   = 1;
@@ -232,7 +229,7 @@ private:
 
   // publishers
   rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr desired_pose_publisher_;  // https://ctu-mrs.github.io/docs/system/relative_commands.html
-  rclcpp::Publisher<geometry_msgs::msg::PoseArray>::SharedPtr   waypoint_marker_publisher_;
+  rclcpp::Publisher<geometry_msgs::msg::PoseArray>::SharedPtr   waypoint_publisher_;
   rclcpp::Publisher<fog_msgs::msg::ControlInterfaceDiagnostics>::SharedPtr diagnostics_publisher_;
 
   // subscribers
@@ -291,7 +288,6 @@ private:
                               std::shared_ptr<fog_msgs::srv::GetPx4ParamInt::Response>      response);
   bool getPx4ParamFloatCallback(const std::shared_ptr<fog_msgs::srv::GetPx4ParamFloat::Request> request,
                                 std::shared_ptr<fog_msgs::srv::GetPx4ParamFloat::Response>      response);
-  bool gpsOriginCallback(rclcpp::Client<fog_msgs::srv::GetOrigin>::SharedFuture future);
   bool odomAvailableCallback(rclcpp::Client<fog_msgs::srv::GetBool>::SharedFuture future);
 
   // parameter callback
@@ -408,9 +404,9 @@ ControlInterface::ControlInterface(rclcpp::NodeOptions options) : Node("control_
 
   rclcpp::QoS qos(rclcpp::KeepLast(3));
   // publishers
-  desired_pose_publisher_    = this->create_publisher<geometry_msgs::msg::PoseStamped>("~/desired_pose_out", qos);
-  waypoint_marker_publisher_ = this->create_publisher<geometry_msgs::msg::PoseArray>("~/waypoint_markers_out", qos);
-  diagnostics_publisher_     = this->create_publisher<fog_msgs::msg::ControlInterfaceDiagnostics>("~/diagnostics_out", qos);
+  desired_pose_publisher_ = this->create_publisher<geometry_msgs::msg::PoseStamped>("~/desired_pose_out", qos);
+  waypoint_publisher_     = this->create_publisher<geometry_msgs::msg::PoseArray>("~/waypoints_out", qos);
+  diagnostics_publisher_  = this->create_publisher<fog_msgs::msg::ControlInterfaceDiagnostics>("~/diagnostics_out", qos);
 
   // subscribers
   control_mode_subscriber_  = this->create_subscription<px4_msgs::msg::VehicleControlMode>("~/control_mode_in", rclcpp::SystemDefaultsQoS(),
@@ -427,7 +423,6 @@ ControlInterface::ControlInterface(rclcpp::NodeOptions options) : Node("control_
   parameters_callback_handle_ = this->add_on_set_parameters_callback(std::bind(&ControlInterface::parametersCallback, this, _1));
 
   // service clients
-  getting_odom_client_  = this->create_client<fog_msgs::srv::GetBool>("~/getting_odom");
   octomap_reset_client_ = this->create_client<std_srvs::srv::Empty>("~/octomap_reset_out");
 
   // service handlers
@@ -1391,44 +1386,6 @@ bool ControlInterface::getPx4ParamFloatCallback([[maybe_unused]] const std::shar
 }
 //}
 
-/* gpsOriginCallback //{ */
-bool ControlInterface::gpsOriginCallback(rclcpp::Client<fog_msgs::srv::GetOrigin>::SharedFuture future) {
-  std::shared_ptr<fog_msgs::srv::GetOrigin::Response> result = future.get();
-  if (result->success) {
-    mavsdk::geometry::CoordinateTransformation::GlobalCoordinate ref;
-    ref.latitude_deg  = result->latitude;
-    ref.longitude_deg = result->longitude;
-    coord_transform_  = std::make_shared<mavsdk::geometry::CoordinateTransformation>(mavsdk::geometry::CoordinateTransformation(ref));
-
-    RCLCPP_INFO(this->get_logger(), "[%s]: GPS origin set! Lat: %.3f, Lon: %.3f", this->get_name(), ref.latitude_deg, ref.longitude_deg);
-    gps_origin_set_.store(true);
-  } else {
-
-    RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 1000, "[%s]: Waiting for GPS origin.", this->get_name());
-    gps_origin_called_.store(false);
-    return false;
-  }
-  gps_origin_called_.store(false);
-  return true;
-}
-//}
-
-/* odomAvailableCallback //{ */
-bool ControlInterface::odomAvailableCallback(rclcpp::Client<fog_msgs::srv::GetBool>::SharedFuture future) {
-  std::shared_ptr<fog_msgs::srv::GetBool::Response> result = future.get();
-  if (result->value) {
-    RCLCPP_INFO(this->get_logger(), "[%s]: Odometry available!", this->get_name());
-    getting_odom_.store(true);
-  } else {
-    RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 1000, "[%s]: Waiting for Odometry", this->get_name());
-    getting_odom_called_.store(false);
-    return false;
-  }
-  getting_odom_called_.store(false);
-  return true;
-}
-//}
-
 /* controlRoutine //{ */
 void ControlInterface::controlRoutine(void) {
 
@@ -1436,94 +1393,82 @@ void ControlInterface::controlRoutine(void) {
     publishDiagnostics();
     publishDesiredPose();
 
-    if (gps_origin_set_.load() && getting_odom_.load()) {
+    if (!gps_origin_set_.load() || !getting_odom_.load()) {
+      RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 1000, "[%s]: GPS origin set: %s, Getting odometry: %s", this->get_name(),
+                           gps_origin_set_.load() ? "TRUE" : "FALSE", getting_odom_.load() ? "TRUE" : "FALSE");
+      return;
+    }
 
-      RCLCPP_INFO_ONCE(this->get_logger(), "[%s]: CONTROL INTERFACE IS READY", this->get_name());
+    RCLCPP_INFO_ONCE(this->get_logger(), "[%s]: CONTROL INTERFACE IS READY", this->get_name());
 
-      if (!armed_.load()) {
-        RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 1000, "[%s]: Vehicle not armed", this->get_name());
-        return;
-      }
+    if (!armed_.load()) {
+      RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 1000, "[%s]: Vehicle not armed", this->get_name());
+      return;
+    }
 
-      if (landed_.load()) {
-        RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 1000, "[%s]: Vehicle not airborne", this->get_name());
-        return;
-      }
+    if (landed_.load()) {
+      RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 1000, "[%s]: Vehicle not airborne", this->get_name());
+      return;
+    }
 
-      if (stop_commanding_.load()) {
-        RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 1000, "[%s]: Control action prevented by an external trigger", this->get_name());
-        return;
-      }
+    if (stop_commanding_.load()) {
+      RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 1000, "[%s]: Control action prevented by an external trigger", this->get_name());
+      return;
+    }
 
-      /* handle motion //{ */
-      if (motion_started_.load()) {
+    /* handle motion //{ */
+    if (motion_started_.load()) {
 
-        {
-          std::scoped_lock lock(waypoint_buffer_mutex_, mission_mutex_);
+      {
+        std::scoped_lock lock(waypoint_buffer_mutex_, mission_mutex_);
 
-          // create a new mission plan if there are unused points in buffer
-          if (waypoint_buffer_.size() > 0 && mission_finished_.load()) {
-            publishDebugMarkers();
-            RCLCPP_INFO(this->get_logger(), "[%s]: Waypoints to be visited: %ld", this->get_name(), waypoint_buffer_.size());
-            mission_->pause_mission();
-            mission_plan_.mission_items.clear();
+        // create a new mission plan if there are unused points in buffer
+        if (waypoint_buffer_.size() > 0 && mission_finished_.load()) {
+          publishDebugMarkers();
+          RCLCPP_INFO(this->get_logger(), "[%s]: Waypoints to be visited: %ld", this->get_name(), waypoint_buffer_.size());
+          mission_->pause_mission();
+          mission_plan_.mission_items.clear();
 
-            for (size_t i = 0; i < waypoint_buffer_.size(); i++) {
-              addToMission(waypoint_buffer_.at(i));
-              desired_pose_ = Eigen::Vector4d(waypoint_buffer_.at(i).x, waypoint_buffer_.at(i).y, waypoint_buffer_.at(i).z, waypoint_buffer_.at(i).yaw);
-            }
-
-            start_mission_.store(true);
-            mission_finished_.store(false);
+          for (size_t i = 0; i < waypoint_buffer_.size(); i++) {
+            addToMission(waypoint_buffer_.at(i));
+            desired_pose_ = Eigen::Vector4d(waypoint_buffer_.at(i).x, waypoint_buffer_.at(i).y, waypoint_buffer_.at(i).z, waypoint_buffer_.at(i).yaw);
           }
+
+          start_mission_.store(true);
+          mission_finished_.store(false);
+        }
+      }
+
+      {
+        std::scoped_lock lock(waypoint_buffer_mutex_, mission_mutex_);
+
+        // prevent deadlock when pixhawk is continuously rejecting missions
+        if (mission_upload_attempts_ >= mission_upload_attempts_threshold_) {
+          mission_upload_attempts_ = 0;
+          start_mission_.store(false);
+          waypoint_buffer_.clear();
+          RCLCPP_WARN(this->get_logger(), "[%s]: Mission upload failed too many times. Clearing waypoint buffer.", this->get_name());
         }
 
-
-        {
-          std::scoped_lock lock(waypoint_buffer_mutex_, mission_mutex_);
-
-          // prevent deadlock when pixhawk is continuously rejecting missions
-          if (mission_upload_attempts_ >= mission_upload_attempts_threshold_) {
+        // upload and execute new mission
+        if (start_mission_.load() && mission_plan_.mission_items.size() > 0) {
+          bool success = uploadMission() && startMission();
+          if (success) {
             mission_upload_attempts_ = 0;
             start_mission_.store(false);
+            last_mission_size_ = waypoint_buffer_.size();
             waypoint_buffer_.clear();
-            RCLCPP_WARN(this->get_logger(), "[%s]: Mission upload failed too many times. Clearing waypoint buffer.", this->get_name());
-          }
-
-          // upload and execute new mission
-          if (start_mission_.load() && mission_plan_.mission_items.size() > 0) {
-            bool success = uploadMission() && startMission();
-            if (success) {
-              mission_upload_attempts_ = 0;
-              start_mission_.store(false);
-              last_mission_size_ = waypoint_buffer_.size();
-              waypoint_buffer_.clear();
-            }
           }
         }
-
-        // stop if final goal is reached
-        if (mission_finished_.load()) {
-          RCLCPP_INFO(this->get_logger(), "[%s]: All waypoints have been visited", this->get_name());
-          motion_started_.store(false);
-        }
-      }
-      //}
-
-    } else {
-      // Check the availability of the GPS origin
-      if (!gps_origin_set_.load()) {
-        RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 1000, "[%s]: GPS origin not set", this->get_name());
       }
 
-      // Check the availability of the Odometry
-      if (!getting_odom_.load() && !getting_odom_called_.load()) {
-        getting_odom_called_.store(true);
-        auto request     = std::make_shared<fog_msgs::srv::GetBool::Request>();
-        auto call_result = getting_odom_client_->async_send_request(request, std::bind(&ControlInterface::odomAvailableCallback, this, std::placeholders::_1));
-        RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 1000, "[%s]: Odometry availability service called", this->get_name());
+      // stop if final goal is reached
+      if (mission_finished_.load()) {
+        RCLCPP_INFO(this->get_logger(), "[%s]: All waypoints have been visited", this->get_name());
+        motion_started_.store(false);
       }
     }
+    //}
   }
 }
 //}
@@ -1767,7 +1712,7 @@ void ControlInterface::publishDebugMarkers() {
     p.orientation.z = q.z();
     msg.poses.push_back(p);
   }
-  waypoint_marker_publisher_->publish(msg);
+  waypoint_publisher_->publish(msg);
 }
 //}
 
