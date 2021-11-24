@@ -46,10 +46,10 @@ def generate_launch_description():
                     ("~/desired_pose_out", "~/desired_pose"),
                     ("~/diagnostics_out", "~/diagnostics"),
                     ("~/waypoint_markers_out", "~/waypoint_markers"),
+                    ("~/diagnostics_out", "~/diagnostics"),
 
                     ("~/octomap_reset_out", "/" + DRONE_DEVICE_ID + "/octomap_server/reset"),
 
-                    ("~/diagnostics_out", "~/diagnostics"),
                     ("~/control_mode_in", "/" + DRONE_DEVICE_ID + "/VehicleControlMode_PubSubTopic"),
                     ("~/land_detected_in", "/" + DRONE_DEVICE_ID + "/VehicleLandDetected_PubSubTopic"),
                     ("~/mission_result_in", "/" + DRONE_DEVICE_ID + "/MissionResult_PubSubTopic"),
