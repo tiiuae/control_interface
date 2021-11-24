@@ -14,6 +14,8 @@ def generate_launch_description():
     pkg_share_path = get_package_share_directory(pkg_name)
     
     ld.add_action(launch.actions.DeclareLaunchArgument("use_sim_time", default_value="false"))
+    ld.add_action(launch.actions.DeclareLaunchArgument("device_url", default_value="udp://:14590"))
+    ld.add_action(launch.actions.DeclareLaunchArgument("world_frame", default_value="world"))
 
     ld.add_action(launch.actions.DeclareLaunchArgument("debug", default_value="false"))
     dbg_sub = None
@@ -38,6 +40,7 @@ def generate_launch_description():
                     pkg_share_path + '/config/control_interface.yaml',
                     {"use_sim_time": launch.substitutions.LaunchConfiguration("use_sim_time")},
                     {"device_url": launch.substitutions.LaunchConfiguration("device_url")},
+                    {"world_frame": launch.substitutions.LaunchConfiguration("world_frame")},
                 ],
                 remappings=[
                     ("~/desired_pose_out", "~/desired_pose"),

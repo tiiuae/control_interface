@@ -1,17 +1,20 @@
-# device_url: "serial:///dev/ttyS7:921600"
-takeoff_height: 1.0 # [m]
-reset_octomap_before_takeoff: true
-waypoint_marker_scale: 0.3
-yaw_offset_correction: -1.5708 # [rad] NOTE: MAVSDK 0.42 represents yaw=0 as heading aligned with Y axis. We want to align with X axis at yaw=0
-takeoff_height: 1.0 # [m]
-reset_octomap_before_takeoff: true
-waypoint_marker_scale: 0.3
-waypoint_loiter_time: 0.0 # [s]
-waypoint_acceptance_radius: 0.6 # [m]
-altitude_acceptance_radius: 0.5 # [m]
-target_velocity: 1.5 # [m/s]
-control_update_rate: 20.0 # [Hz]
-takeoff_position_samples: 20 # before takeoff, the first waypoint will be set to the average of these samples
-takeoff_height_tolerance: 0.4 # [m]
-takeoff_blocking_timeout: 3.0 # [s]
-mission_upload_attempts_threshold: 5
+general:
+  reset_octomap_before_takeoff: true
+  control_update_rate: 20.0 # [Hz]
+  # device_url: now set by launch file argument
+
+takeoff:
+  height: 1.0 # [m]
+  height_tolerance: 0.4 # [m]
+  blocking_timeout: 3.0 # [s]
+  position_samples: 20 # before takeoff, the first waypoint will be set to the average of these samples
+
+px4:
+  target_velocity: 1.5 # [m/s]
+  waypoint_loiter_time: 0.0 # [s]
+  waypoint_acceptance_radius: 0.6 # [m]
+  altitude_acceptance_radius: 0.5 # [m]
+
+mavsdk:
+  yaw_offset_correction: -1.5708 # [rad] NOTE: MAVSDK 0.42 represents yaw=0 as heading aligned with Y axis. We want to align with X axis at yaw=0
+  mission_upload_attempts_threshold: 5

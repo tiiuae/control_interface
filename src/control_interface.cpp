@@ -1,14 +1,14 @@
-#include <deque>
 #include <eigen3/Eigen/Dense>
 #include <eigen3/Eigen/src/Geometry/Quaternion.h>
 #include <fog_msgs/msg/control_interface_diagnostics.hpp>
 #include <fog_msgs/srv/get_bool.hpp>
 #include <fog_msgs/srv/get_origin.hpp>
-#include <fog_msgs/srv/get_px4_param_int.hpp>
 #include <fog_msgs/srv/path.hpp>
 #include <fog_msgs/srv/path_to_local.hpp>
-#include <fog_msgs/srv/set_px4_param_float.hpp>
+#include <fog_msgs/srv/get_px4_param_int.hpp>
+#include <fog_msgs/srv/get_px4_param_float.hpp>
 #include <fog_msgs/srv/set_px4_param_int.hpp>
+#include <fog_msgs/srv/set_px4_param_float.hpp>
 #include <fog_msgs/srv/vec4.hpp>
 #include <fog_msgs/srv/waypoint_to_local.hpp>
 #include <geometry_msgs/msg/pose_array.hpp>
@@ -200,9 +200,9 @@ private:
   mavsdk::Mission::MissionPlan     mission_plan_;
   std::mutex                       mission_mutex_;
 
-  std::mutex                   waypoint_buffer_mutex_;
-  std::deque<local_waypoint_t> waypoint_buffer_;
-  size_t                       last_mission_size_ = 0;
+  std::mutex                    waypoint_buffer_mutex_;
+  std::vector<local_waypoint_t> waypoint_buffer_;
+  size_t                        last_mission_size_ = 0;
 
   Eigen::Vector4d desired_pose_;
   Eigen::Vector3d home_position_offset_ = Eigen::Vector3d(0, 0, 0);
@@ -216,7 +216,6 @@ private:
   double takeoff_height_                    = 2.5;
   double takeoff_height_tolerance_          = 0.4;
   double takeoff_blocking_timeout_          = 3.0;
-  double waypoint_marker_scale_             = 0.3;
   double control_update_rate_               = 10.0;
   double waypoint_loiter_time_              = 0.0;
   bool   reset_octomap_before_takeoff_      = true;
@@ -243,7 +242,7 @@ private:
   rclcpp::Subscription<px4_msgs::msg::HomePosition>::SharedPtr        home_position_subscriber_;
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr            odometry_subscriber_;
 
-  OnSetParametersCallbackHandle::SharedPtr callback_handle_;
+  OnSetParametersCallbackHandle::SharedPtr parameters_callback_handle_;
 
   // subscriber callbacks
   void controlModeCallback(const px4_msgs::msg::VehicleControlMode::UniquePtr msg);
@@ -262,9 +261,10 @@ private:
   rclcpp::Service<fog_msgs::srv::Path>::SharedPtr             gps_path_service_;
   rclcpp::Service<fog_msgs::srv::WaypointToLocal>::SharedPtr  waypoint_to_local_service_;
   rclcpp::Service<fog_msgs::srv::PathToLocal>::SharedPtr      path_to_local_service_;
-  rclcpp::Service<fog_msgs::srv::SetPx4ParamInt>::SharedPtr   set_px4_param_int_;
-  rclcpp::Service<fog_msgs::srv::GetPx4ParamInt>::SharedPtr   get_px4_param_int_;
-  rclcpp::Service<fog_msgs::srv::SetPx4ParamFloat>::SharedPtr set_px4_param_float_;
+  rclcpp::Service<fog_msgs::srv::SetPx4ParamInt>::SharedPtr   set_px4_param_int_service_;
+  rclcpp::Service<fog_msgs::srv::GetPx4ParamInt>::SharedPtr   get_px4_param_int_service_;
+  rclcpp::Service<fog_msgs::srv::SetPx4ParamFloat>::SharedPtr set_px4_param_float_service_;
+  rclcpp::Service<fog_msgs::srv::GetPx4ParamFloat>::SharedPtr get_px4_param_float_service_;
 
   // service clients
   rclcpp::Client<fog_msgs::srv::GetOrigin>::SharedPtr        get_origin_client_;
@@ -290,6 +290,8 @@ private:
                                 std::shared_ptr<fog_msgs::srv::SetPx4ParamFloat::Response>      response);
   bool getPx4ParamIntCallback(const std::shared_ptr<fog_msgs::srv::GetPx4ParamInt::Request> request,
                               std::shared_ptr<fog_msgs::srv::GetPx4ParamInt::Response>      response);
+  bool getPx4ParamFloatCallback(const std::shared_ptr<fog_msgs::srv::GetPx4ParamFloat::Request> request,
+                                std::shared_ptr<fog_msgs::srv::GetPx4ParamFloat::Response>      response);
   bool gpsOriginCallback(rclcpp::Client<fog_msgs::srv::GetOrigin>::SharedFuture future);
   bool odomAvailableCallback(rclcpp::Client<fog_msgs::srv::GetBool>::SharedFuture future);
 
@@ -332,28 +334,32 @@ ControlInterface::ControlInterface(rclcpp::NodeOptions options) : Node("control_
   }
   RCLCPP_INFO(this->get_logger(), "[%s]: UAV name is: '%s'", this->get_name(), uav_name_.c_str());
 
-  /* parse params from config file //{ */
+  /* parse params from launch file //{ */
   parse_param("device_url", device_url_);
-  parse_param("yaw_offset_correction", yaw_offset_correction_);
-  parse_param("takeoff_height", takeoff_height_);
-  parse_param("waypoint_marker_scale", waypoint_marker_scale_);
-  parse_param("waypoint_loiter_time", waypoint_loiter_time_);
-  parse_param("reset_octomap_before_takeoff", reset_octomap_before_takeoff_);
-  parse_param("waypoint_acceptance_radius", waypoint_acceptance_radius_);
-  parse_param("altitude_acceptance_radius", altitude_acceptance_radius_);
-  parse_param("target_velocity", target_velocity_);
-  parse_param("control_update_rate", control_update_rate_);
-  parse_param("takeoff_position_samples", takeoff_position_samples_);
-  parse_param("takeoff_height_tolerance", takeoff_height_tolerance_);
-  parse_param("takeoff_blocking_timeout", takeoff_blocking_timeout_);
-  parse_param("mission_upload_attempts_threshold", mission_upload_attempts_threshold_);
+  parse_param("world_frame", world_frame_);
+  //}
+
+  /* parse params from config file //{ */
+  parse_param("general.reset_octomap_before_takeoff", reset_octomap_before_takeoff_);
+  parse_param("general.control_update_rate", control_update_rate_);
+
+  parse_param("takeoff.height", takeoff_height_);
+  parse_param("takeoff.height_tolerance", takeoff_height_tolerance_);
+  parse_param("takeoff.blocking_timeout", takeoff_blocking_timeout_);
+  parse_param("takeoff.position_samples", takeoff_position_samples_);
+
+  parse_param("px4.target_velocity", target_velocity_);
+  parse_param("px4.waypoint_loiter_time", waypoint_loiter_time_);
+  parse_param("px4.waypoint_acceptance_radius", waypoint_acceptance_radius_);
+  parse_param("px4.altitude_acceptance_radius", altitude_acceptance_radius_);
+
+  parse_param("mavsdk.yaw_offset_correction", yaw_offset_correction_);
+  parse_param("mavsdk.mission_upload_attempts_threshold", mission_upload_attempts_threshold_);
 
   if (control_update_rate_ < 5.0) {
     control_update_rate_ = 5.0;
     RCLCPP_WARN(this->get_logger(), "[%s]: Control update rate set too slow. Defaulting to 5 Hz", this->get_name());
   }
-
-  world_frame_ = "world";  // TODO FIXME hardcoded??
 
   //}
 
@@ -419,7 +425,7 @@ ControlInterface::ControlInterface(rclcpp::NodeOptions options) : Node("control_
   odometry_subscriber_       = this->create_subscription<nav_msgs::msg::Odometry>("~/local_odom_in", rclcpp::SystemDefaultsQoS(),
                                                                             std::bind(&ControlInterface::odometryCallback, this, _1), sub_opt);
 
-  callback_handle_ = this->add_on_set_parameters_callback(std::bind(&ControlInterface::parametersCallback, this, _1));
+  parameters_callback_handle_ = this->add_on_set_parameters_callback(std::bind(&ControlInterface::parametersCallback, this, _1));
 
   // service clients
   get_origin_client_    = this->create_client<fog_msgs::srv::GetOrigin>("~/get_origin");
@@ -445,12 +451,14 @@ ControlInterface::ControlInterface(rclcpp::NodeOptions options) : Node("control_
       "~/waypoint_to_local_in", std::bind(&ControlInterface::waypointToLocalCallback, this, _1, _2), qos.get_rmw_qos_profile(), callback_group_);
   path_to_local_service_ = this->create_service<fog_msgs::srv::PathToLocal>(
       "~/path_to_local_in", std::bind(&ControlInterface::pathToLocalCallback, this, _1, _2), qos.get_rmw_qos_profile(), callback_group_);
-  set_px4_param_int_ =
+  set_px4_param_int_service_ =
       this->create_service<fog_msgs::srv::SetPx4ParamInt>("~/set_px4_param_int", std::bind(&ControlInterface::setPx4ParamIntCallback, this, _1, _2));
-  get_px4_param_int_ =
+  get_px4_param_int_service_ =
       this->create_service<fog_msgs::srv::GetPx4ParamInt>("~/get_px4_param_int", std::bind(&ControlInterface::getPx4ParamIntCallback, this, _1, _2));
-  set_px4_param_float_ =
+  set_px4_param_float_service_ =
       this->create_service<fog_msgs::srv::SetPx4ParamFloat>("~/set_px4_param_float", std::bind(&ControlInterface::setPx4ParamFloatCallback, this, _1, _2));
+  get_px4_param_float_service_ =
+      this->create_service<fog_msgs::srv::GetPx4ParamFloat>("~/get_px4_param_float", std::bind(&ControlInterface::getPx4ParamFloatCallback, this, _1, _2));
 
   set_px4_param_float_client_ = this->create_client<fog_msgs::srv::SetPx4ParamFloat>("~/set_px4_param_float");
 
@@ -493,7 +501,7 @@ rcl_interfaces::msg::SetParametersResult ControlInterface::parametersCallback(co
   for (const auto &param : parameters) {
 
     /* takeoff_height //{ */
-    if (param.get_name() == "takeoff_height") {
+    if (param.get_name() == "takeoff.height") {
       if (param.get_type() == rclcpp::ParameterType::PARAMETER_DOUBLE) {
         if (param.as_double() >= 0.5 && param.as_double() < 10) {
           takeoff_height_   = param.as_double();
@@ -512,25 +520,8 @@ rcl_interfaces::msg::SetParametersResult ControlInterface::parametersCallback(co
       }
       //}
 
-      /* waypoint_marker_scale //{ */
-    } else if (param.get_name() == "waypoint_marker_scale") {
-      if (param.get_type() == rclcpp::ParameterType::PARAMETER_DOUBLE) {
-        if (param.as_double() > 0.0) {
-          waypoint_marker_scale_ = param.as_double();
-          result.successful      = true;
-          RCLCPP_INFO(this->get_logger(), "[%s]: Parameter: '%s' set to %1.2f", this->get_name(), param.get_name().c_str(), param.as_double());
-        } else {
-          snprintf(buff, sizeof(buff), "parameter '%s' cannot be set to %1.2f because it is not >0", param.get_name().c_str(), param.as_double());
-          result.reason = buff;
-        }
-      } else {
-        snprintf(buff, sizeof(buff), "parameter '%s' has to be type DOUBLE", param.get_name().c_str());
-        result.reason = buff;
-      }
-      //}
-
       /* waypoint_loiter_time //{ */
-    } else if (param.get_name() == "waypoint_loiter_time") {
+    } else if (param.get_name() == "px4.waypoint_loiter_time") {
       if (param.get_type() == rclcpp::ParameterType::PARAMETER_DOUBLE) {
         if (param.as_double() >= 0.0) {
           waypoint_loiter_time_ = param.as_double();
@@ -550,7 +541,7 @@ rcl_interfaces::msg::SetParametersResult ControlInterface::parametersCallback(co
       //}
 
       /* reset_octomap_before_takeoff //{ */
-    } else if (param.get_name() == "reset_octomap_before_takeoff") {
+    } else if (param.get_name() == "general.reset_octomap_before_takeoff") {
       if (param.get_type() == rclcpp::ParameterType::PARAMETER_BOOL) {
         reset_octomap_before_takeoff_ = param.as_bool();
         result.successful             = true;
@@ -1345,6 +1336,57 @@ bool ControlInterface::setPx4ParamFloatCallback([[maybe_unused]] const std::shar
     response->value      = request->value;
     response->success    = false;
     RCLCPP_ERROR(this->get_logger(), "[%s]: PX4 parameter set request param name too long", this->get_name());
+  }
+
+  return true;
+}
+//}
+
+/* getPx4ParamFloatCallback //{ */
+bool ControlInterface::getPx4ParamFloatCallback([[maybe_unused]] const std::shared_ptr<fog_msgs::srv::GetPx4ParamFloat::Request> request,
+                                                std::shared_ptr<fog_msgs::srv::GetPx4ParamFloat::Response>                       response) {
+
+  if (!is_initialized_.load()) {
+    response->success = false;
+    response->message = "Parameter cannot be get, not initialized";
+    RCLCPP_ERROR(this->get_logger(), "[%s]: %s", this->get_name(), response->message.c_str());
+    return true;
+  }
+
+  auto result = param_->get_param_float(request->param_name);
+
+  if (result.first == mavsdk::Param::Result::Success) {
+    response->message    = "Parameter get successfully";
+    response->value      = result.second;
+    response->param_name = request->param_name;
+    response->success    = true;
+
+    RCLCPP_INFO(this->get_logger(), "[%s]: PX4 parameter %s successfully get with value %d", this->get_name(), request->param_name.c_str(), response->value);
+  } else if (result.first == mavsdk::Param::Result::Unknown) {
+    response->message    = "Did not get the parameter - unknown error";
+    response->param_name = request->param_name;
+    response->success    = false;
+    RCLCPP_ERROR(this->get_logger(), "[%s]: PX4 parameter get uknown error", this->get_name());
+  } else if (result.first == mavsdk::Param::Result::Timeout) {
+    response->message    = "Did not get the parameter - time out";
+    response->param_name = request->param_name;
+    response->success    = false;
+    RCLCPP_ERROR(this->get_logger(), "[%s]: PX4 parameter get request time out", this->get_name());
+  } else if (result.first == mavsdk::Param::Result::ConnectionError) {
+    response->message    = "Did not get the parameter - connection error";
+    response->param_name = request->param_name;
+    response->success    = false;
+    RCLCPP_ERROR(this->get_logger(), "[%s]: PX4 parameter get request connection error", this->get_name());
+  } else if (result.first == mavsdk::Param::Result::WrongType) {
+    response->message    = "Did not get the parameter - request wrong type";
+    response->param_name = request->param_name;
+    response->success    = false;
+    RCLCPP_ERROR(this->get_logger(), "[%s]: PX4 parameter get request wrong type", this->get_name());
+  } else if (result.first == mavsdk::Param::Result::ParamNameTooLong) {
+    response->message    = "Did not get the parameter - param name too long";
+    response->param_name = request->param_name;
+    response->success    = false;
+    RCLCPP_ERROR(this->get_logger(), "[%s]: PX4 parameter get request param name too long", this->get_name());
   }
 
   return true;
