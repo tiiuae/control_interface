@@ -1,7 +1,6 @@
 #include <eigen3/Eigen/Dense>
 #include <eigen3/Eigen/src/Geometry/Quaternion.h>
 #include <fog_msgs/msg/control_interface_diagnostics.hpp>
-#include <fog_msgs/srv/get_bool.hpp>
 #include <fog_msgs/srv/path.hpp>
 #include <fog_msgs/srv/path_to_local.hpp>
 #include <fog_msgs/srv/get_px4_param_int.hpp>
@@ -264,7 +263,6 @@ private:
   rclcpp::Service<fog_msgs::srv::GetPx4ParamFloat>::SharedPtr get_px4_param_float_service_;
 
   // service clients
-  rclcpp::Client<fog_msgs::srv::GetBool>::SharedPtr          getting_odom_client_;
   rclcpp::Client<std_srvs::srv::Empty>::SharedPtr            octomap_reset_client_;
   rclcpp::Client<fog_msgs::srv::SetPx4ParamFloat>::SharedPtr set_px4_param_float_client_;
 
@@ -288,7 +286,6 @@ private:
                               std::shared_ptr<fog_msgs::srv::GetPx4ParamInt::Response>      response);
   bool getPx4ParamFloatCallback(const std::shared_ptr<fog_msgs::srv::GetPx4ParamFloat::Request> request,
                                 std::shared_ptr<fog_msgs::srv::GetPx4ParamFloat::Response>      response);
-  bool odomAvailableCallback(rclcpp::Client<fog_msgs::srv::GetBool>::SharedFuture future);
 
   // parameter callback
   rcl_interfaces::msg::SetParametersResult parametersCallback(const std::vector<rclcpp::Parameter> &parameters);
