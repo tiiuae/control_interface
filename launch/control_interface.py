@@ -53,7 +53,7 @@ def generate_launch_description():
                     ("~/land_detected_in", "/" + DRONE_DEVICE_ID + "/VehicleLandDetected_PubSubTopic"),
                     ("~/mission_result_in", "/" + DRONE_DEVICE_ID + "/MissionResult_PubSubTopic"),
                     ("~/home_position_in", "/" + DRONE_DEVICE_ID + "/HomePosition_PubSubTopic"),
-                    ("~/local_odom_in", "/" + DRONE_DEVICE_ID + "/odometry2/local_odom"),
+                    ("~/local_odom_in", "/" + DRONE_DEVICE_ID + "/odometry/local_odom"),
                     
                     ("~/arming_in", "~/arming"),
                     ("~/takeoff_in", "~/takeoff"),
