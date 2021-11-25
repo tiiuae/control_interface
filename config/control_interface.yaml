@@ -1,7 +1,9 @@
+# device_url: now set by launch file argument
+# world_frame: now set by launch file argument
+  
 general:
   reset_octomap_before_takeoff: true
   control_update_rate: 20.0 # [Hz]
-  # device_url: now set by launch file argument
 
 takeoff:
   height: 1.0 # [m]
