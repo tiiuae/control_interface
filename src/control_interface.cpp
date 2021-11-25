@@ -329,27 +329,38 @@ ControlInterface::ControlInterface(rclcpp::NodeOptions options) : Node("control_
   }
   RCLCPP_INFO(this->get_logger(), "[%s]: UAV name is: '%s'", this->get_name(), uav_name_.c_str());
 
+
+  RCLCPP_INFO(this->get_logger(), "-------------- Loading parameters --------------");
+
   /* parse params from launch file //{ */
-  parse_param("device_url", device_url_);
-  parse_param("world_frame", world_frame_);
+  bool loaded_successfully = true;
+  loaded_successfully &= parse_param("device_url", device_url_);
+  loaded_successfully &= parse_param("world_frame", world_frame_);
   //}
 
   /* parse params from config file //{ */
-  parse_param("general.reset_octomap_before_takeoff", reset_octomap_before_takeoff_);
-  parse_param("general.control_update_rate", control_update_rate_);
+  loaded_successfully &= parse_param("general.reset_octomap_before_takeoff", reset_octomap_before_takeoff_);
+  loaded_successfully &= parse_param("general.control_update_rate", control_update_rate_);
 
-  parse_param("takeoff.height", takeoff_height_);
-  parse_param("takeoff.height_tolerance", takeoff_height_tolerance_);
-  parse_param("takeoff.blocking_timeout", takeoff_blocking_timeout_);
-  parse_param("takeoff.position_samples", takeoff_position_samples_);
+  loaded_successfully &= parse_param("takeoff.height", takeoff_height_);
+  loaded_successfully &= parse_param("takeoff.height_tolerance", takeoff_height_tolerance_);
+  loaded_successfully &= parse_param("takeoff.blocking_timeout", takeoff_blocking_timeout_);
+  loaded_successfully &= parse_param("takeoff.position_samples", takeoff_position_samples_);
 
-  parse_param("px4.target_velocity", target_velocity_);
-  parse_param("px4.waypoint_loiter_time", waypoint_loiter_time_);
-  parse_param("px4.waypoint_acceptance_radius", waypoint_acceptance_radius_);
-  parse_param("px4.altitude_acceptance_radius", altitude_acceptance_radius_);
+  loaded_successfully &= parse_param("px4.target_velocity", target_velocity_);
+  loaded_successfully &= parse_param("px4.waypoint_loiter_time", waypoint_loiter_time_);
+  loaded_successfully &= parse_param("px4.waypoint_acceptance_radius", waypoint_acceptance_radius_);
+  loaded_successfully &= parse_param("px4.altitude_acceptance_radius", altitude_acceptance_radius_);
 
-  parse_param("mavsdk.yaw_offset_correction", yaw_offset_correction_);
-  parse_param("mavsdk.mission_upload_attempts_threshold", mission_upload_attempts_threshold_);
+  loaded_successfully &= parse_param("mavsdk.yaw_offset_correction", yaw_offset_correction_);
+  loaded_successfully &= parse_param("mavsdk.mission_upload_attempts_threshold", mission_upload_attempts_threshold_);
+
+  if (!loaded_successfully) {
+    const std::string str = "Could not load all non-optional parameters. Shutting down.";
+    RCLCPP_ERROR(this->get_logger(), str);
+    rclcpp::shutdown();
+    return;
+  }
 
   if (control_update_rate_ < 5.0) {
     control_update_rate_ = 5.0;
