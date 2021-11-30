@@ -263,8 +263,7 @@ private:
   rclcpp::Service<fog_msgs::srv::GetPx4ParamFloat>::SharedPtr get_px4_param_float_service_;
 
   // service clients
-  rclcpp::Client<std_srvs::srv::Empty>::SharedPtr            octomap_reset_client_;
-  rclcpp::Client<fog_msgs::srv::SetPx4ParamFloat>::SharedPtr set_px4_param_float_client_;
+  rclcpp::Client<std_srvs::srv::Empty>::SharedPtr octomap_reset_client_;
 
   // service callbacks
   bool armingCallback(const std::shared_ptr<std_srvs::srv::SetBool::Request> request, std::shared_ptr<std_srvs::srv::SetBool::Response> response);
@@ -453,15 +452,13 @@ ControlInterface::ControlInterface(rclcpp::NodeOptions options) : Node("control_
   path_to_local_service_ = this->create_service<fog_msgs::srv::PathToLocal>(
       "~/path_to_local_in", std::bind(&ControlInterface::pathToLocalCallback, this, _1, _2), qos.get_rmw_qos_profile(), callback_group_);
   set_px4_param_int_service_ =
-      this->create_service<fog_msgs::srv::SetPx4ParamInt>("~/set_px4_param_int", std::bind(&ControlInterface::setPx4ParamIntCallback, this, _1, _2));
+      this->create_service<fog_msgs::srv::SetPx4ParamInt>("~/set_px4_param_int_in", std::bind(&ControlInterface::setPx4ParamIntCallback, this, _1, _2));
   get_px4_param_int_service_ =
-      this->create_service<fog_msgs::srv::GetPx4ParamInt>("~/get_px4_param_int", std::bind(&ControlInterface::getPx4ParamIntCallback, this, _1, _2));
+      this->create_service<fog_msgs::srv::GetPx4ParamInt>("~/get_px4_param_int_in", std::bind(&ControlInterface::getPx4ParamIntCallback, this, _1, _2));
   set_px4_param_float_service_ =
-      this->create_service<fog_msgs::srv::SetPx4ParamFloat>("~/set_px4_param_float", std::bind(&ControlInterface::setPx4ParamFloatCallback, this, _1, _2));
+      this->create_service<fog_msgs::srv::SetPx4ParamFloat>("~/set_px4_param_float_in", std::bind(&ControlInterface::setPx4ParamFloatCallback, this, _1, _2));
   get_px4_param_float_service_ =
-      this->create_service<fog_msgs::srv::GetPx4ParamFloat>("~/get_px4_param_float", std::bind(&ControlInterface::getPx4ParamFloatCallback, this, _1, _2));
-
-  set_px4_param_float_client_ = this->create_client<fog_msgs::srv::SetPx4ParamFloat>("~/set_px4_param_float");
+      this->create_service<fog_msgs::srv::GetPx4ParamFloat>("~/get_px4_param_float_in", std::bind(&ControlInterface::getPx4ParamFloatCallback, this, _1, _2));
 
   control_timer_ =
       this->create_wall_timer(std::chrono::duration<double>(1.0 / control_update_rate_), std::bind(&ControlInterface::controlRoutine, this), callback_group_);
@@ -470,24 +467,33 @@ ControlInterface::ControlInterface(rclcpp::NodeOptions options) : Node("control_
 
   desired_pose_ = Eigen::Vector4d(0.0, 0.0, 0.0, 0.0);
 
+  is_initialized_.store(true);
+
+  bool success = false;
   auto request_nav_acc        = std::make_shared<fog_msgs::srv::SetPx4ParamFloat::Request>();
+  auto response_nav_acc       = std::make_shared<fog_msgs::srv::SetPx4ParamFloat::Response>();
   request_nav_acc->param_name = "NAV_ACC_RAD";
   request_nav_acc->value      = waypoint_acceptance_radius_;
   RCLCPP_INFO(this->get_logger(), "[%s]: Setting %s, value: %f", this->get_name(), request_nav_acc->param_name.c_str(), request_nav_acc->value);
-  auto call_result_nav_acc = set_px4_param_float_client_->async_send_request(request_nav_acc);
+  success = setPx4ParamFloatCallback(request_nav_acc, response_nav_acc);
+  RCLCPP_INFO(this->get_logger(), "[%s]: param '%s' %s set", this->get_name(), request_nav_acc->param_name.c_str(), success ? "was" : "was NOT");
 
   auto request_nav_loit        = std::make_shared<fog_msgs::srv::SetPx4ParamFloat::Request>();
+  auto response_nav_loit       = std::make_shared<fog_msgs::srv::SetPx4ParamFloat::Response>();
   request_nav_loit->param_name = "NAV_LOITER_RAD";
   request_nav_loit->value      = waypoint_acceptance_radius_;
   RCLCPP_INFO(this->get_logger(), "[%s]: Setting %s, value: %f", this->get_name(), request_nav_loit->param_name.c_str(), request_nav_loit->value);
+  success = setPx4ParamFloatCallback(request_nav_loit, response_nav_loit);
+  RCLCPP_INFO(this->get_logger(), "[%s]: param '%s' %s set", this->get_name(), request_nav_loit->param_name.c_str(), success ? "was" : "was NOT");
 
   auto request_alt_acc        = std::make_shared<fog_msgs::srv::SetPx4ParamFloat::Request>();
+  auto response_alt_acc       = std::make_shared<fog_msgs::srv::SetPx4ParamFloat::Response>();
   request_alt_acc->param_name = "NAV_MC_ALT_RAD";
   request_alt_acc->value      = altitude_acceptance_radius_;
   RCLCPP_INFO(this->get_logger(), "[%s]: Setting %s, value: %f", this->get_name(), request_alt_acc->param_name.c_str(), request_alt_acc->value);
-  auto call_result_alt_acc = set_px4_param_float_client_->async_send_request(request_alt_acc);
-
-  is_initialized_.store(true);
+  success = setPx4ParamFloatCallback(request_alt_acc, response_alt_acc);
+  RCLCPP_INFO(this->get_logger(), "[%s]: param '%s' %s set", this->get_name(), request_alt_acc->param_name.c_str(), success ? "was" : "was NOT");
+  
   RCLCPP_INFO(this->get_logger(), "[%s]: Initialized", this->get_name());
 }
 //}

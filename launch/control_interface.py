@@ -66,10 +66,10 @@ def generate_launch_description():
                     ("~/waypoint_to_local_in", "~/waypoint_to_local"),
                     ("~/path_to_local_in", "~/path_to_local"),
 
-                    ("~/get_px4_param_int", "~/get_px4_param_int"),
-                    ("~/set_px4_param_int", "~/set_px4_param_int"),
-                    ("~/get_px4_param_float", "~/get_px4_param_float"),
-                    ("~/set_px4_param_float", "~/set_px4_param_float"),
+                    ("~/get_px4_param_int_in", "~/get_px4_param_int"),
+                    ("~/set_px4_param_int_in", "~/set_px4_param_int"),
+                    ("~/get_px4_param_float_in", "~/get_px4_param_float"),
+                    ("~/set_px4_param_float_in", "~/set_px4_param_float"),
 
                 ],
             ),
