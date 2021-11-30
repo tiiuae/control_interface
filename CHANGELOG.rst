@@ -2,6 +2,96 @@
 Changelog for package control_interface
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
+0.0.8 (2021-11-30)
+-----------
+* remove unnecessary service client
+* update package versions
+* cleanup on package.xml and removing unused includes
+* add param loading guard
+* polished config file
+* renamed odometry pkg name
+* wait for odometry message only, no services
+* remove unused params
+* report exit symbol on mission start failure
+* Merge branch 'odometry2' of github.com:tiiuae/control_interface into odometry2
+* reorganize params under namespaces
+* Merge branch 'master' into odometry2
+* more cleanup, make device_url configurable from launch file
+* code cleanup
+* interrupt endless loop of unsuccessful uploading
+* fix uninitialized variable
+* add takeoff blocking timeout
+* upload whole mission at once, prevent loitering at waypoints
+* Update micrortps agent topic names according to the new agent
+* compensate altitude offset from home position
+* add takeoff height tolerance param
+* set mission waypoint after takeoff again
+* prevent reuploading the same mission is start mission fails
+* repeat the same point if mission upload fails
+* clear mission before uploading a new one
+* fix heading conversions
+* add mutex for coord transform
+* home position offset correction, takeoff update
+* update mutex behavior
+* fix formatting
+* update mutexes
+* set home from pixhawk telemetry
+* switch to reentrant callback group
+* propagate manual control to diagnostics
+* change manual control flag handling
+* add service to set waypoint acceptance radius directly from control
+* improve takeoff, do not override manual mode
+* publish desired pose again
+* merge odometry into control
+* Merge pull request `#14 <https://github.com/tiiuae/control_interface/issues/14>`_ from tiiuae/publish_desired_pose
+  Publish desired pose
+
+0.0.6 (2021-09-29)
+-----------
+* Requires fog_msgs 0.0.6
+* remove hardcoded takeoff heading
+* fix desired pose initialization
+* publish desired pose
+* add set float params for px4
+* merge branch odom_pkg into global_parameters
+* MavSDK parameter set and get changes
+* update config
+* config update, formatting
+* merge global_params update to master
+* README dependencies updated
+* switch udp port back to 14590
+
+0.0.5 (2021-09-06)
+-----------
+* version -> 0.0.5, updated diagnostics
+* add heading control, continuous flying
+* mavsdk -> 0.41.0, heading control
+* add velocity param
+* do not reupload mission with each waypoint
+* fly through intermediate waypoints
+* minor update
+* added control_loop_rate parameter to config file
+* dynamically change parameters
+* Added services to change px4 parameters
+* soften constrain for detection of landing -> now using ground_contact flag
+* v0.1
+* fixed typo
+* enable octomap reset before takeoff
+* Merge pull request `#11 <https://github.com/tiiuae/control_interface/issues/11>`_ from tiiuae/trigger_fog-drone_build
+  trigger fog-drone build
+* trigger fog-drone build
+* Merge pull request `#10 <https://github.com/tiiuae/control_interface/issues/10>`_ from tiiuae/remove_pispatch_event
+  remove repository dispatch events
+* remove repository dispatch events
+  Trigger builds only when repository is updated. Use git sha as build id
+  for Artifactory builds.
+* Merge pull request `#8 <https://github.com/tiiuae/control_interface/issues/8>`_ from tiiuae/reduce_takeoff_altitude
+  1 meter of altitude is safer for indoor testing
+* 1 meter of altitude is safer for indoor testing
+* Fix initial waypoint x,y set right after takeoff
+* odometry package changes
+* Contributors: Esa Kulmala, Jan Bednar, Jari Nippula, Jukka Laitinen, Manuel Segarra-Abad, Vojtech Spurny, stibipet
+
 0.0.3 (2021-06-21)
 -----------
 * Global coordinates control update (`#5 <https://github.com/tiiuae/control_interface/issues/5>`_)
