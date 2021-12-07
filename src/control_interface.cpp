@@ -353,7 +353,7 @@ ControlInterface::ControlInterface(rclcpp::NodeOptions options) : Node("control_
 
   if (!loaded_successfully) {
     const std::string str = "Could not load all non-optional parameters. Shutting down.";
-    RCLCPP_ERROR(this->get_logger(), str);
+    RCLCPP_ERROR(this->get_logger(), str.c_str());
     rclcpp::shutdown();
     return;
   }
@@ -375,7 +375,7 @@ ControlInterface::ControlInterface(rclcpp::NodeOptions options) : Node("control_
     exit(EXIT_FAILURE);
   }
   if (connection_result != mavsdk::ConnectionResult::Success) {
-    RCLCPP_ERROR(this->get_logger(), "[%s]: Connection failed: %s", this->get_name(), connection_result);
+    RCLCPP_ERROR(this->get_logger(), "[%s]: Connection failed: %d", this->get_name(), int(connection_result));
     exit(EXIT_FAILURE);
   } else {
     RCLCPP_INFO(this->get_logger(), "[%s]: MAVSDK connected to device: %s", this->get_name(), device_url_.c_str());
@@ -936,7 +936,7 @@ bool ControlInterface::localPathCallback(const std::shared_ptr<fog_msgs::srv::Pa
   {
     std::scoped_lock lock(waypoint_buffer_mutex_);
 
-    RCLCPP_INFO(this->get_logger(), "[%s]: Got %d waypoints", this->get_name(), request->path.poses.size());
+    RCLCPP_INFO(this->get_logger(), "[%s]: Got %ld waypoints", this->get_name(), request->path.poses.size());
     for (size_t i = 0; i < request->path.poses.size(); i++) {
       local_waypoint_t w;
       w.x   = request->path.poses[i].pose.position.x;
@@ -1065,7 +1065,7 @@ bool ControlInterface::gpsPathCallback(const std::shared_ptr<fog_msgs::srv::Path
   {
     std::scoped_lock lock(waypoint_buffer_mutex_, coord_transform_mutex_);
 
-    RCLCPP_INFO(this->get_logger(), "[%s]: Got %d waypoints", this->get_name(), request->path.poses.size());
+    RCLCPP_INFO(this->get_logger(), "[%s]: Got %ld waypoints", this->get_name(), request->path.poses.size());
     for (size_t i = 0; i < request->path.poses.size(); i++) {
       gps_waypoint_t w;
       w.latitude  = request->path.poses[i].pose.position.x;
@@ -1206,7 +1206,7 @@ bool ControlInterface::setPx4ParamIntCallback([[maybe_unused]] const std::shared
     response->param_name = request->param_name;
     response->value      = request->value;
     response->success    = true;
-    RCLCPP_INFO(this->get_logger(), "[%s]: PX4 parameter %s successfully set to %d", this->get_name(), request->param_name.c_str(), request->value);
+    RCLCPP_INFO(this->get_logger(), "[%s]: PX4 parameter %s successfully set to %ld", this->get_name(), request->param_name.c_str(), request->value);
   } else if (result == mavsdk::Param::Result::Unknown) {
     response->message    = "Parameter did not set - unknown error";
     response->param_name = request->param_name;
@@ -1262,7 +1262,7 @@ bool ControlInterface::getPx4ParamIntCallback([[maybe_unused]] const std::shared
     response->param_name = request->param_name;
     response->success    = true;
 
-    RCLCPP_INFO(this->get_logger(), "[%s]: PX4 parameter %s successfully get with value %d", this->get_name(), request->param_name.c_str(), response->value);
+    RCLCPP_INFO(this->get_logger(), "[%s]: PX4 parameter %s successfully get with value %ld", this->get_name(), request->param_name.c_str(), response->value);
   } else if (result.first == mavsdk::Param::Result::Unknown) {
     response->message    = "Did not get the parameter - unknown error";
     response->param_name = request->param_name;
@@ -1368,7 +1368,7 @@ bool ControlInterface::getPx4ParamFloatCallback([[maybe_unused]] const std::shar
     response->param_name = request->param_name;
     response->success    = true;
 
-    RCLCPP_INFO(this->get_logger(), "[%s]: PX4 parameter %s successfully get with value %d", this->get_name(), request->param_name.c_str(), response->value);
+    RCLCPP_INFO(this->get_logger(), "[%s]: PX4 parameter %s successfully get with value %f", this->get_name(), request->param_name.c_str(), response->value);
   } else if (result.first == mavsdk::Param::Result::Unknown) {
     response->message    = "Did not get the parameter - unknown error";
     response->param_name = request->param_name;
@@ -1594,7 +1594,7 @@ bool ControlInterface::startMission() {
 
   auto result = mission_->start_mission();
   if (result != mavsdk::Mission::Result::Success) {
-    RCLCPP_ERROR(this->get_logger(), "[%s]: Mission start rejected with exit symbol %d", this->get_name(), result);
+    RCLCPP_ERROR(this->get_logger(), "[%s]: Mission start rejected with exit symbol %d", this->get_name(), int(result));
     return false;
   }
   RCLCPP_INFO(this->get_logger(), "[%s]: Mission started", this->get_name());
@@ -1619,7 +1619,7 @@ bool ControlInterface::uploadMission() {
   auto result = mission_->upload_mission(mission_plan_);
   mission_upload_attempts_++;
   if (result != mavsdk::Mission::Result::Success) {
-    RCLCPP_ERROR(this->get_logger(), "[%s]: Mission upload failed with exit symbol %d", this->get_name(), result);
+    RCLCPP_ERROR(this->get_logger(), "[%s]: Mission upload failed with exit symbol %d", this->get_name(), int(result));
     return false;
   }
 
