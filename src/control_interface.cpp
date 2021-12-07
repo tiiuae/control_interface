@@ -218,7 +218,7 @@ private:
   float  waypoint_acceptance_radius_        = 0.3f;
   float  altitude_acceptance_radius_        = 0.2f;
   double target_velocity_                   = 1.0;
-  size_t takeoff_position_samples_          = 20;
+  int    takeoff_position_samples_          = 20;
   int    mission_upload_attempts_threshold_ = 5;
 
   // vehicle local position
@@ -469,7 +469,7 @@ ControlInterface::ControlInterface(rclcpp::NodeOptions options) : Node("control_
 
   is_initialized_.store(true);
 
-  bool success = false;
+  bool success                = false;
   auto request_nav_acc        = std::make_shared<fog_msgs::srv::SetPx4ParamFloat::Request>();
   auto response_nav_acc       = std::make_shared<fog_msgs::srv::SetPx4ParamFloat::Response>();
   request_nav_acc->param_name = "NAV_ACC_RAD";
@@ -493,7 +493,7 @@ ControlInterface::ControlInterface(rclcpp::NodeOptions options) : Node("control_
   RCLCPP_INFO(this->get_logger(), "[%s]: Setting %s, value: %f", this->get_name(), request_alt_acc->param_name.c_str(), request_alt_acc->value);
   success = setPx4ParamFloatCallback(request_alt_acc, response_alt_acc);
   RCLCPP_INFO(this->get_logger(), "[%s]: param '%s' %s set", this->get_name(), request_alt_acc->param_name.c_str(), success ? "was" : "was NOT");
-  
+
   RCLCPP_INFO(this->get_logger(), "[%s]: Initialized", this->get_name());
 }
 //}
@@ -682,7 +682,7 @@ void ControlInterface::odometryCallback(const nav_msgs::msg::Odometry::UniquePtr
 
   Eigen::Vector3d pos(msg->pose.pose.position.x, msg->pose.pose.position.y, msg->pose.pose.position.z);
   pos_samples_.push_back(pos);
-  if (pos_samples_.size() > takeoff_position_samples_) {
+  if (int(pos_samples_.size()) > takeoff_position_samples_) {
     pos_samples_.erase(pos_samples_.begin());
   }
 
@@ -1532,8 +1532,8 @@ bool ControlInterface::takeoff() {
   }
 
 
-  if (pos_samples_.size() < takeoff_position_samples_) {
-    RCLCPP_WARN(this->get_logger(), "[%s]: Takeoff rejected. Need %ld odometry samples, only have %ld", this->get_name(), takeoff_position_samples_,
+  if (int(pos_samples_.size()) < takeoff_position_samples_) {
+    RCLCPP_WARN(this->get_logger(), "[%s]: Takeoff rejected. Need %d odometry samples, only have %ld", this->get_name(), takeoff_position_samples_,
                 pos_samples_.size());
     return false;
   }
@@ -1733,7 +1733,7 @@ void ControlInterface::publishDebugMarkers() {
 /* parse_param //{ */
 template <class T>
 bool ControlInterface::parse_param(const std::string &param_name, T &param_dest) {
-  this->declare_parameter(param_name);
+  this->declare_parameter<T>(param_name);
   if (!this->get_parameter(param_name, param_dest)) {
     RCLCPP_ERROR(this->get_logger(), "[%s]: Could not load param '%s'", this->get_name(), param_name.c_str());
     return false;
