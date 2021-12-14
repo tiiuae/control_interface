@@ -31,9 +31,6 @@
 #include <std_srvs/srv/trigger.hpp>
 #include <tf2/LinearMath/Quaternion.h>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.h>  // This has to be here otherwise you will get cryptic linker error about missing function 'getTimestamp'
-#include <tf2_ros/static_transform_broadcaster.h>
-#include <tf2_ros/transform_broadcaster.h>
-#include <tf2_ros/transform_listener.h>
 #include <visualization_msgs/msg/marker_array.hpp>
 
 using namespace std::placeholders;
@@ -218,7 +215,7 @@ private:
   float  waypoint_acceptance_radius_        = 0.3f;
   float  altitude_acceptance_radius_        = 0.2f;
   double target_velocity_                   = 1.0;
-  size_t takeoff_position_samples_          = 20;
+  int    takeoff_position_samples_          = 20;
   int    mission_upload_attempts_threshold_ = 5;
 
   // vehicle local position
@@ -304,7 +301,9 @@ private:
   // timers
   rclcpp::CallbackGroup::SharedPtr callback_group_;
   rclcpp::TimerBase::SharedPtr     control_timer_;
+  rclcpp::TimerBase::SharedPtr     mavsdk_connection_timer_;
   void                             controlRoutine(void);
+  void                             mavsdkConnectionRoutine(void);
 
   // utils
   template <class T>
@@ -381,28 +380,6 @@ ControlInterface::ControlInterface(rclcpp::NodeOptions options) : Node("control_
     RCLCPP_INFO(this->get_logger(), "[%s]: MAVSDK connected to device: %s", this->get_name(), device_url_.c_str());
   }
 
-  bool connected = false;
-  while (rclcpp::ok() && !connected) {
-    RCLCPP_INFO(this->get_logger(), "[%s]: Systems size: %ld", this->get_name(), mavsdk_.systems().size());
-    if (mavsdk_.systems().size() < 1) {
-      RCLCPP_INFO(this->get_logger(), "[%s]: Waiting for connection at URL: %s", this->get_name(), device_url_.c_str());
-      rclcpp::sleep_for(std::chrono::seconds(1));
-    }
-    for (unsigned i = 0; i < mavsdk_.systems().size(); i++) {
-      RCLCPP_INFO(this->get_logger(), "[%s]: ID: %u", this->get_name(), mavsdk_.systems().at(i)->get_system_id());
-      connected = true;
-      system_   = mavsdk_.systems().at(i);
-      break;
-    }
-  }
-
-  if (!rclcpp::ok())
-    return;
-
-  RCLCPP_INFO(this->get_logger(), "[%s]: Target connected", this->get_name());
-  action_  = std::make_shared<mavsdk::Action>(system_);
-  mission_ = std::make_shared<mavsdk::Mission>(system_);
-  param_   = std::make_shared<mavsdk::Param>(system_);
   //}
 
   callback_group_        = this->create_callback_group(rclcpp::CallbackGroupType::Reentrant);
@@ -463,38 +440,13 @@ ControlInterface::ControlInterface(rclcpp::NodeOptions options) : Node("control_
   control_timer_ =
       this->create_wall_timer(std::chrono::duration<double>(1.0 / control_update_rate_), std::bind(&ControlInterface::controlRoutine, this), callback_group_);
 
+  mavsdk_connection_timer_ =
+      this->create_wall_timer(std::chrono::duration<double>(1.0), std::bind(&ControlInterface::mavsdkConnectionRoutine, this), callback_group_);
+
   octomap_reset_client_ = this->create_client<std_srvs::srv::Empty>("~/octomap_reset_out");
 
   desired_pose_ = Eigen::Vector4d(0.0, 0.0, 0.0, 0.0);
 
-  is_initialized_.store(true);
-
-  bool success = false;
-  auto request_nav_acc        = std::make_shared<fog_msgs::srv::SetPx4ParamFloat::Request>();
-  auto response_nav_acc       = std::make_shared<fog_msgs::srv::SetPx4ParamFloat::Response>();
-  request_nav_acc->param_name = "NAV_ACC_RAD";
-  request_nav_acc->value      = waypoint_acceptance_radius_;
-  RCLCPP_INFO(this->get_logger(), "[%s]: Setting %s, value: %f", this->get_name(), request_nav_acc->param_name.c_str(), request_nav_acc->value);
-  success = setPx4ParamFloatCallback(request_nav_acc, response_nav_acc);
-  RCLCPP_INFO(this->get_logger(), "[%s]: param '%s' %s set", this->get_name(), request_nav_acc->param_name.c_str(), success ? "was" : "was NOT");
-
-  auto request_nav_loit        = std::make_shared<fog_msgs::srv::SetPx4ParamFloat::Request>();
-  auto response_nav_loit       = std::make_shared<fog_msgs::srv::SetPx4ParamFloat::Response>();
-  request_nav_loit->param_name = "NAV_LOITER_RAD";
-  request_nav_loit->value      = waypoint_acceptance_radius_;
-  RCLCPP_INFO(this->get_logger(), "[%s]: Setting %s, value: %f", this->get_name(), request_nav_loit->param_name.c_str(), request_nav_loit->value);
-  success = setPx4ParamFloatCallback(request_nav_loit, response_nav_loit);
-  RCLCPP_INFO(this->get_logger(), "[%s]: param '%s' %s set", this->get_name(), request_nav_loit->param_name.c_str(), success ? "was" : "was NOT");
-
-  auto request_alt_acc        = std::make_shared<fog_msgs::srv::SetPx4ParamFloat::Request>();
-  auto response_alt_acc       = std::make_shared<fog_msgs::srv::SetPx4ParamFloat::Response>();
-  request_alt_acc->param_name = "NAV_MC_ALT_RAD";
-  request_alt_acc->value      = altitude_acceptance_radius_;
-  RCLCPP_INFO(this->get_logger(), "[%s]: Setting %s, value: %f", this->get_name(), request_alt_acc->param_name.c_str(), request_alt_acc->value);
-  success = setPx4ParamFloatCallback(request_alt_acc, response_alt_acc);
-  RCLCPP_INFO(this->get_logger(), "[%s]: param '%s' %s set", this->get_name(), request_alt_acc->param_name.c_str(), success ? "was" : "was NOT");
-  
-  RCLCPP_INFO(this->get_logger(), "[%s]: Initialized", this->get_name());
 }
 //}
 
@@ -682,7 +634,7 @@ void ControlInterface::odometryCallback(const nav_msgs::msg::Odometry::UniquePtr
 
   Eigen::Vector3d pos(msg->pose.pose.position.x, msg->pose.pose.position.y, msg->pose.pose.position.z);
   pos_samples_.push_back(pos);
-  if (pos_samples_.size() > takeoff_position_samples_) {
+  if (int(pos_samples_.size()) > takeoff_position_samples_) {
     pos_samples_.erase(pos_samples_.begin());
   }
 
@@ -1400,6 +1352,58 @@ bool ControlInterface::getPx4ParamFloatCallback([[maybe_unused]] const std::shar
 }
 //}
 
+/* mavsdkConnectionRoutine //{ */
+void ControlInterface::mavsdkConnectionRoutine(void) {
+  RCLCPP_INFO(this->get_logger(), "[%s]: Systems size: %ld", this->get_name(), mavsdk_.systems().size());
+  if (mavsdk_.systems().size() < 1) {
+    RCLCPP_INFO(this->get_logger(), "[%s]: Waiting for connection at URL: %s", this->get_name(), device_url_.c_str());
+    return;
+  }
+
+  for (unsigned i = 0; i < mavsdk_.systems().size(); i++) {
+    RCLCPP_INFO(this->get_logger(), "[%s]: ID: %u", this->get_name(), mavsdk_.systems().at(i)->get_system_id());
+    system_ = mavsdk_.systems().at(i);
+    break;
+  }
+
+  RCLCPP_INFO(this->get_logger(), "[%s]: Target connected", this->get_name());
+  action_  = std::make_shared<mavsdk::Action>(system_);
+  mission_ = std::make_shared<mavsdk::Mission>(system_);
+  param_   = std::make_shared<mavsdk::Param>(system_);
+
+  is_initialized_.store(true);
+  RCLCPP_INFO(this->get_logger(), "[%s]: Initialized", this->get_name());
+
+  // set default parameters to PX4
+  bool success                = false;
+  auto request_nav_acc        = std::make_shared<fog_msgs::srv::SetPx4ParamFloat::Request>();
+  auto response_nav_acc       = std::make_shared<fog_msgs::srv::SetPx4ParamFloat::Response>();
+  request_nav_acc->param_name = "NAV_ACC_RAD";
+  request_nav_acc->value      = waypoint_acceptance_radius_;
+  RCLCPP_INFO(this->get_logger(), "[%s]: Setting %s, value: %f", this->get_name(), request_nav_acc->param_name.c_str(), request_nav_acc->value);
+  success = setPx4ParamFloatCallback(request_nav_acc, response_nav_acc);
+  RCLCPP_INFO(this->get_logger(), "[%s]: param '%s' %s set", this->get_name(), request_nav_acc->param_name.c_str(), success ? "was" : "was NOT");
+
+  auto request_nav_loit        = std::make_shared<fog_msgs::srv::SetPx4ParamFloat::Request>();
+  auto response_nav_loit       = std::make_shared<fog_msgs::srv::SetPx4ParamFloat::Response>();
+  request_nav_loit->param_name = "NAV_LOITER_RAD";
+  request_nav_loit->value      = waypoint_acceptance_radius_;
+  RCLCPP_INFO(this->get_logger(), "[%s]: Setting %s, value: %f", this->get_name(), request_nav_loit->param_name.c_str(), request_nav_loit->value);
+  success = setPx4ParamFloatCallback(request_nav_loit, response_nav_loit);
+  RCLCPP_INFO(this->get_logger(), "[%s]: param '%s' %s set", this->get_name(), request_nav_loit->param_name.c_str(), success ? "was" : "was NOT");
+
+  auto request_alt_acc        = std::make_shared<fog_msgs::srv::SetPx4ParamFloat::Request>();
+  auto response_alt_acc       = std::make_shared<fog_msgs::srv::SetPx4ParamFloat::Response>();
+  request_alt_acc->param_name = "NAV_MC_ALT_RAD";
+  request_alt_acc->value      = altitude_acceptance_radius_;
+  RCLCPP_INFO(this->get_logger(), "[%s]: Setting %s, value: %f", this->get_name(), request_alt_acc->param_name.c_str(), request_alt_acc->value);
+  success = setPx4ParamFloatCallback(request_alt_acc, response_alt_acc);
+  RCLCPP_INFO(this->get_logger(), "[%s]: param '%s' %s set", this->get_name(), request_alt_acc->param_name.c_str(), success ? "was" : "was NOT");
+
+  mavsdk_connection_timer_->cancel();
+}
+//}
+
 /* controlRoutine //{ */
 void ControlInterface::controlRoutine(void) {
 
@@ -1532,7 +1536,7 @@ bool ControlInterface::takeoff() {
   }
 
 
-  if (pos_samples_.size() < takeoff_position_samples_) {
+  if (int(pos_samples_.size()) < takeoff_position_samples_) {
     RCLCPP_WARN(this->get_logger(), "[%s]: Takeoff rejected. Need %ld odometry samples, only have %ld", this->get_name(), takeoff_position_samples_,
                 pos_samples_.size());
     return false;
