@@ -1,0 +1,38 @@
+FROM ros:foxy-ros-base as builder
+
+RUN echo "deb [trusted=yes] https://ssrc.jfrog.io/artifactory/ssrc-debian-public-remote focal fog-sw" >> /etc/apt/sources.list
+
+RUN apt-get update -y && apt-get install -y --no-install-recommends \
+    mavsdk \
+    python3-colcon-common-extensions \
+    ros-foxy-px4-msgs \
+    ros-foxy-fog-msgs=0.0.5-27~git20210929.79ab23d \
+    && rm -rf /var/lib/apt/lists/*
+
+
+WORKDIR /build
+
+COPY . .
+
+RUN . /opt/ros/foxy/setup.sh \
+    && colcon build
+
+
+FROM ros:foxy-ros-core
+
+RUN echo "deb [trusted=yes] https://ssrc.jfrog.io/artifactory/ssrc-debian-public-remote focal fog-sw" >> /etc/apt/sources.list
+
+RUN apt-get update -y && apt-get install -y --no-install-recommends \
+    mavsdk \
+    ros-foxy-px4-msgs \
+    ros-foxy-fog-msgs=0.0.5-27~git20210929.79ab23d \
+    ros-foxy-tf2-ros \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /fog-drone
+
+COPY entrypoint.sh .
+COPY --from=builder /build/install/control_interface/share /opt/ros/foxy/share/
+COPY --from=builder /build/install/control_interface/lib /opt/ros/foxy/lib/
+
+ENTRYPOINT ["/fog-drone/entrypoint.sh"]
