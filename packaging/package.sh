@@ -81,17 +81,12 @@ echo "[INFO] Version: ${version}."
 #* commit: ${git_commit_hash}
 #EOF_CHANGELOG
 
-### Run build_deps.sh script to check if dependencies are satisfied.
-### If not, get them with underlay.repos and build them inside deps_ws
-#${mod_dir}/packaging/build_deps.sh ${mod_dir}
-
-
 if [ -e ${mod_dir}/ros2_ws ]; then
 	# From fog-sw repo.
 	source ${mod_dir}/ros2_ws/install/setup.bash
 fi
-if [ -e ${mod_dir}/deps_ws ]; then
-	source ${mod_dir}/deps_ws/install/setup.bash
+if [ -e ${mod_dir}/../deps_ws ]; then
+	source ${mod_dir}/../deps_ws/install/setup.bash
 fi
 
 if [ -e ${mod_dir}/debian ]; then
@@ -109,7 +104,7 @@ bloom-generate rosdebian --os-name ubuntu --os-version focal --ros-distro ${ROS_
 
 echo "[INFO] Clean up."
 
-rm -rf deps_ws obj-x86_64-linux-gnu debian
+rm -rf obj-x86_64-linux-gnu debian
 
 if [ -e ${mod_dir}/debian_bak ]; then
 	cp -r debian_bak debian
