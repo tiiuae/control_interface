@@ -49,10 +49,10 @@ def generate_launch_description():
 
                     ("~/octomap_reset_out", "/" + DRONE_DEVICE_ID + "/octomap_server/reset"),
 
-                    ("~/control_mode_in", "/" + DRONE_DEVICE_ID + "/VehicleControlMode_PubSubTopic"),
-                    ("~/land_detected_in", "/" + DRONE_DEVICE_ID + "/VehicleLandDetected_PubSubTopic"),
-                    ("~/mission_result_in", "/" + DRONE_DEVICE_ID + "/MissionResult_PubSubTopic"),
-                    ("~/home_position_in", "/" + DRONE_DEVICE_ID + "/HomePosition_PubSubTopic"),
+                    ("~/control_mode_in", "/" + DRONE_DEVICE_ID + "/fmu/vehicle_control_mode/out"),
+                    ("~/land_detected_in", "/" + DRONE_DEVICE_ID + "/fmu/vehicle_land_detected/out"),
+                    ("~/mission_result_in", "/" + DRONE_DEVICE_ID + "/fmu/mission_result/out"),
+                    ("~/home_position_in", "/" + DRONE_DEVICE_ID + "/fmu/home_position/out"),
                     ("~/local_odom_in", "/" + DRONE_DEVICE_ID + "/odometry/local_odom"),
                     
                     ("~/arming_in", "~/arming"),
