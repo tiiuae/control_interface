@@ -16,6 +16,7 @@
 #include <mavsdk/plugins/action/action.h>
 #include <mavsdk/plugins/mission/mission.h>
 #include <mavsdk/plugins/param/param.h>
+#include <mutex>
 #include <nav_msgs/msg/odometry.hpp>
 #include <px4_msgs/msg/vehicle_control_mode.hpp>
 #include <px4_msgs/msg/mission_result.hpp>
@@ -160,10 +161,38 @@ public:
   ControlInterface(rclcpp::NodeOptions options);
 
 private:
-  std::atomic_bool is_initialized_       = false;
-  std::atomic_bool getting_landed_info_  = false;
-  std::atomic_bool getting_control_mode_ = false;
-  std::atomic_bool start_mission_        = false;
+  std::mutex       state_mutex_;
+  std::atomic_bool is_initialized_       = false; // set to true when MavSDK connection is established
+  std::atomic_bool getting_landed_info_  = false; // set to true when a VehicleLandDetected is received from pixhawk
+  std::atomic_bool getting_control_mode_ = false; // set to true when a VehicleControlMode is received from pixhawk
+
+  std::mutex                       mission_mutex_;
+  std::shared_ptr<mavsdk::Mission> mission_;
+  bool mission_finish_flag_; // set to true in the missionResultCallback, this flag is cleared in the main controlRoutine
+  enum mission_state_t
+  {
+    uploading,
+    in_progress,
+    finished
+  } mission_state_ = finished;
+
+  std::mutex mission_upload_mutex_;
+  int mission_upload_attempts_;
+  mavsdk::Mission::MissionPlan  mission_upload_waypoints_; // this buffer is used for repeated attempts at mission uploads
+  enum mission_upload_state_t
+  {
+    started,
+    done,
+    failed
+  } mission_upload_state_ = done;
+
+  enum mission_command_t
+  {
+    none,
+    start,
+    stop
+  } mission_command_ = none;
+
   std::atomic_bool armed_                = false;
   std::atomic_bool takeoff_called_       = false;
   std::atomic_bool takeoff_completed_    = false;
@@ -176,9 +205,7 @@ private:
   std::atomic_bool gps_origin_set_ = false;
   std::atomic_bool getting_odom_   = false;
 
-  std::atomic_bool mission_finished_        = true;
   unsigned         last_mission_instance_   = 1;
-  int              mission_upload_attempts_ = 0;
   rclcpp::Time     takeoff_time_;
 
   std::string uav_name_    = "";
@@ -188,13 +215,10 @@ private:
   mavsdk::Mavsdk                   mavsdk_;
   std::shared_ptr<mavsdk::System>  system_;
   std::shared_ptr<mavsdk::Action>  action_;
-  std::shared_ptr<mavsdk::Mission> mission_;
   std::shared_ptr<mavsdk::Param>   param_;
-  mavsdk::Mission::MissionPlan     mission_plan_;
-  std::mutex                       mission_mutex_;
 
-  std::mutex                    waypoint_buffer_mutex_;
-  std::vector<local_waypoint_t> waypoint_buffer_;
+  std::mutex                    waypoint_buffer_mutex_;  // guards the following block of variables
+  std::vector<local_waypoint_t> waypoint_buffer_;        // this buffer is used for storing new incoming waypoints (it is moved to the mission_upload_waypoints_ buffer when upload starts)
   size_t                        last_mission_size_ = 0;
 
   Eigen::Vector4d desired_pose_;
@@ -291,10 +315,10 @@ private:
   bool takeoff();
   bool land();
   bool startMission();
-  bool uploadMission();
-  bool stopPreviousMission();
+  bool startMissionUpload(const mavsdk::Mission::MissionPlan& mission_plan);
+  bool stopMission();
 
-  void addToMission(local_waypoint_t w);
+  mavsdk::Mission::MissionItem to_mission_item(const local_waypoint_t& w_in);
   void publishDebugMarkers();
   void publishDesiredPose();
 
@@ -304,6 +328,11 @@ private:
   rclcpp::TimerBase::SharedPtr     mavsdk_connection_timer_;
   void                             controlRoutine(void);
   void                             mavsdkConnectionRoutine(void);
+
+  // helper state methods
+  void state_mission_finished();
+  void state_mission_uploading();
+  void state_mission_in_progress();
 
   // utils
   template <class T>
@@ -351,8 +380,7 @@ ControlInterface::ControlInterface(rclcpp::NodeOptions options) : Node("control_
   loaded_successfully &= parse_param("mavsdk.mission_upload_attempts_threshold", mission_upload_attempts_threshold_);
 
   if (!loaded_successfully) {
-    const std::string str = "Could not load all non-optional parameters. Shutting down.";
-    RCLCPP_ERROR(this->get_logger(), str.c_str());
+    RCLCPP_ERROR_STREAM(this->get_logger(), "Could not load all non-optional parameters. Shutting down.");
     rclcpp::shutdown();
     return;
   }
@@ -455,9 +483,10 @@ rcl_interfaces::msg::SetParametersResult ControlInterface::parametersCallback(co
   rcl_interfaces::msg::SetParametersResult result;
   result.successful = false;
   result.reason     = "";
-  char buff[300];
 
-  for (const auto &param : parameters) {
+  for (const auto &param : parameters)
+  {
+    std::stringstream result_ss;
 
     /* takeoff_height //{ */
     if (param.get_name() == "takeoff.height") {
@@ -467,15 +496,12 @@ rcl_interfaces::msg::SetParametersResult ControlInterface::parametersCallback(co
           result.successful = true;
           RCLCPP_INFO(this->get_logger(), "[%s]: Parameter: '%s' set to %1.2f", this->get_name(), param.get_name().c_str(), param.as_double());
         } else {
-          snprintf(buff, sizeof(buff),
-                   "parameter '%s' cannot be set to %1.2f because it is not in "
-                   "range <0.5;10>",
-                   param.get_name().c_str(), param.as_double());
-          result.reason = buff;
+          result_ss << "parameter '" << param.get_name() << "' cannot be set to " << param.as_double() << " because it is not in range <0.5;10>";
+          result.reason = result_ss.str();
         }
       } else {
-        snprintf(buff, sizeof(buff), "parameter '%s' has to be type DOUBLE", param.get_name().c_str());
-        result.reason = buff;
+        result_ss << "parameter '" << param.get_name() << "' has to be type DOUBLE";
+        result.reason = result_ss.str();
       }
       //}
 
@@ -487,15 +513,12 @@ rcl_interfaces::msg::SetParametersResult ControlInterface::parametersCallback(co
           result.successful     = true;
           RCLCPP_INFO(this->get_logger(), "[%s]: Parameter: '%s' set to %1.2f", this->get_name(), param.get_name().c_str(), param.as_double());
         } else {
-          snprintf(buff, sizeof(buff),
-                   "parameter '%s' cannot be set to %1.2f because it is a "
-                   "negative value",
-                   param.get_name().c_str(), param.as_double());
-          result.reason = buff;
+          result_ss << "parameter '" << param.get_name() << "' cannot be set to " << param.as_double() << " because it is a negative value";
+          result.reason = result_ss.str();
         }
       } else {
-        snprintf(buff, sizeof(buff), "parameter '%s' has to be type DOUBLE", param.get_name().c_str());
-        result.reason = buff;
+        result_ss << "parameter '" << param.get_name() << "' has to be type DOUBLE";
+        result.reason = result_ss.str();
       }
       //}
 
@@ -506,14 +529,14 @@ rcl_interfaces::msg::SetParametersResult ControlInterface::parametersCallback(co
         result.successful             = true;
         RCLCPP_INFO(this->get_logger(), "[%s]: Parameter: '%s' set to %s", this->get_name(), param.get_name().c_str(), param.as_bool() ? "TRUE" : "FALSE");
       } else {
-        snprintf(buff, sizeof(buff), "parameter '%s' has to be type BOOL", param.get_name().c_str());
-        result.reason = buff;
+        result_ss << "parameter '" << param.get_name() << "' has to be type BOOL";
+        result.reason = result_ss.str();
       }
       //}
 
     } else {
-      snprintf(buff, sizeof(buff), "parameter '%s' cannot be changed dynamically", param.get_name().c_str());
-      result.reason = buff;
+      result_ss << "parameter '" << param.get_name() << "' cannot be changed dynamically";
+      result.reason = result_ss.str();
     }
   }
 
@@ -527,19 +550,19 @@ rcl_interfaces::msg::SetParametersResult ControlInterface::parametersCallback(co
 
 /* controlModeCallback //{ */
 void ControlInterface::controlModeCallback(const px4_msgs::msg::VehicleControlMode::UniquePtr msg) {
-  if (!is_initialized_.load()) {
+
+  if (!is_initialized_.load())
     return;
-  }
 
   getting_control_mode_.store(true);
 
-  bool previous_manual_flag = manual_control_flag_.load();
-  bool current_manual_flag  = msg->flag_control_manual_enabled;
+  const bool previous_manual_flag = manual_control_flag_.load();
+  const bool current_manual_flag  = msg->flag_control_manual_enabled;
 
   if (!previous_manual_flag && current_manual_flag) {
     RCLCPP_INFO(this->get_logger(), "[%s]: Control flag switched to manual. Stop commanding", this->get_name());
     stop_commanding_.store(true);
-    if (!stopPreviousMission()) {
+    if (!stopMission()) {
       RCLCPP_ERROR(this->get_logger(), "[%s]: Previous mission cannot be stopped. Manual landing required", this->get_name());
     }
   }
@@ -551,7 +574,7 @@ void ControlInterface::controlModeCallback(const px4_msgs::msg::VehicleControlMo
     if (armed_.load()) {
       RCLCPP_WARN(this->get_logger(), "[%s]: Vehicle armed", this->get_name());
     } else {
-      start_mission_.store(false);
+      /* start_mission_.store(false); */
       motion_started_.store(false);
       RCLCPP_WARN(this->get_logger(), "[%s]: Vehicle disarmed", this->get_name());
       if (landed_.load() && stop_commanding_.load()) {
@@ -575,16 +598,17 @@ void ControlInterface::landDetectedCallback(const px4_msgs::msg::VehicleLandDete
 //}
 
 /* missionResultCallback //{ */
-void ControlInterface::missionResultCallback(const px4_msgs::msg::MissionResult::UniquePtr msg) {
-  if (!is_initialized_.load()) {
+void ControlInterface::missionResultCallback(const px4_msgs::msg::MissionResult::UniquePtr msg)
+{
+  std::scoped_lock lck(mission_mutex_, state_mutex_);
+
+  if (!is_initialized_.load())
     return;
-  }
 
-  unsigned instance_count = msg->instance_count;
-
-  if (!start_mission_.load() && msg->finished && instance_count != last_mission_instance_) {
-    RCLCPP_INFO(this->get_logger(), "[%s]: Mission finished by callback", this->get_name());
-    mission_finished_.store(true);
+  if (mission_state_ == mission_state_t::in_progress && msg->finished && msg->instance_count != last_mission_instance_)
+  {
+    RCLCPP_INFO(this->get_logger(), "[%s]: Mission #%u finished by callback", this->get_name(), msg->instance_count);
+    mission_finish_flag_ = true;
     last_mission_instance_ = msg->instance_count;
   }
 }
@@ -720,7 +744,7 @@ bool ControlInterface::landCallback([[maybe_unused]] const std::shared_ptr<std_s
     return true;
   }
 
-  bool success = stopPreviousMission() && land();
+  bool success = stopMission() && land();
   if (success) {
     response->success = true;
     response->message = "Landing";
@@ -815,7 +839,7 @@ bool ControlInterface::localWaypointCallback(const std::shared_ptr<fog_msgs::srv
     return true;
   }
 
-  if (!stopPreviousMission()) {
+  if (!stopMission()) {
     response->success = false;
     response->message = "Waypoint not set, previous mission cannot be aborted";
     RCLCPP_ERROR(this->get_logger(), "[%s]: %s", this->get_name(), response->message.c_str());
@@ -878,7 +902,7 @@ bool ControlInterface::localPathCallback(const std::shared_ptr<fog_msgs::srv::Pa
     return true;
   }
 
-  if (!stopPreviousMission()) {
+  if (!stopMission()) {
     response->success = false;
     response->message = "Waypoints not set, previous mission cannot be aborted";
     RCLCPP_ERROR(this->get_logger(), "[%s]: %s", this->get_name(), response->message.c_str());
@@ -944,7 +968,7 @@ bool ControlInterface::gpsWaypointCallback(const std::shared_ptr<fog_msgs::srv::
     return true;
   }
 
-  if (!stopPreviousMission()) {
+  if (!stopMission()) {
     response->success = false;
     response->message = "Waypoint not set, previous mission cannot be aborted";
     RCLCPP_ERROR(this->get_logger(), "[%s]: %s", this->get_name(), response->message.c_str());
@@ -1007,7 +1031,7 @@ bool ControlInterface::gpsPathCallback(const std::shared_ptr<fog_msgs::srv::Path
     return true;
   }
 
-  if (!stopPreviousMission()) {
+  if (!stopMission()) {
     response->success = false;
     response->message = "Waypoints not set, previous mission cannot be aborted";
     RCLCPP_ERROR(this->get_logger(), "[%s]: %s", this->get_name(), response->message.c_str());
@@ -1435,81 +1459,121 @@ void ControlInterface::controlRoutine(void) {
     }
 
     /* handle motion //{ */
-    if (motion_started_.load()) {
-
-      {
-        std::scoped_lock lock(waypoint_buffer_mutex_, mission_mutex_);
-
-        // create a new mission plan if there are unused points in buffer
-        if (waypoint_buffer_.size() > 0 && mission_finished_.load()) {
-          publishDebugMarkers();
-          RCLCPP_INFO(this->get_logger(), "[%s]: Waypoints to be visited: %ld", this->get_name(), waypoint_buffer_.size());
-          mission_->pause_mission();
-          mission_plan_.mission_items.clear();
-
-          for (size_t i = 0; i < waypoint_buffer_.size(); i++) {
-            addToMission(waypoint_buffer_.at(i));
-            desired_pose_ = Eigen::Vector4d(waypoint_buffer_.at(i).x, waypoint_buffer_.at(i).y, waypoint_buffer_.at(i).z, waypoint_buffer_.at(i).yaw);
-          }
-
-          start_mission_.store(true);
-          mission_finished_.store(false);
-        }
-      }
-
-      {
-        std::scoped_lock lock(waypoint_buffer_mutex_, mission_mutex_);
-
-        // prevent deadlock when pixhawk is continuously rejecting missions
-        if (mission_upload_attempts_ >= mission_upload_attempts_threshold_) {
-          mission_upload_attempts_ = 0;
-          start_mission_.store(false);
-          waypoint_buffer_.clear();
-          RCLCPP_WARN(this->get_logger(), "[%s]: Mission upload failed too many times. Clearing waypoint buffer.", this->get_name());
-        }
-
-        // upload and execute new mission
-        if (start_mission_.load() && mission_plan_.mission_items.size() > 0) {
-          bool success = uploadMission() && startMission();
-          if (success) {
-            mission_upload_attempts_ = 0;
-            start_mission_.store(false);
-            last_mission_size_ = waypoint_buffer_.size();
-            waypoint_buffer_.clear();
-          }
-        }
-      }
-
-      // stop if final goal is reached
-      if (mission_finished_.load()) {
-        RCLCPP_INFO(this->get_logger(), "[%s]: All waypoints have been visited", this->get_name());
-        motion_started_.store(false);
-      }
+    switch (mission_state_)
+    {
+      case mission_state_t::finished:
+        state_mission_finished(); break;
+      case mission_state_t::uploading:
+        state_mission_uploading(); break;
+      case mission_state_t::in_progress:
+        state_mission_in_progress(); break;
     }
     //}
   }
 }
 //}
 
+/* ControlInterface::state_mission_finished() //{ */
+void ControlInterface::state_mission_finished()
+{
+  const std::scoped_lock lock(waypoint_buffer_mutex_, mission_mutex_, mission_upload_mutex_);
+  // create a new mission plan if there are unused points in the buffer
+  if (!waypoint_buffer_.empty())
+  {
+    publishDebugMarkers();
+    RCLCPP_INFO(this->get_logger(), "[%s]: Waypoints to be visited: %ld", this->get_name(), waypoint_buffer_.size());
+    // pause the current mission (TODO: is this necessary?)
+    mission_->pause_mission();
+
+    // transform and move the mission waypoints buffer to the mission_upload_waypoints_ buffer with the mavsdk type - we'll attempt to upload the waypoint_upload_buffer_ to pixhawk
+    mission_upload_waypoints_.mission_items.clear();
+    // transform the points
+    for (const auto& pt : waypoint_buffer_)
+      mission_upload_waypoints_.mission_items.push_back(to_mission_item(pt));
+
+    // update the current desired_pose_
+    const auto& last_wp = waypoint_buffer_.back();
+    desired_pose_ = Eigen::Vector4d(last_wp.x, last_wp.y, last_wp.z, last_wp.yaw);
+
+    // clear the waypoint buffer
+    waypoint_buffer_.clear();
+
+    // start upload of the new waypoints
+    mission_upload_attempts_ = 0;
+    startMissionUpload(mission_upload_waypoints_); // this starts the asynchronous upload process
+    mission_state_ = mission_state_t::uploading;
+  }
+}
+//}
+
+/* ControlInterface::state_mission_uploading() //{ */
+void ControlInterface::state_mission_uploading()
+{
+  const std::scoped_lock lock(mission_mutex_, mission_upload_mutex_);
+  switch (mission_upload_state_)
+  {
+    // if the mission is being uploaded, just wait for it to either fail or finish
+    case mission_upload_state_t::started:
+      break;
+
+    // if the mission upload failed, either retry, or fail altogether
+    case mission_upload_state_t::failed:
+      if (mission_upload_attempts_ < mission_upload_attempts_threshold_)
+      {
+        RCLCPP_INFO(this->get_logger(), "[%s]: Retrying upload of %ld waypoints", this->get_name(), mission_upload_waypoints_.mission_items.size());
+        mission_upload_attempts_++;
+        startMissionUpload(mission_upload_waypoints_); // this starts the asynchronous upload process
+      }
+      else
+      {
+        mission_state_ = mission_state_t::finished;
+        RCLCPP_WARN(this->get_logger(), "[%s]: Mission upload failed too many times. Scrapping mission.", this->get_name());
+      }
+      break;
+
+    case mission_upload_state_t::done:
+      // clear the mission finish flag and start the uploaded mission
+      mission_finish_flag_ = false;
+      if (startMission())
+      {
+        last_mission_size_ = mission_upload_waypoints_.mission_items.size();
+        mission_state_ = mission_state_t::in_progress;
+      }
+      break;
+  }
+}
+//}
+
+/* ControlInterface::state_mission_in_progress() //{ */
+void ControlInterface::state_mission_in_progress()
+{
+  const std::scoped_lock lock(mission_mutex_);
+  // stop if final goal is reached
+  if (mission_finish_flag_) // this flag is set from the missionResultCallback
+  {
+    RCLCPP_INFO(this->get_logger(), "[%s]: All waypoints have been visited", this->get_name());
+    mission_state_ = mission_state_t::finished;
+  }
+}
+//}
+
 /* publishDiagnostics //{ */
 void ControlInterface::publishDiagnostics() {
+  std::scoped_lock lock(mission_mutex_, waypoint_buffer_mutex_);
+
   fog_msgs::msg::ControlInterfaceDiagnostics msg;
   msg.header.stamp         = this->get_clock()->now();
   msg.header.frame_id      = world_frame_;
   msg.armed                = armed_.load();
   msg.airborne             = !landed_.load() && takeoff_completed_;
   msg.moving               = motion_started_.load();
-  msg.mission_finished     = mission_finished_.load();
+  msg.mission_finished     = mission_state_ == mission_state_t::finished;
   msg.getting_control_mode = getting_control_mode_.load();
   msg.getting_land_sensor  = getting_landed_info_.load();
   msg.gps_origin_set       = gps_origin_set_.load();
   msg.getting_odom         = getting_odom_.load();
   msg.manual_control       = stop_commanding_.load();
-
-  {
-    std::scoped_lock lock(waypoint_buffer_mutex_);
-    msg.last_mission_size = last_mission_size_;
-  }
+  msg.last_mission_size    = last_mission_size_;
 
   diagnostics_publisher_->publish(msg);
 }
@@ -1606,64 +1670,81 @@ bool ControlInterface::startMission() {
 }
 //}
 
-/* uploadMission //{ */
-bool ControlInterface::uploadMission() {
+/* startMissionUpload //{ */
+bool ControlInterface::startMissionUpload(const mavsdk::Mission::MissionPlan& mission_plan)
+{
+  mission_upload_state_ = mission_upload_state_t::failed;
 
-  if (stop_commanding_.load()) {
+  if (!mission_plan.mission_items.empty())
+  {
+    RCLCPP_ERROR(this->get_logger(), "[%s]: Mission waypoints empty. Nothing to upload", this->get_name());
+    return false;
+  }
+
+  if (stop_commanding_.load())
+  {
     RCLCPP_WARN(this->get_logger(), "[%s]: Mission upload prevented by external trigger", this->get_name());
     return false;
   }
 
-  auto clear_result = mission_->clear_mission();
-  if (clear_result != mavsdk::Mission::Result::Success) {
+  const auto clear_result = mission_->clear_mission();
+  if (clear_result != mavsdk::Mission::Result::Success)
+  {
     RCLCPP_ERROR(this->get_logger(), "[%s]: Mission upload failed. Could not clear previous mission", this->get_name());
     return false;
   }
 
-  auto result = mission_->upload_mission(mission_plan_);
+  mission_->upload_mission_async(mission_plan, [this](mavsdk::Mission::Result result)
+      {
+        std::scoped_lock lck(mission_upload_mutex_);
+        if (result == mavsdk::Mission::Result::Success)
+          mission_upload_state_ = mission_upload_state_t::done;
+        else
+          mission_upload_state_ = mission_upload_state_t::failed;
+      }
+    );
   mission_upload_attempts_++;
-  if (result != mavsdk::Mission::Result::Success) {
-    RCLCPP_ERROR(this->get_logger(), "[%s]: Mission upload failed with exit symbol %d", this->get_name(), int(result));
+  RCLCPP_INFO(this->get_logger(), "[%s]: Started mission upload attempt %d", this->get_name(), mission_upload_attempts_);
+
+  mission_upload_state_ = mission_upload_state_t::started;
+  return true;
+}
+//}
+
+/* stopMission //{ */
+bool ControlInterface::stopMission()
+{
+  // clear 
+  waypoint_buffer_.clear();
+  mission_upload_waypoints_.mission_items.clear();
+  mission_state_ = mission_state_t::finished;
+
+  if (mission_state_ == mission_state_t::finished)
+    return true;
+
+  // cancel any current mission upload to pixhawk
+  if (mission_->cancel_mission_upload() != mavsdk::Mission::Result::Success)
+  {
+    RCLCPP_ERROR(this->get_logger(), "[%s]: Failed to cancel current mission upload", this->get_name());
     return false;
   }
 
-  RCLCPP_INFO(this->get_logger(), "[%s]: Mission uploaded", this->get_name());
-
-  return true;
-}
-//}
-
-/* stopPreviousMission //{ */
-bool ControlInterface::stopPreviousMission() {
-
-  if (!motion_started_.load()) {
-    return true;
-  }
-
-  motion_started_.store(false);
-  start_mission_.store(false);
-  mission_finished_.store(true);
-
-  auto result = mission_->clear_mission();
-
+  // cancel any mission currently being executed
+  if (mission_->clear_mission() != mavsdk::Mission::Result::Success)
   {
-    std::scoped_lock lock(waypoint_buffer_mutex_, mission_mutex_);
-    mission_plan_.mission_items.clear();
-    waypoint_buffer_.clear();
-
-    if (result != mavsdk::Mission::Result::Success || mission_plan_.mission_items.size() > 0) {
-      RCLCPP_ERROR(this->get_logger(), "[%s]: Previous mission cannot be stopped", this->get_name());
-      return false;
-    }
+    RCLCPP_ERROR(this->get_logger(), "[%s]: Previous mission cannot be stopped", this->get_name());
+    return false;
   }
-  RCLCPP_INFO(this->get_logger(), "[%s]: Previous mission stopped", this->get_name());
+
+  RCLCPP_INFO(this->get_logger(), "[%s]: Current mission stopped", this->get_name());
   return true;
 }
 //}
 
-/* addToMission //{ */
-void ControlInterface::addToMission(local_waypoint_t w) {
-
+/* to_mission_item //{ */
+mavsdk::Mission::MissionItem ControlInterface::to_mission_item(const local_waypoint_t& w_in)
+{
+  local_waypoint_t w = w_in;
   // apply home offset correction
   w.x -= home_position_offset_.x();
   w.y -= home_position_offset_.y();
@@ -1685,11 +1766,11 @@ void ControlInterface::addToMission(local_waypoint_t w) {
   item.camera_photo_interval_s = 0.0f;
   item.acceptance_radius_m     = waypoint_acceptance_radius_;
 
-  mission_plan_.mission_items.push_back(item);
+  return item;
 
-  RCLCPP_INFO(this->get_logger(), "[%s]: Added waypoint LOCAL: [%.2f, %.2f, %.2f, %.2f]", this->get_name(), w.x, w.y, w.z, w.yaw);
-  RCLCPP_INFO(this->get_logger(), "[%s]: GLOBAL: [%.2f, %.2f, %.2f, %.2f]", this->get_name(), item.latitude_deg, item.longitude_deg, item.relative_altitude_m,
-              item.yaw_deg);
+  /* RCLCPP_INFO(this->get_logger(), "[%s]: Added waypoint LOCAL: [%.2f, %.2f, %.2f, %.2f]", this->get_name(), w.x, w.y, w.z, w.yaw); */
+  /* RCLCPP_INFO(this->get_logger(), "[%s]: GLOBAL: [%.2f, %.2f, %.2f, %.2f]", this->get_name(), item.latitude_deg, item.longitude_deg, item.relative_altitude_m, */
+  /*             item.yaw_deg); */
 }
 //}
 
