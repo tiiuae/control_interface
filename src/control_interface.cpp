@@ -168,7 +168,7 @@ private:
 
   std::mutex                       mission_mutex_;
   std::shared_ptr<mavsdk::Mission> mission_;
-  bool mission_finish_flag_; // set to true in the missionResultCallback, this flag is cleared in the main controlRoutine
+  bool mission_finished_flag_; // set to true in the missionResultCallback, this flag is cleared in the main controlRoutine
   enum mission_state_t
   {
     uploading,
@@ -186,21 +186,13 @@ private:
     failed
   } mission_upload_state_ = done;
 
-  enum mission_command_t
-  {
-    none,
-    start,
-    stop
-  } mission_command_ = none;
-
   std::atomic_bool armed_                = false;
   std::atomic_bool takeoff_called_       = false;
   std::atomic_bool takeoff_completed_    = false;
   std::atomic_bool motion_started_       = false;
   std::atomic_bool landed_               = true;
 
-  std::atomic_bool manual_control_flag_ = true;
-  std::atomic_bool stop_commanding_     = false;
+  std::atomic_bool manual_override_     = false;
 
   std::atomic_bool gps_origin_set_ = false;
   std::atomic_bool getting_odom_   = false;
@@ -312,7 +304,7 @@ private:
 
   void publishDiagnostics();
 
-  bool takeoff();
+  bool start_takeoff();
   bool land();
   bool startMission();
   bool startMissionUpload(const mavsdk::Mission::MissionPlan& mission_plan);
@@ -549,37 +541,42 @@ rcl_interfaces::msg::SetParametersResult ControlInterface::parametersCallback(co
 //}
 
 /* controlModeCallback //{ */
-void ControlInterface::controlModeCallback(const px4_msgs::msg::VehicleControlMode::UniquePtr msg) {
+void ControlInterface::controlModeCallback(const px4_msgs::msg::VehicleControlMode::UniquePtr msg)
+{
+  std::scoped_lock lck(state_mutex_, mission_mutex_, mission_upload_mutex_, waypoint_buffer_mutex_);
 
-  if (!is_initialized_.load())
+  if (!is_initialized_)
     return;
 
-  getting_control_mode_.store(true);
+  getting_control_mode_ = true;
 
-  const bool previous_manual_flag = manual_control_flag_.load();
+  static bool previous_manual_flag = true;
   const bool current_manual_flag  = msg->flag_control_manual_enabled;
 
-  if (!previous_manual_flag && current_manual_flag) {
-    RCLCPP_INFO(this->get_logger(), "[%s]: Control flag switched to manual. Stop commanding", this->get_name());
-    stop_commanding_.store(true);
-    if (!stopMission()) {
+  if (!previous_manual_flag && current_manual_flag)
+  {
+    RCLCPP_INFO(this->get_logger(), "[%s]: Control flag switched to manual. Stopping and clearing mission", this->get_name());
+    manual_override_.store(true);
+    if (!stopMission())
       RCLCPP_ERROR(this->get_logger(), "[%s]: Previous mission cannot be stopped. Manual landing required", this->get_name());
-    }
   }
 
-  manual_control_flag_.store(msg->flag_control_manual_enabled);
+  previous_manual_flag = msg->flag_control_manual_enabled;
 
-  if (armed_.load() != msg->flag_armed) {
-    armed_.store(msg->flag_armed);
-    if (armed_.load()) {
+  if (armed_ != msg->flag_armed)
+  {
+    armed_ = msg->flag_armed;
+    if (armed_)
+    {
       RCLCPP_WARN(this->get_logger(), "[%s]: Vehicle armed", this->get_name());
-    } else {
-      /* start_mission_.store(false); */
-      motion_started_.store(false);
+    }
+    else
+    {
       RCLCPP_WARN(this->get_logger(), "[%s]: Vehicle disarmed", this->get_name());
-      if (landed_.load() && stop_commanding_.load()) {
-        RCLCPP_INFO(this->get_logger(), "[%s]: Auto control will be enabled", this->get_name());
-        stop_commanding_.store(false);
+      if (landed_ && manual_override_)
+      {
+        RCLCPP_INFO(this->get_logger(), "[%s]: Vehicle landed, auto control will be re-enabled", this->get_name());
+        manual_override_ = false;
       }
     }
   }
@@ -587,13 +584,16 @@ void ControlInterface::controlModeCallback(const px4_msgs::msg::VehicleControlMo
 //}
 
 /* landDetectedCallback //{ */
-void ControlInterface::landDetectedCallback(const px4_msgs::msg::VehicleLandDetected::UniquePtr msg) {
-  if (!is_initialized_.load()) {
+void ControlInterface::landDetectedCallback(const px4_msgs::msg::VehicleLandDetected::UniquePtr msg)
+{
+  std::scoped_lock lck(state_mutex_);
+
+  if (!is_initialized_)
     return;
-  }
-  getting_landed_info_.store(true);
+
+  getting_landed_info_ = true;
   // checking only ground_contact flag instead of landed due to a problem in simulation
-  landed_.store(msg->ground_contact);
+  landed_ = msg->ground_contact;
 }
 //}
 
@@ -602,32 +602,32 @@ void ControlInterface::missionResultCallback(const px4_msgs::msg::MissionResult:
 {
   std::scoped_lock lck(mission_mutex_, state_mutex_);
 
-  if (!is_initialized_.load())
+  if (!is_initialized_)
     return;
 
+  // check if a mission is currently in-progress and we got an indication that it is finished
   if (mission_state_ == mission_state_t::in_progress && msg->finished && msg->instance_count != last_mission_instance_)
   {
     RCLCPP_INFO(this->get_logger(), "[%s]: Mission #%u finished by callback", this->get_name(), msg->instance_count);
-    mission_finish_flag_ = true;
+    mission_finished_flag_ = true; // set the appropriate flag to signal the state machine to change state
     last_mission_instance_ = msg->instance_count;
   }
 }
 //}
 
 /* homePositionCallback //{ */
-void ControlInterface::homePositionCallback(const px4_msgs::msg::HomePosition::UniquePtr msg) {
-  if (!is_initialized_.load()) {
+void ControlInterface::homePositionCallback(const px4_msgs::msg::HomePosition::UniquePtr msg)
+{
+  std::scoped_lock lck(state_mutex_, coord_transform_mutex_);
+
+  if (!is_initialized_)
     return;
-  }
 
   mavsdk::geometry::CoordinateTransformation::GlobalCoordinate ref;
   ref.latitude_deg  = msg->lat;
   ref.longitude_deg = msg->lon;
 
-  {
-    std::scoped_lock lock(coord_transform_mutex_);
-    coord_transform_ = std::make_shared<mavsdk::geometry::CoordinateTransformation>(mavsdk::geometry::CoordinateTransformation(ref));
-  }
+  coord_transform_ = std::make_shared<mavsdk::geometry::CoordinateTransformation>(mavsdk::geometry::CoordinateTransformation(ref));
 
   RCLCPP_INFO(this->get_logger(), "[%s]: GPS origin set! Lat: %.6f, Lon: %.6f", this->get_name(), ref.latitude_deg, ref.longitude_deg);
 
@@ -635,17 +635,19 @@ void ControlInterface::homePositionCallback(const px4_msgs::msg::HomePosition::U
   RCLCPP_INFO(this->get_logger(), "[%s]: Home position offset (local): %.2f, %.2f, %.2f", this->get_name(), home_position_offset_.x(),
               home_position_offset_.y(), home_position_offset_.z());
 
-  gps_origin_set_.store(true);
+  gps_origin_set_ = true;
 }
 //}
 
 /* odometryCallback //{ */
-void ControlInterface::odometryCallback(const nav_msgs::msg::Odometry::UniquePtr msg) {
-  if (!is_initialized_.load()) {
-    return;
-  }
+void ControlInterface::odometryCallback(const nav_msgs::msg::Odometry::UniquePtr msg)
+{
+  std::scoped_lock lck(state_mutex_);
 
-  getting_odom_.store(true);
+  if (!is_initialized_)
+    return;
+
+  getting_odom_ = true;
   RCLCPP_INFO_ONCE(this->get_logger(), "[%s]: Getting odometry", this->get_name());
 
   pos_[0] = msg->pose.pose.position.x;
@@ -656,19 +658,19 @@ void ControlInterface::odometryCallback(const nav_msgs::msg::Odometry::UniquePtr
   ori_.setZ(msg->pose.pose.orientation.z);
   ori_.setW(msg->pose.pose.orientation.w);
 
-  Eigen::Vector3d pos(msg->pose.pose.position.x, msg->pose.pose.position.y, msg->pose.pose.position.z);
+  const Eigen::Vector3d pos(msg->pose.pose.position.x, msg->pose.pose.position.y, msg->pose.pose.position.z);
   pos_samples_.push_back(pos);
-  if (int(pos_samples_.size()) > takeoff_position_samples_) {
+  if (pos_samples_.size() > (size_t)takeoff_position_samples_)
     pos_samples_.erase(pos_samples_.begin());
-  }
 
-  if (takeoff_called_.load() && !stop_commanding_.load()) {
-    double time_since_takeoff = this->get_clock()->now().seconds() - takeoff_time_.seconds();
-    if (std::abs(msg->pose.pose.position.z - desired_pose_.z()) < takeoff_height_tolerance_ || time_since_takeoff > takeoff_blocking_timeout_) {
+  if (takeoff_called_ && !manual_override_)
+  {
+    const double time_since_takeoff = this->get_clock()->now().seconds() - takeoff_time_.seconds();
+    if (std::abs(msg->pose.pose.position.z - desired_pose_.z()) < takeoff_height_tolerance_ || time_since_takeoff > takeoff_blocking_timeout_)
+    {
       RCLCPP_INFO(this->get_logger(), "[%s]: Takeoff completed", this->get_name());
-      takeoff_completed_.store(true);
-      takeoff_called_.store(false);
-      motion_started_.store(true);
+      takeoff_completed_ = true;
+      takeoff_called_ = false;
     }
   }
 }
@@ -676,38 +678,45 @@ void ControlInterface::odometryCallback(const nav_msgs::msg::Odometry::UniquePtr
 
 /* takeoffCallback //{ */
 bool ControlInterface::takeoffCallback([[maybe_unused]] const std::shared_ptr<std_srvs::srv::Trigger::Request> request,
-                                       std::shared_ptr<std_srvs::srv::Trigger::Response>                       response) {
+                                       std::shared_ptr<std_srvs::srv::Trigger::Response>                       response)
+{
+  std::scoped_lock lck(state_mutex_, waypoint_buffer_mutex_);
 
-  if (!is_initialized_.load()) {
+  if (!is_initialized_)
+  {
     response->success = false;
     response->message = "Takeoff rejected, not initialized";
     RCLCPP_ERROR(this->get_logger(), "[%s]: %s", this->get_name(), response->message.c_str());
     return true;
   }
 
-  if (!gps_origin_set_.load()) {
+  if (!gps_origin_set_)
+  {
     response->success = false;
     response->message = "Takeoff rejected, GPS origin not set";
     RCLCPP_ERROR(this->get_logger(), "[%s]: %s", this->get_name(), response->message.c_str());
     return true;
   }
 
-  if (!armed_.load()) {
+  if (!armed_)
+  {
     response->success = false;
     response->message = "Takeoff rejected, vehicle not armed";
     RCLCPP_ERROR(this->get_logger(), "[%s]: %s", this->get_name(), response->message.c_str());
     return true;
   }
 
-  if (!landed_.load()) {
+  if (!landed_)
+  {
     response->success = false;
     response->message = "Takeoff rejected, vehicle not landed";
     RCLCPP_ERROR(this->get_logger(), "[%s]: %s", this->get_name(), response->message.c_str());
     return true;
   }
 
-  bool success = takeoff();
-  if (success) {
+  const bool success = start_takeoff();
+  if (success)
+  {
     response->success = true;
     response->message = "Taking off";
     return true;
@@ -825,7 +834,7 @@ bool ControlInterface::localWaypointCallback(const std::shared_ptr<fog_msgs::srv
     return true;
   }
 
-  if (stop_commanding_.load()) {
+  if (manual_override_.load()) {
     response->success = false;
     response->message = "Waypoint not set, vehicle is under manual control";
     RCLCPP_ERROR(this->get_logger(), "[%s]: %s", this->get_name(), response->message.c_str());
@@ -859,7 +868,6 @@ bool ControlInterface::localWaypointCallback(const std::shared_ptr<fog_msgs::srv
     std::scoped_lock lock(waypoint_buffer_mutex_);
     waypoint_buffer_.push_back(w);
   }
-  motion_started_.store(true);
   return true;
 }
 //}
@@ -881,7 +889,7 @@ bool ControlInterface::localPathCallback(const std::shared_ptr<fog_msgs::srv::Pa
     return true;
   }
 
-  if (stop_commanding_.load()) {
+  if (manual_override_.load()) {
     response->success = false;
     response->message = "Waypoints not set, vehicle is under manual control";
     RCLCPP_ERROR(this->get_logger(), "[%s]: %s", this->get_name(), response->message.c_str());
@@ -922,7 +930,6 @@ bool ControlInterface::localPathCallback(const std::shared_ptr<fog_msgs::srv::Pa
       waypoint_buffer_.push_back(w);
     }
   }
-  motion_started_.store(true);
   response->success = true;
   response->message = "Waypoints set";
   return true;
@@ -954,7 +961,7 @@ bool ControlInterface::gpsWaypointCallback(const std::shared_ptr<fog_msgs::srv::
     return true;
   }
 
-  if (stop_commanding_.load()) {
+  if (manual_override_.load()) {
     response->success = false;
     response->message = "Waypoint not set, vehicle is under manual control";
     RCLCPP_ERROR(this->get_logger(), "[%s]: %s", this->get_name(), response->message.c_str());
@@ -988,7 +995,6 @@ bool ControlInterface::gpsWaypointCallback(const std::shared_ptr<fog_msgs::srv::
     std::scoped_lock lock(waypoint_buffer_mutex_, coord_transform_mutex_);
     waypoint_buffer_.push_back(globalToLocal(coord_transform_, w));
   }
-  motion_started_.store(true);
   return true;
 }
 //}
@@ -1010,7 +1016,7 @@ bool ControlInterface::gpsPathCallback(const std::shared_ptr<fog_msgs::srv::Path
     return true;
   }
 
-  if (stop_commanding_.load()) {
+  if (manual_override_.load()) {
     response->success = false;
     response->message = "Waypoints not set, vehicle is under manual control";
     RCLCPP_ERROR(this->get_logger(), "[%s]: %s", this->get_name(), response->message.c_str());
@@ -1051,7 +1057,6 @@ bool ControlInterface::gpsPathCallback(const std::shared_ptr<fog_msgs::srv::Path
       waypoint_buffer_.push_back(globalToLocal(coord_transform_, w));
     }
   }
-  motion_started_.store(true);
   response->success = true;
   response->message = "Waypoints set";
   return true;
@@ -1453,7 +1458,7 @@ void ControlInterface::controlRoutine(void) {
       return;
     }
 
-    if (stop_commanding_.load()) {
+    if (manual_override_.load()) {
       RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 1000, "[%s]: Control action prevented by an external trigger", this->get_name());
       return;
     }
@@ -1533,7 +1538,7 @@ void ControlInterface::state_mission_uploading()
 
     case mission_upload_state_t::done:
       // clear the mission finish flag and start the uploaded mission
-      mission_finish_flag_ = false;
+      mission_finished_flag_ = false;
       if (startMission())
       {
         last_mission_size_ = mission_upload_waypoints_.mission_items.size();
@@ -1549,7 +1554,7 @@ void ControlInterface::state_mission_in_progress()
 {
   const std::scoped_lock lock(mission_mutex_);
   // stop if final goal is reached
-  if (mission_finish_flag_) // this flag is set from the missionResultCallback
+  if (mission_finished_flag_) // this flag is set from the missionResultCallback
   {
     RCLCPP_INFO(this->get_logger(), "[%s]: All waypoints have been visited", this->get_name());
     mission_state_ = mission_state_t::finished;
@@ -1564,43 +1569,45 @@ void ControlInterface::publishDiagnostics() {
   fog_msgs::msg::ControlInterfaceDiagnostics msg;
   msg.header.stamp         = this->get_clock()->now();
   msg.header.frame_id      = world_frame_;
-  msg.armed                = armed_.load();
-  msg.airborne             = !landed_.load() && takeoff_completed_;
-  msg.moving               = motion_started_.load();
+  msg.armed                = armed_;
+  msg.airborne             = !landed_ && takeoff_completed_;
+  msg.moving               = mission_state_ == mission_state_t::in_progress;
   msg.mission_finished     = mission_state_ == mission_state_t::finished;
-  msg.getting_control_mode = getting_control_mode_.load();
-  msg.getting_land_sensor  = getting_landed_info_.load();
-  msg.gps_origin_set       = gps_origin_set_.load();
-  msg.getting_odom         = getting_odom_.load();
-  msg.manual_control       = stop_commanding_.load();
+  msg.getting_control_mode = getting_control_mode_;
+  msg.getting_land_sensor  = getting_landed_info_;
+  msg.gps_origin_set       = gps_origin_set_;
+  msg.getting_odom         = getting_odom_;
+  msg.manual_control       = manual_override_;
   msg.last_mission_size    = last_mission_size_;
 
   diagnostics_publisher_->publish(msg);
 }
 //}
 
-/* takeoff //{ */
-bool ControlInterface::takeoff() {
-  auto result = action_->set_takeoff_altitude(takeoff_height_);
-  if (result != mavsdk::Action::Result::Success) {
+/* start_takeoff //{ */
+bool ControlInterface::start_takeoff()
+{
+  if (action_->set_takeoff_altitude(takeoff_height_) != mavsdk::Action::Result::Success)
+  {
     RCLCPP_ERROR(this->get_logger(), "[%s]: Failed to set takeoff height %.2f", this->get_name(), takeoff_height_);
     return false;
   }
 
-  if (reset_octomap_before_takeoff_) {
-    auto reset_srv   = std::make_shared<std_srvs::srv::Empty::Request>();
-    auto call_result = octomap_reset_client_->async_send_request(reset_srv);
+  if (reset_octomap_before_takeoff_)
+  {
+    const auto reset_srv   = std::make_shared<std_srvs::srv::Empty::Request>();
+    const auto call_result = octomap_reset_client_->async_send_request(reset_srv);
     RCLCPP_INFO(this->get_logger(), "[%s]: Resetting octomap server", this->get_name());
   }
 
-  action_->takeoff();
-  if (result != mavsdk::Action::Result::Success) {
+  if (action_->takeoff() != mavsdk::Action::Result::Success)
+  {
     RCLCPP_ERROR(this->get_logger(), "[%s]: Takeoff failed", this->get_name());
     return false;
   }
 
-
-  if (int(pos_samples_.size()) < takeoff_position_samples_) {
+  if (pos_samples_.size() < (size_t)takeoff_position_samples_)
+  {
     RCLCPP_WARN(this->get_logger(), "[%s]: Takeoff rejected. Need %ld odometry samples, only have %ld", this->get_name(), takeoff_position_samples_,
                 pos_samples_.size());
     return false;
@@ -1612,7 +1619,8 @@ bool ControlInterface::takeoff() {
   current_goal.x = 0;
   current_goal.y = 0;
 
-  for (const auto &p : pos_samples_) {
+  for (const auto &p : pos_samples_)
+  {
     current_goal.x += p[0];
     current_goal.y += p[1];
   }
@@ -1623,12 +1631,9 @@ bool ControlInterface::takeoff() {
   current_goal.yaw = getYaw(ori_);
   desired_pose_    = Eigen::Vector4d(current_goal.x, current_goal.y, current_goal.z, current_goal.yaw);
 
-  {
-    std::scoped_lock lock(waypoint_buffer_mutex_);
-    waypoint_buffer_.push_back(current_goal);
-  }
+  waypoint_buffer_.push_back(current_goal);
 
-  takeoff_called_.store(true);
+  takeoff_called_ = true;
   takeoff_time_ = this->get_clock()->now();
   RCLCPP_INFO(this->get_logger(), "[%s]: Taking off", this->get_name());
   return true;
@@ -1639,7 +1644,7 @@ bool ControlInterface::takeoff() {
 bool ControlInterface::land() {
 
   RCLCPP_INFO(this->get_logger(), "[%s]: Landing called. Stop commanding", this->get_name());
-  stop_commanding_.store(true);
+  manual_override_.store(true);
   takeoff_completed_.store(false);
 
   auto result = action_->land();
@@ -1655,7 +1660,7 @@ bool ControlInterface::land() {
 /* startMission //{ */
 bool ControlInterface::startMission() {
 
-  if (stop_commanding_.load()) {
+  if (manual_override_.load()) {
     RCLCPP_WARN(this->get_logger(), "[%s]: Mission start prevented by external trigger", this->get_name());
     return false;
   }
@@ -1681,7 +1686,7 @@ bool ControlInterface::startMissionUpload(const mavsdk::Mission::MissionPlan& mi
     return false;
   }
 
-  if (stop_commanding_.load())
+  if (manual_override_.load())
   {
     RCLCPP_WARN(this->get_logger(), "[%s]: Mission upload prevented by external trigger", this->get_name());
     return false;
