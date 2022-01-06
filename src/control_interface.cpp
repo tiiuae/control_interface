@@ -30,6 +30,7 @@
 #include <std_srvs/srv/empty.hpp>
 #include <std_srvs/srv/set_bool.hpp>
 #include <std_srvs/srv/trigger.hpp>
+#include <tf2/LinearMath/Matrix3x3.h>
 #include <tf2/LinearMath/Quaternion.h>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.h>  // This has to be here otherwise you will get cryptic linker error about missing function 'getTimestamp'
 #include <visualization_msgs/msg/marker_array.hpp>
@@ -73,6 +74,7 @@ double getYaw(const geometry_msgs::msg::Quaternion &q) {
   return yaw;
 }
 //}
+
 
 /* angle conversions //{ */
 double radToDeg(const double &angle_rad) {
@@ -186,6 +188,10 @@ private:
     failed
   } mission_upload_state_ = done;
 
+  // the mavsdk::Action is used for requesting actions such as takeoff and landing
+  std::mutex action_mutex_;
+  std::shared_ptr<mavsdk::Action>  action_;
+
   std::atomic_bool armed_                = false;
   std::atomic_bool takeoff_called_       = false;
   std::atomic_bool takeoff_completed_    = false;
@@ -206,7 +212,6 @@ private:
   std::string                      device_url_;
   mavsdk::Mavsdk                   mavsdk_;
   std::shared_ptr<mavsdk::System>  system_;
-  std::shared_ptr<mavsdk::Action>  action_;
   std::shared_ptr<mavsdk::Param>   param_;
 
   std::mutex                    waypoint_buffer_mutex_;  // guards the following block of variables
@@ -310,7 +315,6 @@ private:
   bool startMissionUpload(const mavsdk::Mission::MissionPlan& mission_plan);
   bool stopMission();
 
-  mavsdk::Mission::MissionItem to_mission_item(const local_waypoint_t& w_in);
   void publishDebugMarkers();
   void publishDesiredPose();
 
@@ -329,6 +333,13 @@ private:
   // utils
   template <class T>
   bool parse_param(const std::string &param_name, T &param_dest);
+
+  bool canAddWaypoints(std::string& reason_out);
+  template<typename T>
+  bool addWaypoints(const T& path, const bool is_global, std::string& fail_reason_out);
+  mavsdk::Mission::MissionItem to_mission_item(const local_waypoint_t& w_in);
+  local_waypoint_t to_local_waypoint(const geometry_msgs::msg::PoseStamped& in, const bool is_global);
+  local_waypoint_t to_local_waypoint(const std::vector<double>& in, const bool is_global);
 };
 //}
 
@@ -730,31 +741,37 @@ bool ControlInterface::takeoffCallback([[maybe_unused]] const std::shared_ptr<st
 
 /* landCallback //{ */
 bool ControlInterface::landCallback([[maybe_unused]] const std::shared_ptr<std_srvs::srv::Trigger::Request> request,
-                                    std::shared_ptr<std_srvs::srv::Trigger::Response>                       response) {
+                                    std::shared_ptr<std_srvs::srv::Trigger::Response>                       response)
+{
+  std::scoped_lock lck(state_mutex_, mission_mutex_, waypoint_buffer_mutex_, action_mutex_);
 
-  if (!is_initialized_.load()) {
+  if (!is_initialized_)
+  {
     response->success = false;
     response->message = "Landing rejected, not initialized";
     RCLCPP_ERROR(this->get_logger(), "[%s]: %s", this->get_name(), response->message.c_str());
     return true;
   }
 
-  if (!armed_.load()) {
+  if (!armed_)
+  {
     response->success = false;
     response->message = "Landing rejected, vehicle not armed";
     RCLCPP_ERROR(this->get_logger(), "[%s]: %s", this->get_name(), response->message.c_str());
     return true;
   }
 
-  if (landed_.load()) {
+  if (landed_)
+  {
     response->success = false;
     response->message = "Landing rejected, vehicle not airborne";
     RCLCPP_ERROR(this->get_logger(), "[%s]: %s", this->get_name(), response->message.c_str());
     return true;
   }
 
-  bool success = stopMission() && land();
-  if (success) {
+  const bool success = stopMission() && land();
+  if (success)
+  {
     response->success = true;
     response->message = "Landing";
     return true;
@@ -767,40 +784,52 @@ bool ControlInterface::landCallback([[maybe_unused]] const std::shared_ptr<std_s
 
 /* armingCallback //{ */
 bool ControlInterface::armingCallback([[maybe_unused]] const std::shared_ptr<std_srvs::srv::SetBool::Request> request,
-                                      std::shared_ptr<std_srvs::srv::SetBool::Response>                       response) {
+                                      std::shared_ptr<std_srvs::srv::SetBool::Response>                       response)
+{
+  std::scoped_lock lck(state_mutex_, action_mutex_);
 
-  if (!is_initialized_.load()) {
+  if (!is_initialized_)
+  {
     response->success = false;
     response->message = "Arming rejected, not initialized";
     RCLCPP_ERROR(this->get_logger(), "[%s]: %s", this->get_name(), response->message.c_str());
     return true;
   }
 
-  if (request->data) {
-    auto result = action_->arm();
-    if (result != mavsdk::Action::Result::Success) {
+  if (request->data)
+  {
+    const auto result = action_->arm();
+    if (result != mavsdk::Action::Result::Success)
+    {
       response->message = "Arming failed";
       response->success = false;
       RCLCPP_ERROR(this->get_logger(), "[%s]: %s", this->get_name(), response->message.c_str());
       return true;
-    } else {
+    }
+    else
+    {
       response->message = "Vehicle armed";
       response->success = true;
-      armed_.store(true);
+      armed_ = true;
       RCLCPP_WARN(this->get_logger(), "[%s]: %s", this->get_name(), response->message.c_str());
       return true;
     }
-  } else {
-    auto result = action_->disarm();
-    if (result != mavsdk::Action::Result::Success) {
+  }
+  else
+  {
+    const auto result = action_->disarm();
+    if (result != mavsdk::Action::Result::Success)
+    {
       response->message = "Disarming failed";
       response->success = false;
       RCLCPP_ERROR(this->get_logger(), "[%s]: %s", this->get_name(), response->message.c_str());
       return true;
-    } else {
+    }
+    else
+    {
       response->message = "Vehicle disarmed";
       response->success = true;
-      armed_.store(false);
+      armed_ = false;
       takeoff_completed_.store(false);
       RCLCPP_WARN(this->get_logger(), "[%s]: %s", this->get_name(), response->message.c_str());
       return true;
@@ -809,127 +838,107 @@ bool ControlInterface::armingCallback([[maybe_unused]] const std::shared_ptr<std
 }
 //}
 
+/* canAddWaypoints() method //{ */
+// helper method that performs the necessary checks before adding a waypoint to the waypoint_buffer_
+bool ControlInterface::canAddWaypoints(std::string& reason_out)
+{
+  if (!is_initialized_)
+  {
+    reason_out = "not initialized";
+    return false;
+  }
+
+  if (!gps_origin_set_)
+  {
+    reason_out = "missing GPS origin";
+    return false;
+  }
+
+  if (landed_)
+  {
+    reason_out = "vehicle not airborne";
+    return false;
+  }
+
+  if (manual_override_)
+  {
+    reason_out = "vehicle is under manual control";
+    return false;
+  }
+
+  if (!takeoff_completed_)
+  {
+    reason_out = "vehicle not flying normally";
+    return false;
+  }
+
+  return true;
+}
+//}
+
+/* addWaypoints() method //{ */
+template<typename T>
+bool ControlInterface::addWaypoints(const T& path, const bool is_global, std::string& fail_reason_out)
+{
+  // check that we are in a state in which we can add waypoints to the buffer
+  if (!canAddWaypoints(fail_reason_out))
+    return true;
+
+  // stop the current mission (if any)
+  if (!stopMission())
+  {
+    fail_reason_out = "previous mission cannot be aborted";
+    return true;
+  }
+
+  // finally, add the waypoints to the buffer
+  for (const auto& pose : path)
+    waypoint_buffer_.push_back(to_local_waypoint(pose, is_global));
+
+  return true;
+}
+//}
+
 /* localWaypointCallback //{ */
 bool ControlInterface::localWaypointCallback(const std::shared_ptr<fog_msgs::srv::Vec4::Request> request,
-                                             std::shared_ptr<fog_msgs::srv::Vec4::Response>      response) {
+                                             std::shared_ptr<fog_msgs::srv::Vec4::Response>      response)
+{
+  std::scoped_lock lck(state_mutex_, waypoint_buffer_mutex_, mission_mutex_, mission_upload_mutex_);
 
-  if (!is_initialized_.load()) {
-    response->success = false;
-    response->message = "Waypoint not set, not initialized";
-    RCLCPP_ERROR(this->get_logger(), "[%s]: %s", this->get_name(), response->message.c_str());
-    return true;
-  }
+  // convert the single waypoint to a path containing a single point
+  std::vector<std::vector<double>> path {request->goal};
 
-  if (!gps_origin_set_.load()) {
-    response->success = false;
-    response->message = "Waypoint not set, missing GPS origin";
-    RCLCPP_ERROR(this->get_logger(), "[%s]: %s", this->get_name(), response->message.c_str());
-    return true;
-  }
-
-  if (landed_.load()) {
-    response->success = false;
-    response->message = "Waypoint not set, vehicle not airborne";
-    RCLCPP_ERROR(this->get_logger(), "[%s]: %s", this->get_name(), response->message.c_str());
-    return true;
-  }
-
-  if (manual_override_.load()) {
-    response->success = false;
-    response->message = "Waypoint not set, vehicle is under manual control";
-    RCLCPP_ERROR(this->get_logger(), "[%s]: %s", this->get_name(), response->message.c_str());
-    return true;
-  }
-
-  if (!takeoff_completed_.load()) {
-    response->success = false;
-    response->message = "Waypoint not set, vehicle not flying normally";
-    RCLCPP_ERROR(this->get_logger(), "[%s]: %s", this->get_name(), response->message.c_str());
-    return true;
-  }
-
-  if (!stopMission()) {
-    response->success = false;
-    response->message = "Waypoint not set, previous mission cannot be aborted";
-    RCLCPP_ERROR(this->get_logger(), "[%s]: %s", this->get_name(), response->message.c_str());
-    return true;
-  }
-
-  response->message = "Waypoint set";
-  response->success = true;
-  RCLCPP_INFO(this->get_logger(), "[%s]: %s", this->get_name(), response->message.c_str());
-
-  local_waypoint_t w;
-  w.x   = request->goal[0];
-  w.y   = request->goal[1];
-  w.z   = request->goal[2];
-  w.yaw = request->goal[3];
+  // check that we are in a state in which we can add waypoints to the buffer
+  std::string reason;
+  if (!addWaypoints(path, false, reason))
   {
-    std::scoped_lock lock(waypoint_buffer_mutex_);
-    waypoint_buffer_.push_back(w);
+    response->success = false;
+    response->message = "Waypoints not set, " + reason;
+    RCLCPP_ERROR(this->get_logger(), "[%s]: %s", this->get_name(), response->message.c_str());
+    return true;
   }
+
+  response->success = true;
+  response->message = "Waypoints set";
   return true;
 }
 //}
 
 /* localPathCallback //{ */
-bool ControlInterface::localPathCallback(const std::shared_ptr<fog_msgs::srv::Path::Request> request, std::shared_ptr<fog_msgs::srv::Path::Response> response) {
+bool ControlInterface::localPathCallback(const std::shared_ptr<fog_msgs::srv::Path::Request> request, std::shared_ptr<fog_msgs::srv::Path::Response> response)
+{
+  std::scoped_lock lck(state_mutex_, waypoint_buffer_mutex_, mission_mutex_, mission_upload_mutex_);
 
-  if (!is_initialized_.load()) {
-    response->success = false;
-    response->message = "Waypoints not set, not initialized";
-    RCLCPP_ERROR(this->get_logger(), "[%s]: %s", this->get_name(), response->message.c_str());
-    return true;
-  }
-
-  if (!gps_origin_set_.load()) {
-    response->success = false;
-    response->message = "Waypoints not set, missing GPS origin";
-    RCLCPP_ERROR(this->get_logger(), "[%s]: %s", this->get_name(), response->message.c_str());
-    return true;
-  }
-
-  if (manual_override_.load()) {
-    response->success = false;
-    response->message = "Waypoints not set, vehicle is under manual control";
-    RCLCPP_ERROR(this->get_logger(), "[%s]: %s", this->get_name(), response->message.c_str());
-    return true;
-  }
-
-  if (!takeoff_completed_.load()) {
-    response->success = false;
-    response->message = "Waypoints not set, vehicle not flying normally";
-    RCLCPP_ERROR(this->get_logger(), "[%s]: %s", this->get_name(), response->message.c_str());
-    return true;
-  }
-
-  if (request->path.poses.size() < 1) {
-    response->success = false;
-    response->message = "Waypoints not set, request is empty";
-    RCLCPP_ERROR(this->get_logger(), "[%s]: %s", this->get_name(), response->message.c_str());
-    return true;
-  }
-
-  if (!stopMission()) {
-    response->success = false;
-    response->message = "Waypoints not set, previous mission cannot be aborted";
-    RCLCPP_ERROR(this->get_logger(), "[%s]: %s", this->get_name(), response->message.c_str());
-    return true;
-  }
-
+  // check that we are in a state in which we can add waypoints to the buffer
+  std::string reason;
+  if (!addWaypoints(request->path.poses, false, reason))
   {
-    std::scoped_lock lock(waypoint_buffer_mutex_);
-
-    RCLCPP_INFO(this->get_logger(), "[%s]: Got %ld waypoints", this->get_name(), request->path.poses.size());
-    for (size_t i = 0; i < request->path.poses.size(); i++) {
-      local_waypoint_t w;
-      w.x   = request->path.poses[i].pose.position.x;
-      w.y   = request->path.poses[i].pose.position.y;
-      w.z   = request->path.poses[i].pose.position.z;
-      w.yaw = getYaw(request->path.poses[i].pose.orientation);
-      waypoint_buffer_.push_back(w);
-    }
+    response->success = false;
+    response->message = "Waypoints not set, " + reason;
+    RCLCPP_ERROR(this->get_logger(), "[%s]: %s", this->get_name(), response->message.c_str());
+    return true;
   }
+
   response->success = true;
   response->message = "Waypoints set";
   return true;
@@ -938,125 +947,44 @@ bool ControlInterface::localPathCallback(const std::shared_ptr<fog_msgs::srv::Pa
 
 /* gpsWaypointCallback //{ */
 bool ControlInterface::gpsWaypointCallback(const std::shared_ptr<fog_msgs::srv::Vec4::Request> request,
-                                           std::shared_ptr<fog_msgs::srv::Vec4::Response>      response) {
+                                           std::shared_ptr<fog_msgs::srv::Vec4::Response>      response)
+{
+  std::scoped_lock lck(state_mutex_, waypoint_buffer_mutex_, mission_mutex_, mission_upload_mutex_, coord_transform_mutex_);
 
-  if (!is_initialized_.load()) {
-    response->success = false;
-    response->message = "Waypoint not set, not initialized";
-    RCLCPP_ERROR(this->get_logger(), "[%s]: %s", this->get_name(), response->message.c_str());
-    return true;
-  }
+  // convert the single waypoint to a path containing a single point
+  std::vector<std::vector<double>> path {request->goal};
 
-  if (!gps_origin_set_.load()) {
-    response->success = false;
-    response->message = "Waypoint not set, missing GPS origin";
-    RCLCPP_ERROR(this->get_logger(), "[%s]: %s", this->get_name(), response->message.c_str());
-    return true;
-  }
-
-  if (landed_.load()) {
-    response->success = false;
-    response->message = "Waypoint not set, vehicle not airborne";
-    RCLCPP_ERROR(this->get_logger(), "[%s]: %s", this->get_name(), response->message.c_str());
-    return true;
-  }
-
-  if (manual_override_.load()) {
-    response->success = false;
-    response->message = "Waypoint not set, vehicle is under manual control";
-    RCLCPP_ERROR(this->get_logger(), "[%s]: %s", this->get_name(), response->message.c_str());
-    return true;
-  }
-
-  if (!takeoff_completed_.load()) {
-    response->success = false;
-    response->message = "Waypoint not set, vehicle not flying normally";
-    RCLCPP_ERROR(this->get_logger(), "[%s]: %s", this->get_name(), response->message.c_str());
-    return true;
-  }
-
-  if (!stopMission()) {
-    response->success = false;
-    response->message = "Waypoint not set, previous mission cannot be aborted";
-    RCLCPP_ERROR(this->get_logger(), "[%s]: %s", this->get_name(), response->message.c_str());
-    return true;
-  }
-
-  response->message = "Waypoint set";
-  response->success = true;
-  RCLCPP_INFO(this->get_logger(), "[%s]: %s", this->get_name(), response->message.c_str());
-
-  gps_waypoint_t w;
-  w.latitude  = request->goal[0];
-  w.longitude = request->goal[1];
-  w.altitude  = request->goal[2];
-  w.yaw       = request->goal[3];
+  // check that we are in a state in which we can add waypoints to the buffer
+  std::string reason;
+  if (!addWaypoints(path, true, reason))
   {
-    std::scoped_lock lock(waypoint_buffer_mutex_, coord_transform_mutex_);
-    waypoint_buffer_.push_back(globalToLocal(coord_transform_, w));
+    response->success = false;
+    response->message = "Waypoints not set, " + reason;
+    RCLCPP_ERROR(this->get_logger(), "[%s]: %s", this->get_name(), response->message.c_str());
+    return true;
   }
+
+  response->success = true;
+  response->message = "Waypoints set";
   return true;
 }
 //}
 
 /* gpsPathCallback //{ */
-bool ControlInterface::gpsPathCallback(const std::shared_ptr<fog_msgs::srv::Path::Request> request, std::shared_ptr<fog_msgs::srv::Path::Response> response) {
+bool ControlInterface::gpsPathCallback(const std::shared_ptr<fog_msgs::srv::Path::Request> request, std::shared_ptr<fog_msgs::srv::Path::Response> response)
+{
+  std::scoped_lock lck(state_mutex_, waypoint_buffer_mutex_, mission_mutex_, mission_upload_mutex_, coord_transform_mutex_);
 
-  if (!is_initialized_.load()) {
-    response->success = false;
-    response->message = "Waypoints not set, not initialized";
-    RCLCPP_ERROR(this->get_logger(), "[%s]: %s", this->get_name(), response->message.c_str());
-    return true;
-  }
-
-  if (!gps_origin_set_.load()) {
-    response->success = false;
-    response->message = "Waypoints not set, GPS origin not set";
-    RCLCPP_ERROR(this->get_logger(), "[%s]: %s", this->get_name(), response->message.c_str());
-    return true;
-  }
-
-  if (manual_override_.load()) {
-    response->success = false;
-    response->message = "Waypoints not set, vehicle is under manual control";
-    RCLCPP_ERROR(this->get_logger(), "[%s]: %s", this->get_name(), response->message.c_str());
-    return true;
-  }
-
-  if (!takeoff_completed_.load()) {
-    response->success = false;
-    response->message = "Waypoints not set, vehicle not flying normally";
-    RCLCPP_ERROR(this->get_logger(), "[%s]: %s", this->get_name(), response->message.c_str());
-    return true;
-  }
-
-  if (request->path.poses.size() < 1) {
-    response->success = false;
-    response->message = "Waypoints not set, request is empty";
-    RCLCPP_ERROR(this->get_logger(), "[%s]: %s", this->get_name(), response->message.c_str());
-    return true;
-  }
-
-  if (!stopMission()) {
-    response->success = false;
-    response->message = "Waypoints not set, previous mission cannot be aborted";
-    RCLCPP_ERROR(this->get_logger(), "[%s]: %s", this->get_name(), response->message.c_str());
-    return true;
-  }
-
+  // check that we are in a state in which we can add waypoints to the buffer
+  std::string reason;
+  if (!addWaypoints(request->path.poses, true, reason))
   {
-    std::scoped_lock lock(waypoint_buffer_mutex_, coord_transform_mutex_);
-
-    RCLCPP_INFO(this->get_logger(), "[%s]: Got %ld waypoints", this->get_name(), request->path.poses.size());
-    for (size_t i = 0; i < request->path.poses.size(); i++) {
-      gps_waypoint_t w;
-      w.latitude  = request->path.poses[i].pose.position.x;
-      w.longitude = request->path.poses[i].pose.position.y;
-      w.altitude  = request->path.poses[i].pose.position.z;
-      w.yaw       = getYaw(request->path.poses[i].pose.orientation);
-      waypoint_buffer_.push_back(globalToLocal(coord_transform_, w));
-    }
+    response->success = false;
+    response->message = "Waypoints not set, " + reason;
+    RCLCPP_ERROR(this->get_logger(), "[%s]: %s", this->get_name(), response->message.c_str());
+    return true;
   }
+
   response->success = true;
   response->message = "Waypoints set";
   return true;
@@ -1608,7 +1536,7 @@ bool ControlInterface::start_takeoff()
 
   if (pos_samples_.size() < (size_t)takeoff_position_samples_)
   {
-    RCLCPP_WARN(this->get_logger(), "[%s]: Takeoff rejected. Need %ld odometry samples, only have %ld", this->get_name(), takeoff_position_samples_,
+    RCLCPP_WARN(this->get_logger(), "[%s]: Takeoff rejected. Need %d odometry samples, only have %ld", this->get_name(), takeoff_position_samples_,
                 pos_samples_.size());
     return false;
   }
@@ -1641,13 +1569,13 @@ bool ControlInterface::start_takeoff()
 //}
 
 /* land //{ */
-bool ControlInterface::land() {
-
+bool ControlInterface::land()
+{
   RCLCPP_INFO(this->get_logger(), "[%s]: Landing called. Stop commanding", this->get_name());
-  manual_override_.store(true);
-  takeoff_completed_.store(false);
+  manual_override_ = true;
+  takeoff_completed_ = false;
 
-  auto result = action_->land();
+  const auto result = action_->land();
   if (result != mavsdk::Action::Result::Success) {
     RCLCPP_ERROR(this->get_logger(), "[%s]: Landing failed", this->get_name());
     return false;
@@ -1680,7 +1608,7 @@ bool ControlInterface::startMissionUpload(const mavsdk::Mission::MissionPlan& mi
 {
   mission_upload_state_ = mission_upload_state_t::failed;
 
-  if (!mission_plan.mission_items.empty())
+  if (mission_plan.mission_items.empty())
   {
     RCLCPP_ERROR(this->get_logger(), "[%s]: Mission waypoints empty. Nothing to upload", this->get_name());
     return false;
@@ -1717,6 +1645,10 @@ bool ControlInterface::startMissionUpload(const mavsdk::Mission::MissionPlan& mi
 //}
 
 /* stopMission //{ */
+// the following mutexes have to be locked by the calling function:
+// waypoint_buffer_mutex_
+// mission_mutex_
+// mission_upload_mutex_
 bool ControlInterface::stopMission()
 {
   // clear 
@@ -1743,39 +1675,6 @@ bool ControlInterface::stopMission()
 
   RCLCPP_INFO(this->get_logger(), "[%s]: Current mission stopped", this->get_name());
   return true;
-}
-//}
-
-/* to_mission_item //{ */
-mavsdk::Mission::MissionItem ControlInterface::to_mission_item(const local_waypoint_t& w_in)
-{
-  local_waypoint_t w = w_in;
-  // apply home offset correction
-  w.x -= home_position_offset_.x();
-  w.y -= home_position_offset_.y();
-  w.z -= home_position_offset_.z();
-
-  mavsdk::Mission::MissionItem item;
-  gps_waypoint_t               global = localToGlobal(coord_transform_, w);
-  item.latitude_deg                   = global.latitude;
-  item.longitude_deg                  = global.longitude;
-  item.relative_altitude_m            = global.altitude;
-  item.yaw_deg                        = -radToDeg(global.yaw + yaw_offset_correction_);
-  item.speed_m_s                      = target_velocity_;  // NAN = use default values. This does NOT
-                                                           // limit vehicle max speed
-  item.is_fly_through          = true;
-  item.gimbal_pitch_deg        = 0.0f;
-  item.gimbal_yaw_deg          = 0.0f;
-  item.camera_action           = mavsdk::Mission::MissionItem::CameraAction::None;
-  item.loiter_time_s           = waypoint_loiter_time_;
-  item.camera_photo_interval_s = 0.0f;
-  item.acceptance_radius_m     = waypoint_acceptance_radius_;
-
-  return item;
-
-  /* RCLCPP_INFO(this->get_logger(), "[%s]: Added waypoint LOCAL: [%.2f, %.2f, %.2f, %.2f]", this->get_name(), w.x, w.y, w.z, w.yaw); */
-  /* RCLCPP_INFO(this->get_logger(), "[%s]: GLOBAL: [%.2f, %.2f, %.2f, %.2f]", this->get_name(), item.latitude_deg, item.longitude_deg, item.relative_altitude_m, */
-  /*             item.yaw_deg); */
 }
 //}
 
@@ -1823,7 +1722,7 @@ void ControlInterface::publishDebugMarkers() {
 /* parse_param //{ */
 template <class T>
 bool ControlInterface::parse_param(const std::string &param_name, T &param_dest) {
-  this->declare_parameter(param_name);
+  this->declare_parameter<T>(param_name);
   if (!this->get_parameter(param_name, param_dest)) {
     RCLCPP_ERROR(this->get_logger(), "[%s]: Could not load param '%s'", this->get_name(), param_name.c_str());
     return false;
@@ -1831,6 +1730,70 @@ bool ControlInterface::parse_param(const std::string &param_name, T &param_dest)
     RCLCPP_INFO_STREAM(this->get_logger(), "[" << this->get_name() << "]: Loaded '" << param_name << "' = '" << param_dest << "'");
   }
   return true;
+}
+//}
+
+/* to_mission_item //{ */
+mavsdk::Mission::MissionItem ControlInterface::to_mission_item(const local_waypoint_t& w_in)
+{
+  local_waypoint_t w = w_in;
+  // apply home offset correction
+  w.x -= home_position_offset_.x();
+  w.y -= home_position_offset_.y();
+  w.z -= home_position_offset_.z();
+
+  mavsdk::Mission::MissionItem item;
+  gps_waypoint_t               global = localToGlobal(coord_transform_, w);
+  item.latitude_deg                   = global.latitude;
+  item.longitude_deg                  = global.longitude;
+  item.relative_altitude_m            = global.altitude;
+  item.yaw_deg                        = -radToDeg(global.yaw + yaw_offset_correction_);
+  item.speed_m_s                      = target_velocity_;  // NAN = use default values. This does NOT
+                                                           // limit vehicle max speed
+  item.is_fly_through          = true;
+  item.gimbal_pitch_deg        = 0.0f;
+  item.gimbal_yaw_deg          = 0.0f;
+  item.camera_action           = mavsdk::Mission::MissionItem::CameraAction::None;
+  item.loiter_time_s           = waypoint_loiter_time_;
+  item.camera_photo_interval_s = 0.0f;
+  item.acceptance_radius_m     = waypoint_acceptance_radius_;
+
+  return item;
+
+  /* RCLCPP_INFO(this->get_logger(), "[%s]: Added waypoint LOCAL: [%.2f, %.2f, %.2f, %.2f]", this->get_name(), w.x, w.y, w.z, w.yaw); */
+  /* RCLCPP_INFO(this->get_logger(), "[%s]: GLOBAL: [%.2f, %.2f, %.2f, %.2f]", this->get_name(), item.latitude_deg, item.longitude_deg, item.relative_altitude_m, */
+  /*             item.yaw_deg); */
+}
+//}
+
+/* to_local_waypoint //{ */
+local_waypoint_t ControlInterface::to_local_waypoint(const geometry_msgs::msg::PoseStamped& in, const bool is_global)
+{
+  return to_local_waypoint(std::vector<double>{in.pose.position.x, in.pose.position.y, in.pose.position.z, getYaw(in.pose.orientation)}, is_global);
+}
+//}
+
+/* to_local_waypoint //{ */
+local_waypoint_t ControlInterface::to_local_waypoint(const std::vector<double>& in, const bool is_global)
+{
+  if (is_global)
+  {
+    gps_waypoint_t w;
+    w.latitude  = in.at(0);
+    w.longitude = in.at(1);
+    w.altitude  = in.at(2);
+    w.yaw       = in.at(3);
+    return globalToLocal(coord_transform_, w);
+  }
+  else
+  {
+    local_waypoint_t w;
+    w.x   = in.at(0);
+    w.y   = in.at(1);
+    w.z   = in.at(2);
+    w.yaw = in.at(3);
+    return w;
+  }
 }
 //}
 
