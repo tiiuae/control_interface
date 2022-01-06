@@ -190,7 +190,11 @@ private:
 
   // the mavsdk::Action is used for requesting actions such as takeoff and landing
   std::mutex action_mutex_;
-  std::shared_ptr<mavsdk::Action>  action_;
+  std::shared_ptr<mavsdk::Action> action_;
+
+  // the mavsdk::Param is used for setting and reading PX4 parameters
+  std::mutex param_mutex_;
+  std::shared_ptr<mavsdk::Param> param_;
 
   std::atomic_bool armed_                = false;
   std::atomic_bool takeoff_called_       = false;
@@ -212,7 +216,6 @@ private:
   std::string                      device_url_;
   mavsdk::Mavsdk                   mavsdk_;
   std::shared_ptr<mavsdk::System>  system_;
-  std::shared_ptr<mavsdk::Param>   param_;
 
   std::mutex                    waypoint_buffer_mutex_;  // guards the following block of variables
   std::vector<local_waypoint_t> waypoint_buffer_;        // this buffer is used for storing new incoming waypoints (it is moved to the mission_upload_waypoints_ buffer when upload starts)
@@ -339,6 +342,7 @@ private:
   bool addWaypoints(const T& path, const bool is_global, std::string& fail_reason_out);
   mavsdk::Mission::MissionItem to_mission_item(const local_waypoint_t& w_in);
   local_waypoint_t to_local_waypoint(const geometry_msgs::msg::PoseStamped& in, const bool is_global);
+  local_waypoint_t to_local_waypoint(const fog_msgs::srv::WaypointToLocal::Request& in, const bool is_global);
   local_waypoint_t to_local_waypoint(const std::vector<double>& in, const bool is_global);
 };
 //}
@@ -993,37 +997,31 @@ bool ControlInterface::gpsPathCallback(const std::shared_ptr<fog_msgs::srv::Path
 
 /* waypointToLocalCallback (gps -> local frame) //{ */
 bool ControlInterface::waypointToLocalCallback(const std::shared_ptr<fog_msgs::srv::WaypointToLocal::Request> request,
-                                               std::shared_ptr<fog_msgs::srv::WaypointToLocal::Response>      response) {
+                                               std::shared_ptr<fog_msgs::srv::WaypointToLocal::Response>      response)
+{
+  std::scoped_lock lock(state_mutex_, coord_transform_mutex_);
 
-  if (!is_initialized_.load()) {
+  if (!is_initialized_)
+  {
     response->success = false;
     response->message = "Cannot transform coordinates, not initialized";
     RCLCPP_ERROR(this->get_logger(), "[%s]: %s", this->get_name(), response->message.c_str());
     return true;
   }
 
-  if (!gps_origin_set_.load()) {
+  if (!gps_origin_set_)
+  {
     response->success = false;
     response->message = "Cannot transform coordinates, missing GPS origin";
     RCLCPP_ERROR(this->get_logger(), "[%s]: %s", this->get_name(), response->message.c_str());
     return true;
   }
 
-  gps_waypoint_t global;
-  global.latitude  = request->latitude_deg;
-  global.longitude = request->longitude_deg;
-  global.altitude  = request->relative_altitude_m;
-  global.yaw       = request->yaw;
-
-  {
-    std::scoped_lock lock(coord_transform_mutex_);
-    local_waypoint_t local = globalToLocal(coord_transform_, global);
-
-    response->local_x = local.x;
-    response->local_y = local.y;
-    response->local_z = local.z;
-    response->yaw     = local.yaw;
-  }
+  const local_waypoint_t local = to_local_waypoint(*request, true);
+  response->local_x = local.x;
+  response->local_y = local.x;
+  response->local_z = local.x;
+  response->yaw = local.yaw;
 
   std::stringstream ss;
   ss << "Transformed GPS [" << request->latitude_deg << ", " << request->longitude_deg << ", " << request->relative_altitude_m << "] into local: ["
@@ -1037,16 +1035,20 @@ bool ControlInterface::waypointToLocalCallback(const std::shared_ptr<fog_msgs::s
 
 /* pathToLocalCallback (gps -> local frame) //{ */
 bool ControlInterface::pathToLocalCallback(const std::shared_ptr<fog_msgs::srv::PathToLocal::Request> request,
-                                           std::shared_ptr<fog_msgs::srv::PathToLocal::Response>      response) {
+                                           std::shared_ptr<fog_msgs::srv::PathToLocal::Response>      response)
+{
+  std::scoped_lock lock(state_mutex_, coord_transform_mutex_);
 
-  if (!is_initialized_.load()) {
+  if (!is_initialized_)
+  {
     response->success = false;
     response->message = "Cannot transform coordinates, not initialized";
     RCLCPP_ERROR(this->get_logger(), "[%s]: %s", this->get_name(), response->message.c_str());
     return true;
   }
 
-  if (!gps_origin_set_.load()) {
+  if (!gps_origin_set_)
+  {
     response->success = false;
     response->message = "Cannot transform coordinates, GPS origin not set";
     RCLCPP_ERROR(this->get_logger(), "[%s]: %s", this->get_name(), response->message.c_str());
@@ -1054,27 +1056,17 @@ bool ControlInterface::pathToLocalCallback(const std::shared_ptr<fog_msgs::srv::
   }
 
   nav_msgs::msg::Path local_path;
-
-  for (auto &pose : request->path.poses) {
-    geometry_msgs::msg::Point p_in = pose.pose.position;
-
-    gps_waypoint_t global;
-    global.latitude  = p_in.x;
-    global.longitude = p_in.y;
-    global.altitude  = p_in.z;
+  for (const auto &pose : request->path.poses)
+  {
+    const local_waypoint_t wp = to_local_waypoint(pose, true);
 
     geometry_msgs::msg::Point p_out;
-    {
-      std::scoped_lock lock(coord_transform_mutex_);
-      local_waypoint_t local = globalToLocal(coord_transform_, global);
-
-      p_out.x = local.x;
-      p_out.y = local.y;
-      p_out.z = local.z;
-    }
+    p_out.x = wp.x;
+    p_out.y = wp.y;
+    p_out.z = wp.z;
 
     std::stringstream ss;
-    ss << "Transformed GPS [" << global.latitude << ", " << global.longitude << "] into local: [" << p_out.x << ", " << p_out.y << "]";
+    ss << "Transformed GPS [" << pose.pose.position.x << ", " << pose.pose.position.y << "] into local: [" << p_out.x << ", " << p_out.y << "]";
     response->message = ss.str();
     response->success = true;
     RCLCPP_INFO(this->get_logger(), "[%s]: %s", this->get_name(), response->message.c_str());
@@ -1086,6 +1078,7 @@ bool ControlInterface::pathToLocalCallback(const std::shared_ptr<fog_msgs::srv::
     local_path.header.frame_id = "local";
     local_path.header.stamp    = this->get_clock()->now();
   }
+
   std::stringstream ss;
   ss << "Transformed " << request->path.poses.size() << " GPS poses into " << response->path.poses.size() << " local poses";
   response->path    = local_path;
@@ -1097,55 +1090,64 @@ bool ControlInterface::pathToLocalCallback(const std::shared_ptr<fog_msgs::srv::
 }
 //}
 
+bool checkParamResult(const mavsdk::Param::Result result, std::string reason_out)
+{
+  switch (result)
+  {
+  case mavsdk::Param::Result::Success:
+        return true;
+        break;
+  case mavsdk::Param::Result::Unknown:
+        reason_out    = "uknown error";
+        break;
+  case mavsdk::Param::Result::Timeout:
+        reason_out    = "request time out";
+        break;
+  case mavsdk::Param::Result::ConnectionError:
+        reason_out    = "request connection error";
+        break;
+  case mavsdk::Param::Result::WrongType:
+        reason_out    = "request wrong type";
+        break;
+  case mavsdk::Param::Result::ParamNameTooLong:
+        reason_out    = "name too long";
+        break;
+  case mavsdk::Param::Result::NoSystem:
+        reason_out    = "to set parameter!";
+        break;
+  }
+  return false;
+}
+
 /* setPx4ParamIntCallback //{ */
 bool ControlInterface::setPx4ParamIntCallback([[maybe_unused]] const std::shared_ptr<fog_msgs::srv::SetPx4ParamInt::Request> request,
-                                              std::shared_ptr<fog_msgs::srv::SetPx4ParamInt::Response>                       response) {
+                                              std::shared_ptr<fog_msgs::srv::SetPx4ParamInt::Response>                       response)
+{
+  std::scoped_lock lock(state_mutex_, param_mutex_);
 
-  if (!is_initialized_.load()) {
+  if (!is_initialized_)
+  {
     response->success = false;
-    response->message = "Parameter cannot be set, not initialized";
+    response->message = "Failed to set PX4 parameter: not initialized";
     RCLCPP_ERROR(this->get_logger(), "[%s]: %s", this->get_name(), response->message.c_str());
     return true;
   }
 
-  auto result = param_->set_param_int(request->param_name, request->value);
+  response->param_name = request->param_name;
+  response->value      = request->value;
 
-  if (result == mavsdk::Param::Result::Success) {
-    response->message    = "Parameter set successfully";
-    response->param_name = request->param_name;
-    response->value      = request->value;
-    response->success    = true;
+  const auto result = param_->set_param_int(request->param_name, request->value);
+  std::string reason;
+  response->success = checkParamResult(result, reason);
+  if (response->success)
+  {
+    response->message = "PX4 parameter successfully set";
     RCLCPP_INFO(this->get_logger(), "[%s]: PX4 parameter %s successfully set to %ld", this->get_name(), request->param_name.c_str(), request->value);
-  } else if (result == mavsdk::Param::Result::Unknown) {
-    response->message    = "Parameter did not set - unknown error";
-    response->param_name = request->param_name;
-    response->value      = request->value;
-    response->success    = false;
-    RCLCPP_ERROR(this->get_logger(), "[%s]: PX4 parameter set uknown error", this->get_name());
-  } else if (result == mavsdk::Param::Result::Timeout) {
-    response->message    = "Parameter did not set - time out";
-    response->param_name = request->param_name;
-    response->value      = request->value;
-    response->success    = false;
-    RCLCPP_ERROR(this->get_logger(), "[%s]: PX4 parameter set request time out", this->get_name());
-  } else if (result == mavsdk::Param::Result::ConnectionError) {
-    response->message    = "Parameter did not set - connection error";
-    response->param_name = request->param_name;
-    response->value      = request->value;
-    response->success    = false;
-    RCLCPP_ERROR(this->get_logger(), "[%s]: PX4 parameter set request connection error", this->get_name());
-  } else if (result == mavsdk::Param::Result::WrongType) {
-    response->message    = "Parameter did not set - request wrong type";
-    response->param_name = request->param_name;
-    response->value      = request->value;
-    response->success    = false;
-    RCLCPP_ERROR(this->get_logger(), "[%s]: PX4 parameter set request wrong type", this->get_name());
-  } else if (result == mavsdk::Param::Result::ParamNameTooLong) {
-    response->message    = "Parameter did not set - param name too long";
-    response->param_name = request->param_name;
-    response->value      = request->value;
-    response->success    = false;
-    RCLCPP_ERROR(this->get_logger(), "[%s]: PX4 parameter set request param name too long", this->get_name());
+  }
+  else
+  {
+    response->message = "Failed to set PX4 parameter: " + reason;
+    RCLCPP_ERROR(this->get_logger(), "[%s]: %s", this->get_name(), response->message.c_str());
   }
 
   return true;
@@ -1154,49 +1156,33 @@ bool ControlInterface::setPx4ParamIntCallback([[maybe_unused]] const std::shared
 
 /* getPx4ParamIntCallback //{ */
 bool ControlInterface::getPx4ParamIntCallback([[maybe_unused]] const std::shared_ptr<fog_msgs::srv::GetPx4ParamInt::Request> request,
-                                              std::shared_ptr<fog_msgs::srv::GetPx4ParamInt::Response>                       response) {
+                                              std::shared_ptr<fog_msgs::srv::GetPx4ParamInt::Response>                       response)
+{
+  std::scoped_lock lock(state_mutex_, param_mutex_);
 
-  if (!is_initialized_.load()) {
+  if (!is_initialized_)
+  {
     response->success = false;
-    response->message = "Parameter cannot be get, not initialized";
+    response->message = "Failed to read PX4 parameter: not initialized";
     RCLCPP_ERROR(this->get_logger(), "[%s]: %s", this->get_name(), response->message.c_str());
     return true;
   }
 
-  auto result = param_->get_param_int(request->param_name);
+  response->param_name = request->param_name;
 
-  if (result.first == mavsdk::Param::Result::Success) {
-    response->message    = "Parameter get successfully";
-    response->value      = result.second;
-    response->param_name = request->param_name;
-    response->success    = true;
-
-    RCLCPP_INFO(this->get_logger(), "[%s]: PX4 parameter %s successfully get with value %ld", this->get_name(), request->param_name.c_str(), response->value);
-  } else if (result.first == mavsdk::Param::Result::Unknown) {
-    response->message    = "Did not get the parameter - unknown error";
-    response->param_name = request->param_name;
-    response->success    = false;
-    RCLCPP_ERROR(this->get_logger(), "[%s]: PX4 parameter get uknown error", this->get_name());
-  } else if (result.first == mavsdk::Param::Result::Timeout) {
-    response->message    = "Did not get the parameter - time out";
-    response->param_name = request->param_name;
-    response->success    = false;
-    RCLCPP_ERROR(this->get_logger(), "[%s]: PX4 parameter get request time out", this->get_name());
-  } else if (result.first == mavsdk::Param::Result::ConnectionError) {
-    response->message    = "Did not get the parameter - connection error";
-    response->param_name = request->param_name;
-    response->success    = false;
-    RCLCPP_ERROR(this->get_logger(), "[%s]: PX4 parameter get request connection error", this->get_name());
-  } else if (result.first == mavsdk::Param::Result::WrongType) {
-    response->message    = "Did not get the parameter - request wrong type";
-    response->param_name = request->param_name;
-    response->success    = false;
-    RCLCPP_ERROR(this->get_logger(), "[%s]: PX4 parameter get request wrong type", this->get_name());
-  } else if (result.first == mavsdk::Param::Result::ParamNameTooLong) {
-    response->message    = "Did not get the parameter - param name too long";
-    response->param_name = request->param_name;
-    response->success    = false;
-    RCLCPP_ERROR(this->get_logger(), "[%s]: PX4 parameter get request param name too long", this->get_name());
+  const auto [result, val] = param_->get_param_int(request->param_name);
+  std::string reason;
+  response->success = checkParamResult(result, reason);
+  if (response->success)
+  {
+    response->message = "PX4 parameter successfully read";
+    response->value      = val;
+    RCLCPP_INFO(this->get_logger(), "[%s]: PX4 parameter %s successfully read with value %ld", this->get_name(), request->param_name.c_str(), response->value);
+  }
+  else
+  {
+    response->message = "Failed to read PX4 parameter: " + reason;
+    RCLCPP_ERROR(this->get_logger(), "[%s]: %s", this->get_name(), response->message.c_str());
   }
 
   return true;
@@ -1205,53 +1191,33 @@ bool ControlInterface::getPx4ParamIntCallback([[maybe_unused]] const std::shared
 
 /* setPx4ParamFloatCallback //{ */
 bool ControlInterface::setPx4ParamFloatCallback([[maybe_unused]] const std::shared_ptr<fog_msgs::srv::SetPx4ParamFloat::Request> request,
-                                                std::shared_ptr<fog_msgs::srv::SetPx4ParamFloat::Response>                       response) {
+                                                std::shared_ptr<fog_msgs::srv::SetPx4ParamFloat::Response>                       response)
+{
+  std::scoped_lock lock(state_mutex_, param_mutex_);
 
-  if (!is_initialized_.load()) {
+  if (!is_initialized_)
+  {
     response->success = false;
     response->message = "Parameter cannot be set, not initialized";
     RCLCPP_ERROR(this->get_logger(), "[%s]: %s", this->get_name(), response->message.c_str());
     return true;
   }
 
-  auto result = param_->set_param_float(request->param_name, request->value);
+  response->param_name = request->param_name;
+  response->value      = request->value;
 
-  if (result == mavsdk::Param::Result::Success) {
-    response->message    = "Parameter set successfully";
-    response->param_name = request->param_name;
-    response->value      = request->value;
-    response->success    = true;
+  const auto result = param_->set_param_float(request->param_name, request->value);
+  std::string reason;
+  response->success = checkParamResult(result, reason);
+  if (response->success)
+  {
+    response->message = "PX4 parameter successfully set";
     RCLCPP_INFO(this->get_logger(), "[%s]: PX4 parameter %s successfully set to %f", this->get_name(), request->param_name.c_str(), request->value);
-  } else if (result == mavsdk::Param::Result::Unknown) {
-    response->message    = "Parameter did not set - unknown error";
-    response->param_name = request->param_name;
-    response->value      = request->value;
-    response->success    = false;
-    RCLCPP_ERROR(this->get_logger(), "[%s]: PX4 parameter set uknown error", this->get_name());
-  } else if (result == mavsdk::Param::Result::Timeout) {
-    response->message    = "Parameter did not set - time out";
-    response->param_name = request->param_name;
-    response->value      = request->value;
-    response->success    = false;
-    RCLCPP_ERROR(this->get_logger(), "[%s]: PX4 parameter set request time out", this->get_name());
-  } else if (result == mavsdk::Param::Result::ConnectionError) {
-    response->message    = "Parameter did not set - connection error";
-    response->param_name = request->param_name;
-    response->value      = request->value;
-    response->success    = false;
-    RCLCPP_ERROR(this->get_logger(), "[%s]: PX4 parameter set request connection error", this->get_name());
-  } else if (result == mavsdk::Param::Result::WrongType) {
-    response->message    = "Parameter did not set - request wrong type";
-    response->param_name = request->param_name;
-    response->value      = request->value;
-    response->success    = false;
-    RCLCPP_ERROR(this->get_logger(), "[%s]: PX4 parameter set request wrong type", this->get_name());
-  } else if (result == mavsdk::Param::Result::ParamNameTooLong) {
-    response->message    = "Parameter did not set - param name too long";
-    response->param_name = request->param_name;
-    response->value      = request->value;
-    response->success    = false;
-    RCLCPP_ERROR(this->get_logger(), "[%s]: PX4 parameter set request param name too long", this->get_name());
+  }
+  else
+  {
+    response->message = "Failed to set PX4 parameter: " + reason;
+    RCLCPP_ERROR(this->get_logger(), "[%s]: %s", this->get_name(), response->message.c_str());
   }
 
   return true;
@@ -1260,49 +1226,33 @@ bool ControlInterface::setPx4ParamFloatCallback([[maybe_unused]] const std::shar
 
 /* getPx4ParamFloatCallback //{ */
 bool ControlInterface::getPx4ParamFloatCallback([[maybe_unused]] const std::shared_ptr<fog_msgs::srv::GetPx4ParamFloat::Request> request,
-                                                std::shared_ptr<fog_msgs::srv::GetPx4ParamFloat::Response>                       response) {
+                                                std::shared_ptr<fog_msgs::srv::GetPx4ParamFloat::Response>                       response)
+{
+  std::scoped_lock lock(state_mutex_, param_mutex_);
 
-  if (!is_initialized_.load()) {
+  if (!is_initialized_)
+  {
     response->success = false;
-    response->message = "Parameter cannot be get, not initialized";
+    response->message = "Failed to read PX4 parameter: not initialized";
     RCLCPP_ERROR(this->get_logger(), "[%s]: %s", this->get_name(), response->message.c_str());
     return true;
   }
 
-  auto result = param_->get_param_float(request->param_name);
+  response->param_name = request->param_name;
 
-  if (result.first == mavsdk::Param::Result::Success) {
-    response->message    = "Parameter get successfully";
-    response->value      = result.second;
-    response->param_name = request->param_name;
-    response->success    = true;
-
-    RCLCPP_INFO(this->get_logger(), "[%s]: PX4 parameter %s successfully get with value %f", this->get_name(), request->param_name.c_str(), response->value);
-  } else if (result.first == mavsdk::Param::Result::Unknown) {
-    response->message    = "Did not get the parameter - unknown error";
-    response->param_name = request->param_name;
-    response->success    = false;
-    RCLCPP_ERROR(this->get_logger(), "[%s]: PX4 parameter get uknown error", this->get_name());
-  } else if (result.first == mavsdk::Param::Result::Timeout) {
-    response->message    = "Did not get the parameter - time out";
-    response->param_name = request->param_name;
-    response->success    = false;
-    RCLCPP_ERROR(this->get_logger(), "[%s]: PX4 parameter get request time out", this->get_name());
-  } else if (result.first == mavsdk::Param::Result::ConnectionError) {
-    response->message    = "Did not get the parameter - connection error";
-    response->param_name = request->param_name;
-    response->success    = false;
-    RCLCPP_ERROR(this->get_logger(), "[%s]: PX4 parameter get request connection error", this->get_name());
-  } else if (result.first == mavsdk::Param::Result::WrongType) {
-    response->message    = "Did not get the parameter - request wrong type";
-    response->param_name = request->param_name;
-    response->success    = false;
-    RCLCPP_ERROR(this->get_logger(), "[%s]: PX4 parameter get request wrong type", this->get_name());
-  } else if (result.first == mavsdk::Param::Result::ParamNameTooLong) {
-    response->message    = "Did not get the parameter - param name too long";
-    response->param_name = request->param_name;
-    response->success    = false;
-    RCLCPP_ERROR(this->get_logger(), "[%s]: PX4 parameter get request param name too long", this->get_name());
+  const auto [result, val] = param_->get_param_float(request->param_name);
+  std::string reason;
+  response->success = checkParamResult(result, reason);
+  if (response->success)
+  {
+    response->message = "PX4 parameter successfully read";
+    response->value      = val;
+    RCLCPP_INFO(this->get_logger(), "[%s]: PX4 parameter %s successfully read with value %f", this->get_name(), request->param_name.c_str(), response->value);
+  }
+  else
+  {
+    response->message = "Failed to read PX4 parameter: " + reason;
+    RCLCPP_ERROR(this->get_logger(), "[%s]: %s", this->get_name(), response->message.c_str());
   }
 
   return true;
@@ -1770,6 +1720,14 @@ mavsdk::Mission::MissionItem ControlInterface::to_mission_item(const local_waypo
 local_waypoint_t ControlInterface::to_local_waypoint(const geometry_msgs::msg::PoseStamped& in, const bool is_global)
 {
   return to_local_waypoint(std::vector<double>{in.pose.position.x, in.pose.position.y, in.pose.position.z, getYaw(in.pose.orientation)}, is_global);
+}
+//}
+
+/* to_local_waypoint //{ */
+local_waypoint_t ControlInterface::to_local_waypoint(const fog_msgs::srv::WaypointToLocal::Request& in, const bool is_global)
+{
+  const std::vector<double> as_vec {in.latitude_deg, in.longitude_deg, in.relative_altitude_m, in.yaw};
+  return to_local_waypoint(as_vec, is_global);
 }
 //}
 
