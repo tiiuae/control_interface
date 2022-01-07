@@ -178,12 +178,12 @@ public:
   ControlInterface(rclcpp::NodeOptions options);
 
 private:
-  std::mutex       state_mutex_;
-  std::atomic_bool system_connected_       = false; // set to true when MavSDK connection is established
-  std::atomic_bool getting_landed_info_  = false; // set to true when a VehicleLandDetected is received from pixhawk
+  std::recursive_mutex state_mutex_;
+  std::atomic_bool system_connected_ = false; // set to true when MavSDK connection is established
+  std::atomic_bool getting_landed_info_ = false; // set to true when a VehicleLandDetected is received from pixhawk
   std::atomic_bool getting_control_mode_ = false; // set to true when a VehicleControlMode is received from pixhawk
 
-  std::mutex                       mission_mutex_;
+  std::recursive_mutex mission_mutex_;
   std::shared_ptr<mavsdk::Mission> mission_;
   bool mission_finished_flag_; // set to true in the missionResultCallback, this flag is cleared in the main controlRoutine
   enum mission_state_t
@@ -192,6 +192,8 @@ private:
     in_progress,
     finished
   } mission_state_ = finished;
+  size_t mission_size_ = 0;
+  size_t mission_current_waypoint_ = 0;
 
   std::mutex mission_upload_mutex_;
   int mission_upload_attempts_;
@@ -234,7 +236,6 @@ private:
 
   std::mutex                    waypoint_buffer_mutex_;  // guards the following block of variables
   std::vector<local_waypoint_t> waypoint_buffer_;        // this buffer is used for storing new incoming waypoints (it is moved to the mission_upload_waypoints_ buffer when upload starts)
-  size_t                        last_mission_size_ = 0;
 
   Eigen::Vector4d desired_pose_;
   Eigen::Vector3d home_position_offset_ = Eigen::Vector3d(0, 0, 0);
@@ -287,6 +288,7 @@ private:
   void controlModeCallback(const px4_msgs::msg::VehicleControlMode::UniquePtr msg);
   void landDetectedCallback(const px4_msgs::msg::VehicleLandDetected::UniquePtr msg);
   void missionResultCallback(const px4_msgs::msg::MissionResult::UniquePtr msg);
+  void missionProgressCallback(const mavsdk::Mission::MissionProgress& mission_progress);
   void homePositionCallback(const px4_msgs::msg::HomePosition::UniquePtr msg);
   void odometryCallback(const nav_msgs::msg::Odometry::UniquePtr msg);
 
@@ -334,7 +336,7 @@ private:
 
   void publishDiagnostics();
 
-  bool start_takeoff();
+  bool startTakeoff();
   bool land();
   bool startMission();
   bool startMissionUpload(const mavsdk::Mission::MissionPlan& mission_plan);
@@ -542,76 +544,11 @@ ControlInterface::ControlInterface(rclcpp::NodeOptions options) : Node("control_
 }
 //}
 
-/* parametersCallback //{ */
-rcl_interfaces::msg::SetParametersResult ControlInterface::parametersCallback(const std::vector<rclcpp::Parameter> &parameters)
-{
-  rcl_interfaces::msg::SetParametersResult result;
-  result.successful = false;
-  result.reason     = "";
+// --------------------------------------------------------------
+// |                 ControlInterfdace callbacks                |
+// --------------------------------------------------------------
 
-  for (const auto &param : parameters)
-  {
-    std::stringstream result_ss;
-
-    /* takeoff_height //{ */
-    if (param.get_name() == "takeoff.height") {
-      if (param.get_type() == rclcpp::ParameterType::PARAMETER_DOUBLE) {
-        if (param.as_double() >= 0.5 && param.as_double() < 10) {
-          takeoff_height_   = param.as_double();
-          result.successful = true;
-          RCLCPP_INFO(get_logger(), "[%s]: Parameter: '%s' set to %1.2f", get_name(), param.get_name().c_str(), param.as_double());
-        } else {
-          result_ss << "parameter '" << param.get_name() << "' cannot be set to " << param.as_double() << " because it is not in range <0.5;10>";
-          result.reason = result_ss.str();
-        }
-      } else {
-        result_ss << "parameter '" << param.get_name() << "' has to be type DOUBLE";
-        result.reason = result_ss.str();
-      }
-      //}
-
-      /* waypoint_loiter_time //{ */
-    } else if (param.get_name() == "px4.waypoint_loiter_time") {
-      if (param.get_type() == rclcpp::ParameterType::PARAMETER_DOUBLE) {
-        if (param.as_double() >= 0.0) {
-          waypoint_loiter_time_ = param.as_double();
-          result.successful     = true;
-          RCLCPP_INFO(get_logger(), "[%s]: Parameter: '%s' set to %1.2f", get_name(), param.get_name().c_str(), param.as_double());
-        } else {
-          result_ss << "parameter '" << param.get_name() << "' cannot be set to " << param.as_double() << " because it is a negative value";
-          result.reason = result_ss.str();
-        }
-      } else {
-        result_ss << "parameter '" << param.get_name() << "' has to be type DOUBLE";
-        result.reason = result_ss.str();
-      }
-      //}
-
-      /* reset_octomap_before_takeoff //{ */
-    } else if (param.get_name() == "general.reset_octomap_before_takeoff") {
-      if (param.get_type() == rclcpp::ParameterType::PARAMETER_BOOL) {
-        reset_octomap_before_takeoff_ = param.as_bool();
-        result.successful             = true;
-        RCLCPP_INFO(get_logger(), "[%s]: Parameter: '%s' set to %s", get_name(), param.get_name().c_str(), param.as_bool() ? "TRUE" : "FALSE");
-      } else {
-        result_ss << "parameter '" << param.get_name() << "' has to be type BOOL";
-        result.reason = result_ss.str();
-      }
-      //}
-
-    } else {
-      result_ss << "parameter '" << param.get_name() << "' cannot be changed dynamically";
-      result.reason = result_ss.str();
-    }
-  }
-
-  if (!result.successful) {
-    RCLCPP_WARN(get_logger(), "[%s]: Failed to set parameter: %s", get_name(), result.reason.c_str());
-  }
-
-  return result;
-}
-//}
+// | --------------------- Data callbacks --------------------- |
 
 /* controlModeCallback //{ */
 void ControlInterface::controlModeCallback(const px4_msgs::msg::VehicleControlMode::UniquePtr msg)
@@ -688,6 +625,18 @@ void ControlInterface::missionResultCallback(const px4_msgs::msg::MissionResult:
 }
 //}
 
+/* missionProgressCallback //{ */
+void ControlInterface::missionProgressCallback(const mavsdk::Mission::MissionProgress& mission_progress)
+{
+  std::scoped_lock lck(mission_mutex_);
+  mission_size_ = mission_progress.total;
+  mission_current_waypoint_ = mission_progress.current;
+
+  const float percent = mission_progress.current/float(mission_progress.total)*100.0f;
+  RCLCPP_INFO(get_logger(), "[%s]: Current mission waypoint: %d/%d (%.1f%%).", get_name(), mission_progress.current, mission_progress.total, percent);
+}
+//}
+
 /* homePositionCallback //{ */
 void ControlInterface::homePositionCallback(const px4_msgs::msg::HomePosition::UniquePtr msg)
 {
@@ -749,6 +698,8 @@ void ControlInterface::odometryCallback(const nav_msgs::msg::Odometry::UniquePtr
 }
 //}
 
+// | -------------------- Command callbacks ------------------- |
+
 /* takeoffCallback //{ */
 bool ControlInterface::takeoffCallback([[maybe_unused]] const std::shared_ptr<std_srvs::srv::Trigger::Request> request,
                                        std::shared_ptr<std_srvs::srv::Trigger::Response>                       response)
@@ -787,7 +738,7 @@ bool ControlInterface::takeoffCallback([[maybe_unused]] const std::shared_ptr<st
     return true;
   }
 
-  const bool success = start_takeoff();
+  const bool success = startTakeoff();
   if (success)
   {
     response->success = true;
@@ -899,6 +850,8 @@ bool ControlInterface::armingCallback([[maybe_unused]] const std::shared_ptr<std
   }
 }
 //}
+
+// | ----------------- Waypoint/path callbacks ---------------- |
 
 /* canAddWaypoints() method //{ */
 // helper method that performs the necessary checks before adding a waypoint to the waypoint_buffer_
@@ -1148,6 +1101,79 @@ bool ControlInterface::pathToLocalCallback(const std::shared_ptr<fog_msgs::srv::
 }
 //}
 
+// | --------------- Parameter setting callbacks -------------- |
+
+/* parametersCallback //{ */
+rcl_interfaces::msg::SetParametersResult ControlInterface::parametersCallback(const std::vector<rclcpp::Parameter> &parameters)
+{
+  rcl_interfaces::msg::SetParametersResult result;
+  result.successful = false;
+  result.reason     = "";
+
+  for (const auto &param : parameters)
+  {
+    std::stringstream result_ss;
+
+    /* takeoff_height //{ */
+    if (param.get_name() == "takeoff.height") {
+      if (param.get_type() == rclcpp::ParameterType::PARAMETER_DOUBLE) {
+        if (param.as_double() >= 0.5 && param.as_double() < 10) {
+          takeoff_height_   = param.as_double();
+          result.successful = true;
+          RCLCPP_INFO(get_logger(), "[%s]: Parameter: '%s' set to %1.2f", get_name(), param.get_name().c_str(), param.as_double());
+        } else {
+          result_ss << "parameter '" << param.get_name() << "' cannot be set to " << param.as_double() << " because it is not in range <0.5;10>";
+          result.reason = result_ss.str();
+        }
+      } else {
+        result_ss << "parameter '" << param.get_name() << "' has to be type DOUBLE";
+        result.reason = result_ss.str();
+      }
+      //}
+
+      /* waypoint_loiter_time //{ */
+    } else if (param.get_name() == "px4.waypoint_loiter_time") {
+      if (param.get_type() == rclcpp::ParameterType::PARAMETER_DOUBLE) {
+        if (param.as_double() >= 0.0) {
+          waypoint_loiter_time_ = param.as_double();
+          result.successful     = true;
+          RCLCPP_INFO(get_logger(), "[%s]: Parameter: '%s' set to %1.2f", get_name(), param.get_name().c_str(), param.as_double());
+        } else {
+          result_ss << "parameter '" << param.get_name() << "' cannot be set to " << param.as_double() << " because it is a negative value";
+          result.reason = result_ss.str();
+        }
+      } else {
+        result_ss << "parameter '" << param.get_name() << "' has to be type DOUBLE";
+        result.reason = result_ss.str();
+      }
+      //}
+
+      /* reset_octomap_before_takeoff //{ */
+    } else if (param.get_name() == "general.reset_octomap_before_takeoff") {
+      if (param.get_type() == rclcpp::ParameterType::PARAMETER_BOOL) {
+        reset_octomap_before_takeoff_ = param.as_bool();
+        result.successful             = true;
+        RCLCPP_INFO(get_logger(), "[%s]: Parameter: '%s' set to %s", get_name(), param.get_name().c_str(), param.as_bool() ? "TRUE" : "FALSE");
+      } else {
+        result_ss << "parameter '" << param.get_name() << "' has to be type BOOL";
+        result.reason = result_ss.str();
+      }
+      //}
+
+    } else {
+      result_ss << "parameter '" << param.get_name() << "' cannot be changed dynamically";
+      result.reason = result_ss.str();
+    }
+  }
+
+  if (!result.successful) {
+    RCLCPP_WARN(get_logger(), "[%s]: Failed to set parameter: %s", get_name(), result.reason.c_str());
+  }
+
+  return result;
+}
+//}
+
 /* setPx4ParamIntCallback //{ */
 bool ControlInterface::setPx4ParamIntCallback([[maybe_unused]] const std::shared_ptr<fog_msgs::srv::SetPx4ParamInt::Request> request,
                                               std::shared_ptr<fog_msgs::srv::SetPx4ParamInt::Response>                       response)
@@ -1284,6 +1310,10 @@ bool ControlInterface::getPx4ParamFloatCallback([[maybe_unused]] const std::shar
 }
 //}
 
+// --------------------------------------------------------------
+// |                  CommandInterface routines                 |
+// --------------------------------------------------------------
+
 /* mavsdkConnectionRoutine //{ */
 void ControlInterface::mavsdkConnectionRoutine()
 {
@@ -1306,6 +1336,9 @@ void ControlInterface::mavsdkConnectionRoutine()
     action_  = std::make_shared<mavsdk::Action>(system_);
     mission_ = std::make_shared<mavsdk::Mission>(system_);
     param_   = std::make_shared<mavsdk::Param>(system_);
+
+    const mavsdk::Mission::MissionProgressCallback progress_cbk = std::bind(&ControlInterface::missionProgressCallback, this, _1);
+    mission_->subscribe_mission_progress(progress_cbk);
 
     // set the initialized flag to true so that px4 parameters may be initialized
     system_connected_ = true;
@@ -1456,7 +1489,8 @@ void ControlInterface::state_mission_uploading()
       mission_finished_flag_ = false;
       if (startMission())
       {
-        last_mission_size_ = mission_upload_waypoints_.mission_items.size();
+        mission_size_ = mission_upload_waypoints_.mission_items.size();
+        mission_current_waypoint_ = 0;
         mission_state_ = mission_state_t::in_progress;
       }
       break;
@@ -1479,12 +1513,12 @@ void ControlInterface::state_mission_in_progress()
 
 // | ----------- Action and mission related methods ----------- |
 
-/* start_takeoff //{ */
+/* startTakeoff //{ */
 // the following mutexes have to be locked by the calling function:
 // state_mutex_
 // pose_mutex_
 // action_mutex_
-bool ControlInterface::start_takeoff()
+bool ControlInterface::startTakeoff()
 {
   if (action_->set_takeoff_altitude(takeoff_height_) != mavsdk::Action::Result::Success)
   {
@@ -1666,7 +1700,7 @@ bool ControlInterface::stopMission()
 /* publishDiagnostics //{ */
 void ControlInterface::publishDiagnostics()
 {
-  std::scoped_lock lock(mission_mutex_, waypoint_buffer_mutex_);
+  std::scoped_lock lock(mission_mutex_);
 
   fog_msgs::msg::ControlInterfaceDiagnostics msg;
   msg.header.stamp         = get_clock()->now();
@@ -1675,12 +1709,13 @@ void ControlInterface::publishDiagnostics()
   msg.airborne             = !landed_ && takeoff_completed_;
   msg.moving               = mission_state_ == mission_state_t::in_progress;
   msg.mission_finished     = mission_state_ == mission_state_t::finished;
+  msg.mission_size         = mission_size_;
+  msg.mission_waypoint     = mission_current_waypoint_;
   msg.getting_control_mode = getting_control_mode_;
   msg.getting_land_sensor  = getting_landed_info_;
   msg.gps_origin_set       = gps_origin_set_;
   msg.getting_odom         = getting_odom_;
   msg.manual_control       = manual_override_;
-  msg.last_mission_size    = last_mission_size_;
 
   diagnostics_publisher_->publish(msg);
 }
@@ -1757,13 +1792,13 @@ mavsdk::Mission::MissionItem ControlInterface::to_mission_item(const local_waypo
   w.z -= home_position_offset_.z();
 
   mavsdk::Mission::MissionItem item;
-  gps_waypoint_t               global = localToGlobal(coord_transform_, w);
-  item.latitude_deg                   = global.latitude;
-  item.longitude_deg                  = global.longitude;
-  item.relative_altitude_m            = global.altitude;
-  item.yaw_deg                        = -radToDeg(global.yaw + yaw_offset_correction_);
-  item.speed_m_s                      = target_velocity_;  // NAN = use default values. This does NOT
-                                                           // limit vehicle max speed
+  gps_waypoint_t global = localToGlobal(coord_transform_, w);
+  item.latitude_deg = global.latitude;
+  item.longitude_deg = global.longitude;
+  item.relative_altitude_m = global.altitude;
+  item.yaw_deg = -radToDeg(global.yaw + yaw_offset_correction_);
+  item.speed_m_s = float(target_velocity_);  // NAN = use default values. This does NOT limit vehicle max speed
+
   item.is_fly_through          = true;
   item.gimbal_pitch_deg        = 0.0f;
   item.gimbal_yaw_deg          = 0.0f;
@@ -1881,7 +1916,7 @@ std::string to_string(const mavsdk::ConnectionResult result)
 // just a util function that returns a new mutually exclusive callback group to shorten the call
 rclcpp::CallbackGroup::SharedPtr ControlInterface::new_cbk_grp()
 {
-  const rclcpp::CallbackGroup::SharedPtr new_group = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+  const rclcpp::CallbackGroup::SharedPtr new_group = create_callback_group(rclcpp::CallbackGroupType::Reentrant);
   callback_groups_.push_back(new_group);
   return new_group;
 }
