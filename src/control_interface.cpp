@@ -26,6 +26,7 @@
 #include <px4_msgs/msg/home_position.hpp>
 #include <px4_msgs/msg/vehicle_land_detected.hpp>
 #include <rcl_interfaces/msg/set_parameters_result.hpp>
+#include <rclcpp/callback_group.hpp>
 #include <rclcpp/qos.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <rclcpp/time.hpp>
@@ -178,7 +179,7 @@ public:
 
 private:
   std::mutex       state_mutex_;
-  std::atomic_bool is_initialized_       = false; // set to true when MavSDK connection is established
+  std::atomic_bool system_connected_       = false; // set to true when MavSDK connection is established
   std::atomic_bool getting_landed_info_  = false; // set to true when a VehicleLandDetected is received from pixhawk
   std::atomic_bool getting_control_mode_ = false; // set to true when a VehicleControlMode is received from pixhawk
 
@@ -274,6 +275,12 @@ private:
   rclcpp::Subscription<px4_msgs::msg::HomePosition>::SharedPtr        home_position_subscriber_;
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr            odometry_subscriber_;
 
+  // callback groups
+  // a shared pointer to each callback group has to be saved or the callbacks will never get called
+  std::vector<rclcpp::CallbackGroup::SharedPtr> callback_groups_;
+  // new callback groups have to be initialized using this function to be saved into callback_groups_
+  rclcpp::CallbackGroup::SharedPtr new_cbk_grp();
+
   OnSetParametersCallbackHandle::SharedPtr parameters_callback_handle_;
 
   // subscriber callbacks
@@ -359,8 +366,6 @@ private:
   local_waypoint_t to_local_waypoint(const fog_msgs::srv::WaypointToLocal::Request& in, const bool is_global);
   local_waypoint_t to_local_waypoint(const std::vector<double>& in, const bool is_global);
   local_waypoint_t to_local_waypoint(const Eigen::Vector4d& in, const bool is_global);
-
-  rclcpp::CallbackGroup::SharedPtr new_cbk_grp();
 };
 //}
 
@@ -369,7 +374,8 @@ private:
 // --------------------------------------------------------------
 
 /* constructor //{ */
-ControlInterface::ControlInterface(rclcpp::NodeOptions options) : Node("control_interface", options) {
+ControlInterface::ControlInterface(rclcpp::NodeOptions options) : Node("control_interface", options)
+{
 
   RCLCPP_INFO(get_logger(), "[%s]: Initializing...", get_name());
 
@@ -531,11 +537,14 @@ ControlInterface::ControlInterface(rclcpp::NodeOptions options) : Node("control_
 
   mavsdk_connection_timer_ = create_wall_timer(std::chrono::duration<double>(1.0),
       std::bind(&ControlInterface::mavsdkConnectionRoutine, this), new_cbk_grp());
+
+  RCLCPP_INFO(get_logger(), "[%s]: ControlInterface constructor complete.", get_name());
 }
 //}
 
 /* parametersCallback //{ */
-rcl_interfaces::msg::SetParametersResult ControlInterface::parametersCallback(const std::vector<rclcpp::Parameter> &parameters) {
+rcl_interfaces::msg::SetParametersResult ControlInterface::parametersCallback(const std::vector<rclcpp::Parameter> &parameters)
+{
   rcl_interfaces::msg::SetParametersResult result;
   result.successful = false;
   result.reason     = "";
@@ -609,7 +618,7 @@ void ControlInterface::controlModeCallback(const px4_msgs::msg::VehicleControlMo
 {
   std::scoped_lock lck(state_mutex_, mission_mutex_, mission_upload_mutex_, waypoint_buffer_mutex_);
 
-  if (!is_initialized_)
+  if (!system_connected_)
     return;
 
   getting_control_mode_ = true;
@@ -652,7 +661,7 @@ void ControlInterface::landDetectedCallback(const px4_msgs::msg::VehicleLandDete
 {
   std::scoped_lock lck(state_mutex_);
 
-  if (!is_initialized_)
+  if (!system_connected_)
     return;
 
   getting_landed_info_ = true;
@@ -666,7 +675,7 @@ void ControlInterface::missionResultCallback(const px4_msgs::msg::MissionResult:
 {
   std::scoped_lock lck(mission_mutex_, state_mutex_);
 
-  if (!is_initialized_)
+  if (!system_connected_)
     return;
 
   // check if a mission is currently in-progress and we got an indication that it is finished
@@ -684,7 +693,7 @@ void ControlInterface::homePositionCallback(const px4_msgs::msg::HomePosition::U
 {
   std::scoped_lock lck(state_mutex_, coord_transform_mutex_);
 
-  if (!is_initialized_)
+  if (!system_connected_)
     return;
 
   mavsdk::geometry::CoordinateTransformation::GlobalCoordinate ref;
@@ -708,7 +717,7 @@ void ControlInterface::odometryCallback(const nav_msgs::msg::Odometry::UniquePtr
 {
   std::scoped_lock lck(state_mutex_, pose_mutex_);
 
-  if (!is_initialized_)
+  if (!system_connected_)
     return;
 
   getting_odom_ = true;
@@ -746,7 +755,7 @@ bool ControlInterface::takeoffCallback([[maybe_unused]] const std::shared_ptr<st
 {
   std::scoped_lock lck(state_mutex_, action_mutex_, pose_mutex_, waypoint_buffer_mutex_);
 
-  if (!is_initialized_)
+  if (!system_connected_)
   {
     response->success = false;
     response->message = "Takeoff rejected, not initialized";
@@ -798,7 +807,7 @@ bool ControlInterface::landCallback([[maybe_unused]] const std::shared_ptr<std_s
 {
   std::scoped_lock lck(state_mutex_, mission_mutex_, waypoint_buffer_mutex_, action_mutex_);
 
-  if (!is_initialized_)
+  if (!system_connected_)
   {
     response->success = false;
     response->message = "Landing rejected, not initialized";
@@ -841,7 +850,7 @@ bool ControlInterface::armingCallback([[maybe_unused]] const std::shared_ptr<std
 {
   std::scoped_lock lck(state_mutex_, action_mutex_);
 
-  if (!is_initialized_)
+  if (!system_connected_)
   {
     response->success = false;
     response->message = "Arming rejected, not initialized";
@@ -895,7 +904,7 @@ bool ControlInterface::armingCallback([[maybe_unused]] const std::shared_ptr<std
 // helper method that performs the necessary checks before adding a waypoint to the waypoint_buffer_
 bool ControlInterface::canAddWaypoints(std::string& reason_out)
 {
-  if (!is_initialized_)
+  if (!system_connected_)
   {
     reason_out = "not initialized";
     return false;
@@ -1050,7 +1059,7 @@ bool ControlInterface::waypointToLocalCallback(const std::shared_ptr<fog_msgs::s
 {
   std::scoped_lock lock(state_mutex_, coord_transform_mutex_);
 
-  if (!is_initialized_)
+  if (!system_connected_)
   {
     response->success = false;
     response->message = "Cannot transform coordinates, not initialized";
@@ -1088,7 +1097,7 @@ bool ControlInterface::pathToLocalCallback(const std::shared_ptr<fog_msgs::srv::
 {
   std::scoped_lock lock(state_mutex_, coord_transform_mutex_);
 
-  if (!is_initialized_)
+  if (!system_connected_)
   {
     response->success = false;
     response->message = "Cannot transform coordinates, not initialized";
@@ -1145,7 +1154,7 @@ bool ControlInterface::setPx4ParamIntCallback([[maybe_unused]] const std::shared
 {
   std::scoped_lock lock(state_mutex_, param_mutex_);
 
-  if (!is_initialized_)
+  if (!system_connected_)
   {
     response->success = false;
     response->message = "Failed to set PX4 parameter: not initialized";
@@ -1179,7 +1188,7 @@ bool ControlInterface::getPx4ParamIntCallback([[maybe_unused]] const std::shared
 {
   std::scoped_lock lock(state_mutex_, param_mutex_);
 
-  if (!is_initialized_)
+  if (!system_connected_)
   {
     response->success = false;
     response->message = "Failed to read PX4 parameter: not initialized";
@@ -1213,7 +1222,7 @@ bool ControlInterface::setPx4ParamFloatCallback([[maybe_unused]] const std::shar
 {
   std::scoped_lock lock(state_mutex_, param_mutex_);
 
-  if (!is_initialized_)
+  if (!system_connected_)
   {
     response->success = false;
     response->message = "Parameter cannot be set, not initialized";
@@ -1247,7 +1256,7 @@ bool ControlInterface::getPx4ParamFloatCallback([[maybe_unused]] const std::shar
 {
   std::scoped_lock lock(state_mutex_, param_mutex_);
 
-  if (!is_initialized_)
+  if (!system_connected_)
   {
     response->success = false;
     response->message = "Failed to read PX4 parameter: not initialized";
@@ -1278,24 +1287,28 @@ bool ControlInterface::getPx4ParamFloatCallback([[maybe_unused]] const std::shar
 /* mavsdkConnectionRoutine //{ */
 void ControlInterface::mavsdkConnectionRoutine()
 {
-  RCLCPP_INFO(get_logger(), "[%s]: Systems size: %ld", get_name(), mavsdk_.systems().size());
-  if (mavsdk_.systems().empty())
   {
-    RCLCPP_INFO(get_logger(), "[%s]: Waiting for connection at URL: %s", get_name(), device_url_.c_str());
-    return;
-  }
+    std::scoped_lock lck(state_mutex_, action_mutex_, mission_mutex_, param_mutex_);
 
-  // use the first connected system
-  system_ = mavsdk_.systems().front();
-  RCLCPP_INFO(get_logger(), "[%s]: ID: %u", get_name(), system_->get_system_id());
+    RCLCPP_INFO(get_logger(), "[%s]: Systems size: %ld", get_name(), mavsdk_.systems().size());
+    if (mavsdk_.systems().empty())
+    {
+      RCLCPP_INFO(get_logger(), "[%s]: Waiting for connection at URL: %s", get_name(), device_url_.c_str());
+      return;
+    }
 
-  // setup the other mavsdk connections
-  {
-    std::scoped_lock lck(action_mutex_, mission_mutex_, param_mutex_);
+    // use the first connected system
+    system_ = mavsdk_.systems().front();
+    RCLCPP_INFO(get_logger(), "[%s]: ID: %u", get_name(), system_->get_system_id());
+
+    // setup the other mavsdk connections
     RCLCPP_INFO(get_logger(), "[%s]: Target connected", get_name());
     action_  = std::make_shared<mavsdk::Action>(system_);
     mission_ = std::make_shared<mavsdk::Mission>(system_);
     param_   = std::make_shared<mavsdk::Param>(system_);
+
+    // set the initialized flag to true so that px4 parameters may be initialized
+    system_connected_ = true;
   }
 
   // set default parameters to PX4
@@ -1319,9 +1332,6 @@ void ControlInterface::mavsdkConnectionRoutine()
 
   mavsdk_connection_timer_->cancel();
 
-  // finally, set the initialized flag to true
-  std::scoped_lock lck(state_mutex_);
-  is_initialized_ = true;
   RCLCPP_INFO(get_logger(), "[%s]: Initialized", get_name());
 }
 //}
@@ -1331,7 +1341,7 @@ void ControlInterface::controlRoutine()
 {
   std::scoped_lock lck(state_mutex_);
 
-  if (!is_initialized_)
+  if (!system_connected_)
     return;
 
   publishDiagnostics();
@@ -1871,7 +1881,9 @@ std::string to_string(const mavsdk::ConnectionResult result)
 // just a util function that returns a new mutually exclusive callback group to shorten the call
 rclcpp::CallbackGroup::SharedPtr ControlInterface::new_cbk_grp()
 {
-  return create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+  const rclcpp::CallbackGroup::SharedPtr new_group = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+  callback_groups_.push_back(new_group);
+  return new_group;
 }
 //}
 
