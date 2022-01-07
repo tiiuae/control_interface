@@ -171,7 +171,8 @@ std::string to_string(const mavsdk::ConnectionResult result);
 // --------------------------------------------------------------
 
 /* class ControlInterface //{ */
-class ControlInterface : public rclcpp::Node {
+class ControlInterface : public rclcpp::Node
+{
 public:
   ControlInterface(rclcpp::NodeOptions options);
 
@@ -336,7 +337,6 @@ private:
   void publishDesiredPose();
 
   // timers
-  rclcpp::CallbackGroup::SharedPtr callback_group_;
   rclcpp::TimerBase::SharedPtr     control_timer_;
   rclcpp::TimerBase::SharedPtr     mavsdk_connection_timer_;
   void                             controlRoutine(void);
@@ -359,6 +359,8 @@ private:
   local_waypoint_t to_local_waypoint(const fog_msgs::srv::WaypointToLocal::Request& in, const bool is_global);
   local_waypoint_t to_local_waypoint(const std::vector<double>& in, const bool is_global);
   local_waypoint_t to_local_waypoint(const Eigen::Vector4d& in, const bool is_global);
+
+  rclcpp::CallbackGroup::SharedPtr new_cbk_grp();
 };
 //}
 
@@ -371,10 +373,12 @@ ControlInterface::ControlInterface(rclcpp::NodeOptions options) : Node("control_
 
   RCLCPP_INFO(get_logger(), "[%s]: Initializing...", get_name());
 
-  try {
+  try
+  {
     uav_name_ = std::string(std::getenv("DRONE_DEVICE_ID"));
   }
-  catch (...) {
+  catch (...)
+  {
     RCLCPP_ERROR(get_logger(), "[%s]: Environment variable DRONE_DEVICE_ID was not defined!", get_name());
   }
   RCLCPP_INFO(get_logger(), "[%s]: UAV name is: '%s'", get_name(), uav_name_.c_str());
@@ -418,6 +422,9 @@ ControlInterface::ControlInterface(rclcpp::NodeOptions options) : Node("control_
 
   //}
 
+  // | ------------- misc. parameters initialization ------------ |
+  desired_pose_ = Eigen::Vector4d(0.0, 0.0, 0.0, 0.0);
+
   /* estabilish connection with PX4 //{ */
   mavsdk::ConnectionResult connection_result;
   try
@@ -442,71 +449,88 @@ ControlInterface::ControlInterface(rclcpp::NodeOptions options) : Node("control_
 
   //}
 
-  callback_group_        = create_callback_group(rclcpp::CallbackGroupType::Reentrant);
-  auto sub_opt           = rclcpp::SubscriptionOptions();
-  sub_opt.callback_group = callback_group_;
-
   rclcpp::QoS qos(rclcpp::KeepLast(3));
-  // publishers
+  // | ------------------ initialize publishers ----------------- |
   desired_pose_publisher_ = create_publisher<geometry_msgs::msg::PoseStamped>("~/desired_pose_out", qos);
   waypoint_publisher_     = create_publisher<geometry_msgs::msg::PoseArray>("~/waypoints_out", qos);
   diagnostics_publisher_  = create_publisher<fog_msgs::msg::ControlInterfaceDiagnostics>("~/diagnostics_out", qos);
 
-  // subscribers
-  control_mode_subscriber_  = create_subscription<px4_msgs::msg::VehicleControlMode>("~/control_mode_in", rclcpp::SystemDefaultsQoS(),
-                                                                                          std::bind(&ControlInterface::controlModeCallback, this, _1), sub_opt);
-  land_detected_subscriber_ = create_subscription<px4_msgs::msg::VehicleLandDetected>(
-      "~/land_detected_in", rclcpp::SystemDefaultsQoS(), std::bind(&ControlInterface::landDetectedCallback, this, _1), sub_opt);
-  mission_result_subscriber_ = create_subscription<px4_msgs::msg::MissionResult>("~/mission_result_in", rclcpp::SystemDefaultsQoS(),
-                                                                                       std::bind(&ControlInterface::missionResultCallback, this, _1), sub_opt);
-  home_position_subscriber_  = create_subscription<px4_msgs::msg::HomePosition>("~/home_position_in", rclcpp::SystemDefaultsQoS(),
-                                                                                     std::bind(&ControlInterface::homePositionCallback, this, _1), sub_opt);
-  odometry_subscriber_       = create_subscription<nav_msgs::msg::Odometry>("~/local_odom_in", rclcpp::SystemDefaultsQoS(),
-                                                                            std::bind(&ControlInterface::odometryCallback, this, _1), sub_opt);
-
-  parameters_callback_handle_ = add_on_set_parameters_callback(std::bind(&ControlInterface::parametersCallback, this, _1));
-
   // service clients
   octomap_reset_client_ = create_client<std_srvs::srv::Empty>("~/octomap_reset_out");
 
+  // | ------------------ initialize callbacks ------------------ |
+
+  parameters_callback_handle_ = add_on_set_parameters_callback(std::bind(&ControlInterface::parametersCallback, this, _1));
+
+  rclcpp::SubscriptionOptions subopts;
+
+  // create a mutually exclusive callback group for each callback so that only a single instance of each callback can be running at one time
+  subopts.callback_group = new_cbk_grp();
+  control_mode_subscriber_ = create_subscription<px4_msgs::msg::VehicleControlMode>("~/control_mode_in",
+      rclcpp::SystemDefaultsQoS(), std::bind(&ControlInterface::controlModeCallback, this, _1), subopts);
+
+  subopts.callback_group = new_cbk_grp();
+  land_detected_subscriber_ = create_subscription<px4_msgs::msg::VehicleLandDetected>("~/land_detected_in",
+      rclcpp::SystemDefaultsQoS(), std::bind(&ControlInterface::landDetectedCallback, this, _1), subopts);
+
+  subopts.callback_group = new_cbk_grp();
+  mission_result_subscriber_ = create_subscription<px4_msgs::msg::MissionResult>("~/mission_result_in",
+      rclcpp::SystemDefaultsQoS(), std::bind(&ControlInterface::missionResultCallback, this, _1), subopts);
+
+  subopts.callback_group = new_cbk_grp();
+  home_position_subscriber_ = create_subscription<px4_msgs::msg::HomePosition>("~/home_position_in",
+      rclcpp::SystemDefaultsQoS(), std::bind(&ControlInterface::homePositionCallback, this, _1), subopts);
+
+  subopts.callback_group = new_cbk_grp();
+  odometry_subscriber_ = create_subscription<nav_msgs::msg::Odometry>("~/local_odom_in",
+      rclcpp::SystemDefaultsQoS(), std::bind(&ControlInterface::odometryCallback, this, _1), subopts);
+
   // service handlers
-  arming_service_  = create_service<std_srvs::srv::SetBool>("~/arming_in", std::bind(&ControlInterface::armingCallback, this, _1, _2),
-                                                                 qos.get_rmw_qos_profile(), callback_group_);
-  takeoff_service_ = create_service<std_srvs::srv::Trigger>("~/takeoff_in", std::bind(&ControlInterface::takeoffCallback, this, _1, _2),
-                                                                  qos.get_rmw_qos_profile(), callback_group_);
-  land_service_ = create_service<std_srvs::srv::Trigger>("~/land_in", std::bind(&ControlInterface::landCallback, this, _1, _2), qos.get_rmw_qos_profile(),
-                                                               callback_group_);
-  local_waypoint_service_ = create_service<fog_msgs::srv::Vec4>("~/local_waypoint_in", std::bind(&ControlInterface::localWaypointCallback, this, _1, _2),
-                                                                      qos.get_rmw_qos_profile(), callback_group_);
-  local_path_service_     = create_service<fog_msgs::srv::Path>("~/local_path_in", std::bind(&ControlInterface::localPathCallback, this, _1, _2),
-                                                                  qos.get_rmw_qos_profile(), callback_group_);
-  gps_waypoint_service_   = create_service<fog_msgs::srv::Vec4>("~/gps_waypoint_in", std::bind(&ControlInterface::gpsWaypointCallback, this, _1, _2),
-                                                                    qos.get_rmw_qos_profile(), callback_group_);
-  gps_path_service_       = create_service<fog_msgs::srv::Path>("~/gps_path_in", std::bind(&ControlInterface::gpsPathCallback, this, _1, _2),
-                                                                qos.get_rmw_qos_profile(), callback_group_);
-  waypoint_to_local_service_ = create_service<fog_msgs::srv::WaypointToLocal>(
-      "~/waypoint_to_local_in", std::bind(&ControlInterface::waypointToLocalCallback, this, _1, _2), qos.get_rmw_qos_profile(), callback_group_);
-  path_to_local_service_ = create_service<fog_msgs::srv::PathToLocal>(
-      "~/path_to_local_in", std::bind(&ControlInterface::pathToLocalCallback, this, _1, _2), qos.get_rmw_qos_profile(), callback_group_);
-  set_px4_param_int_service_ =
-      create_service<fog_msgs::srv::SetPx4ParamInt>("~/set_px4_param_int_in", std::bind(&ControlInterface::setPx4ParamIntCallback, this, _1, _2));
-  get_px4_param_int_service_ =
-      create_service<fog_msgs::srv::GetPx4ParamInt>("~/get_px4_param_int_in", std::bind(&ControlInterface::getPx4ParamIntCallback, this, _1, _2));
-  set_px4_param_float_service_ =
-      create_service<fog_msgs::srv::SetPx4ParamFloat>("~/set_px4_param_float_in", std::bind(&ControlInterface::setPx4ParamFloatCallback, this, _1, _2));
-  get_px4_param_float_service_ =
-      create_service<fog_msgs::srv::GetPx4ParamFloat>("~/get_px4_param_float_in", std::bind(&ControlInterface::getPx4ParamFloatCallback, this, _1, _2));
+  const auto qos_profile = qos.get_rmw_qos_profile();
+  const auto action_grp_ptr = new_cbk_grp();
+  arming_service_  = create_service<std_srvs::srv::SetBool>("~/arming_in",
+      std::bind(&ControlInterface::armingCallback, this, _1, _2), qos_profile, action_grp_ptr);
 
-  control_timer_ =
-      create_wall_timer(std::chrono::duration<double>(1.0 / control_update_rate_), std::bind(&ControlInterface::controlRoutine, this), callback_group_);
+  takeoff_service_ = create_service<std_srvs::srv::Trigger>("~/takeoff_in",
+      std::bind(&ControlInterface::takeoffCallback, this, _1, _2), qos_profile, action_grp_ptr);
 
-  mavsdk_connection_timer_ =
-      create_wall_timer(std::chrono::duration<double>(1.0), std::bind(&ControlInterface::mavsdkConnectionRoutine, this), callback_group_);
+  land_service_ = create_service<std_srvs::srv::Trigger>("~/land_in",
+      std::bind(&ControlInterface::landCallback, this, _1, _2), qos_profile, action_grp_ptr);
 
-  octomap_reset_client_ = create_client<std_srvs::srv::Empty>("~/octomap_reset_out");
+  const auto waypt_grp_ptr = new_cbk_grp();
+  local_waypoint_service_ = create_service<fog_msgs::srv::Vec4>("~/local_waypoint_in",
+      std::bind(&ControlInterface::localWaypointCallback, this, _1, _2), qos_profile, waypt_grp_ptr);
 
-  desired_pose_ = Eigen::Vector4d(0.0, 0.0, 0.0, 0.0);
+  local_path_service_ = create_service<fog_msgs::srv::Path>("~/local_path_in",
+      std::bind(&ControlInterface::localPathCallback, this, _1, _2), qos_profile, waypt_grp_ptr);
 
+  gps_waypoint_service_ = create_service<fog_msgs::srv::Vec4>("~/gps_waypoint_in",
+      std::bind(&ControlInterface::gpsWaypointCallback, this, _1, _2), qos_profile, waypt_grp_ptr);
+
+  gps_path_service_ = create_service<fog_msgs::srv::Path>("~/gps_path_in",
+      std::bind(&ControlInterface::gpsPathCallback, this, _1, _2), qos_profile, waypt_grp_ptr);
+
+  waypoint_to_local_service_ = create_service<fog_msgs::srv::WaypointToLocal>("~/waypoint_to_local_in",
+      std::bind(&ControlInterface::waypointToLocalCallback, this, _1, _2), qos_profile, waypt_grp_ptr);
+
+  path_to_local_service_ = create_service<fog_msgs::srv::PathToLocal>("~/path_to_local_in",
+      std::bind(&ControlInterface::pathToLocalCallback, this, _1, _2), qos_profile, waypt_grp_ptr);
+
+  const auto param_grp_ptr = new_cbk_grp();
+  set_px4_param_int_service_ = create_service<fog_msgs::srv::SetPx4ParamInt>("~/set_px4_param_int_in",
+      std::bind(&ControlInterface::setPx4ParamIntCallback, this, _1, _2), qos_profile, param_grp_ptr);
+  get_px4_param_int_service_ = create_service<fog_msgs::srv::GetPx4ParamInt>("~/get_px4_param_int_in",
+      std::bind(&ControlInterface::getPx4ParamIntCallback, this, _1, _2), qos_profile, param_grp_ptr);
+  set_px4_param_float_service_ = create_service<fog_msgs::srv::SetPx4ParamFloat>("~/set_px4_param_float_in",
+      std::bind(&ControlInterface::setPx4ParamFloatCallback, this, _1, _2), qos_profile, param_grp_ptr);
+  get_px4_param_float_service_ = create_service<fog_msgs::srv::GetPx4ParamFloat>("~/get_px4_param_float_in",
+      std::bind(&ControlInterface::getPx4ParamFloatCallback, this, _1, _2), qos_profile, param_grp_ptr);
+
+  control_timer_ = create_wall_timer(std::chrono::duration<double>(1.0 / control_update_rate_),
+      std::bind(&ControlInterface::controlRoutine, this), new_cbk_grp());
+
+  mavsdk_connection_timer_ = create_wall_timer(std::chrono::duration<double>(1.0),
+      std::bind(&ControlInterface::mavsdkConnectionRoutine, this), new_cbk_grp());
 }
 //}
 
@@ -1586,7 +1610,7 @@ bool ControlInterface::startMissionUpload(const mavsdk::Mission::MissionPlan& mi
       }
     );
   mission_upload_attempts_++;
-  RCLCPP_INFO(get_logger(), "[%s]: Started mission upload attempt %d", get_name(), mission_upload_attempts_);
+  RCLCPP_INFO(get_logger(), "[%s]: Started mission upload attempt #%d", get_name(), mission_upload_attempts_);
 
   mission_upload_state_ = mission_upload_state_t::started;
   return true;
@@ -1840,6 +1864,14 @@ std::string to_string(const mavsdk::ConnectionResult result)
     case mavsdk::ConnectionResult::BaudrateUnknown:       return "Baudrate unknown. ";
   }
   return "Invalid result.";
+}
+//}
+
+/* new_cbk_grp() method //{ */
+// just a util function that returns a new mutually exclusive callback group to shorten the call
+rclcpp::CallbackGroup::SharedPtr ControlInterface::new_cbk_grp()
+{
+  return create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
 }
 //}
 
