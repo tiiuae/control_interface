@@ -1533,16 +1533,16 @@ bool ControlInterface::startTakeoff()
     RCLCPP_INFO(get_logger(), "[%s]: Resetting octomap server", get_name());
   }
 
-  if (action_->takeoff() != mavsdk::Action::Result::Success)
-  {
-    RCLCPP_ERROR(get_logger(), "[%s]: Takeoff failed", get_name());
-    return false;
-  }
-
   if (pose_takeoff_samples_.size() < (size_t)takeoff_position_samples_)
   {
     RCLCPP_WARN(get_logger(), "[%s]: Takeoff rejected. Need %d odometry samples, only have %ld", get_name(), takeoff_position_samples_,
                 pose_takeoff_samples_.size());
+    return false;
+  }
+
+  if (action_->takeoff() != mavsdk::Action::Result::Success)
+  {
+    RCLCPP_ERROR(get_logger(), "[%s]: Takeoff failed", get_name());
     return false;
   }
 
