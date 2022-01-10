@@ -173,7 +173,7 @@ void add_reason_if(const std::string& reason, const bool condition, std::string&
     if (to_str.empty())
       to_str = reason;
     else
-      to_str = ", " + reason;
+      to_str = to_str + ", " + reason;
   }
 }
 
@@ -720,7 +720,7 @@ bool ControlInterface::takeoffCallback([[maybe_unused]] const std::shared_ptr<st
   if (vehicle_state_ != vehicle_state_t::takeoff_ready)
   {
     response->success = false;
-    response->message = "Takeoff rejected, vehicle not ready for takeoff:" + vehicle_state_str_;
+    response->message = "Takeoff rejected, vehicle not ready for takeoff: " + vehicle_state_str_;
     RCLCPP_ERROR(get_logger(), "%s", response->message.c_str());
     return true;
   }
@@ -748,7 +748,7 @@ bool ControlInterface::landCallback([[maybe_unused]] const std::shared_ptr<std_s
   if (vehicle_state_ != vehicle_state_t::autonomous_flight && vehicle_state_ != vehicle_state_t::manual_flight)
   {
     response->success = false;
-    response->message = "Landing rejected, vehicle not flying";
+    response->message = "Landing rejected: vehicle not flying";
     RCLCPP_ERROR(get_logger(), "%s", response->message.c_str());
     return true;
   }
@@ -1524,7 +1524,7 @@ void ControlInterface::state_vehicle_not_ready()
     add_reason_if("GPS origin not set", !gps_origin_set_, reasons);
     add_reason_if("insufficient GPS samples", pose_takeoff_samples_.size() < (size_t)takeoff_position_samples_, reasons);
     add_reason_if("not landed (" + to_string(land_state) + ")", land_state != mavsdk::Telemetry::LandedState::OnGround, reasons);
-    vehicle_state_str_ += ",  " + reasons;
+    vehicle_state_str_ += ", " + reasons;
     RCLCPP_WARN_STREAM_THROTTLE(get_logger(), *get_clock(), 1000, "Not ready for takeoff: " << reasons);
   }
 }
