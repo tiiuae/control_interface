@@ -192,8 +192,10 @@ private:
     in_progress,
     finished
   } mission_state_ = finished;
-  size_t mission_size_ = 0;
-  size_t mission_current_waypoint_ = 0;
+
+  std::mutex mission_progress_mutex_;
+  size_t mission_progress_size_ = 0;
+  size_t mission_progress_current_waypoint_ = 0;
 
   std::mutex mission_upload_mutex_;
   int mission_upload_attempts_;
@@ -628,9 +630,9 @@ void ControlInterface::missionResultCallback(const px4_msgs::msg::MissionResult:
 /* missionProgressCallback //{ */
 void ControlInterface::missionProgressCallback(const mavsdk::Mission::MissionProgress& mission_progress)
 {
-  std::scoped_lock lck(mission_mutex_);
-  mission_size_ = mission_progress.total;
-  mission_current_waypoint_ = mission_progress.current;
+  std::scoped_lock lck(mission_progress_mutex_);
+  mission_progress_size_ = mission_progress.total;
+  mission_progress_current_waypoint_ = mission_progress.current;
 
   const float percent = mission_progress.current/float(mission_progress.total)*100.0f;
   RCLCPP_INFO(get_logger(), "[%s]: Current mission waypoint: %d/%d (%.1f%%).", get_name(), mission_progress.current, mission_progress.total, percent);
@@ -1489,8 +1491,6 @@ void ControlInterface::state_mission_uploading()
       mission_finished_flag_ = false;
       if (startMission())
       {
-        mission_size_ = mission_upload_waypoints_.mission_items.size();
-        mission_current_waypoint_ = 0;
         mission_state_ = mission_state_t::in_progress;
       }
       break;
@@ -1700,7 +1700,7 @@ bool ControlInterface::stopMission()
 /* publishDiagnostics //{ */
 void ControlInterface::publishDiagnostics()
 {
-  std::scoped_lock lock(mission_mutex_);
+  std::scoped_lock lock(mission_mutex_, mission_progress_mutex_);
 
   fog_msgs::msg::ControlInterfaceDiagnostics msg;
   msg.header.stamp         = get_clock()->now();
@@ -1709,8 +1709,8 @@ void ControlInterface::publishDiagnostics()
   msg.airborne             = !landed_ && takeoff_completed_;
   msg.moving               = mission_state_ == mission_state_t::in_progress;
   msg.mission_finished     = mission_state_ == mission_state_t::finished;
-  msg.mission_size         = mission_size_;
-  msg.mission_waypoint     = mission_current_waypoint_;
+  msg.mission_size         = mission_progress_size_;
+  msg.mission_waypoint     = mission_progress_current_waypoint_;
   msg.getting_control_mode = getting_control_mode_;
   msg.getting_land_sensor  = getting_landed_info_;
   msg.gps_origin_set       = gps_origin_set_;
