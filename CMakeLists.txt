@@ -9,7 +9,7 @@ add_definitions("-Wall")
 add_definitions("-Wextra")
 add_definitions("-Wpedantic")
 add_definitions("-g")
-add_definitions("-Og")
+add_definitions("-O3")
 
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
