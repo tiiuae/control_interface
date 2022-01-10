@@ -1916,7 +1916,7 @@ std::string to_string(const mavsdk::ConnectionResult result)
 // just a util function that returns a new mutually exclusive callback group to shorten the call
 rclcpp::CallbackGroup::SharedPtr ControlInterface::new_cbk_grp()
 {
-  const rclcpp::CallbackGroup::SharedPtr new_group = create_callback_group(rclcpp::CallbackGroupType::Reentrant);
+  const rclcpp::CallbackGroup::SharedPtr new_group = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
   callback_groups_.push_back(new_group);
   return new_group;
 }
