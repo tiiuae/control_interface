@@ -190,6 +190,7 @@ private:
     hovering,
     executing_mission
   } vehicle_state_ = not_connected;
+  std::string vehicle_state_str_;
   std::atomic_bool system_connected_ = false; // set to true when MavSDK connection is established
   std::atomic_bool getting_landed_info_ = false; // set to true when a VehicleLandDetected is received from pixhawk
   std::atomic_bool getting_control_mode_ = false; // set to true when a VehicleControlMode is received from pixhawk
@@ -1534,8 +1535,10 @@ void ControlInterface::state_mission_in_progress()
 //}
 //}
 
-/* vehicleControlRoutine //{ */
-void ControlInterface::vehicleControlRoutine()
+/* updateVehicleState //{ */
+
+/* the updateVehicleState() method //{ */
+void ControlInterface::updateVehicleState()
 {
   std::scoped_lock lck(state_mutex_);
 
@@ -1566,6 +1569,7 @@ void ControlInterface::vehicleControlRoutine()
       state_vehicle_executing_mission(); break;
   }
 }
+//}
 
 /* state_vehicle_not_connected() method //{ */
 void ControlInterface::state_vehicle_not_connected()
@@ -1573,9 +1577,14 @@ void ControlInterface::state_vehicle_not_connected()
   RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 1000, "Vehicle state: MavSDK system not connected.");
 
   if (system_connected_)
+  {
     vehicle_state_ = vehicle_state_t::not_ready;
+    vehicle_state_str_ = "not ready for takeoff";
+  }
   else
+  {
     RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 1000, "Waiting for MavSDK system connection.");
+  }
 }
 //}
 
@@ -1586,28 +1595,28 @@ void ControlInterface::state_vehicle_not_ready()
 
   std::scoped_lock lck(telem_mutex_);
 
-  if (!landed_)
-  {
-    RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 1000, "Vehicle not landed");
-    return;
-  }
-
-  if (manual_override_)
-  {
-    RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 1000, "Control action prevented by manual override");
-    return;
-  }
-
-  /* if (disarmed) */
-  /* { */
-  /*   RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 1000, "Vehicle disarmed"); */
-  /*   return; */
-  /* } */
-
   const auto mode = telem_->flight_mode();
-  if (mode != mavsdk::Telemetry::FlightMode::Ready)
+
+  if (gps_origin_set_
+   && pose_takeoff_samples_.size() >= (size_t)takeoff_position_samples_
+   && armed_
+   && landed_
+   && mode == mavsdk::Telemetry::FlightMode::Ready)
   {
     vehicle_state_ = vehicle_state_t::takeoff_ready;
+    vehicle_state_str_ = "ready for takeoff";
+  }
+  else
+  {
+    std::stringstream ss;
+    ss
+       << "armed: " << armed_ << " (waiting for true)\n"
+       << "GPS origin: " << gps_origin_set_ << " (waiting for true)\n"
+       << "GPS samples: " << pose_takeoff_samples_.size() << " (waiting for " << takeoff_position_samples_ << ")\n"
+       << "landed: " << landed << " (waiting for true)\n"
+       << "PX4 mode: " << to_string(mode) << " (waiting for " << to_string(mavsdk::Telemetry::FlightMode::Ready) << ")";
+    vehicle_state_str_ = ss.str();
+    RCLCPP_WARN_STREAM_THROTTLE(get_logger(), *get_clock(), 1000, "Waiting for:\n" << vehicle_state_str_);
   }
 }
 //}
