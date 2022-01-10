@@ -214,7 +214,6 @@ private:
 
   bool system_connected_ = false; // set to true when MavSDK connection is established
   bool gps_origin_set_ = false;
-  bool takeoff_fallback_checks_ = false;
   bool manual_override_ = false;
 
   std::recursive_mutex mission_mutex_;
@@ -400,7 +399,6 @@ private:
   template <class T>
   bool parse_param(const std::string &param_name, T &param_dest);
 
-  bool canAddWaypoints(std::string& fail_reason_out);
   template<typename T>
   bool addWaypoints(const T& path, const bool is_global, std::string& fail_reason_out);
   mavsdk::Mission::MissionItem to_mission_item(const local_waypoint_t& w_in);
@@ -638,23 +636,6 @@ void ControlInterface::odometryCallback(const nav_msgs::msg::Odometry::UniquePtr
   pose_takeoff_samples_.push_back(pose_pos_);
   if (pose_takeoff_samples_.size() > (size_t)takeoff_position_samples_)
     pose_takeoff_samples_.erase(pose_takeoff_samples_.begin());
-
-  // if the vehicle is taking off, check if takeoff is finished (there's no easy way to do this)
-  if (vehicle_state_ == vehicle_state_t::taking_off && takeoff_fallback_checks_)
-  {
-    // one of two criteria has to be met for a successfull takeoff - either a sufficiently small z-difference or a timeout
-    const double time_since_takeoff = get_clock()->now().seconds() - takeoff_time_.seconds();
-    if (std::abs(pose_pos_.z() - desired_pose_.z()) < takeoff_height_tolerance_)
-    {
-      takeoff_fallback_checks_ = false;
-      RCLCPP_INFO(get_logger(), "Vehicle within tolerance from desired height. Takeoff completed!");
-    }
-    if (time_since_takeoff > takeoff_blocking_timeout_)
-    {
-      takeoff_fallback_checks_ = false;
-      RCLCPP_INFO(get_logger(), "Takeoff timeout duration elapsed. Takeoff completed!");
-    }
-  }
 }
 //}
 
@@ -730,6 +711,7 @@ bool ControlInterface::takeoffCallback([[maybe_unused]] const std::shared_ptr<st
   {
     response->success = true;
     response->message = "Taking off";
+    updateVehicleState(); // update the vehicle state now as it should change
     return true;
   }
 
@@ -745,19 +727,12 @@ bool ControlInterface::landCallback([[maybe_unused]] const std::shared_ptr<std_s
 {
   std::scoped_lock lck(state_mutex_, mission_mutex_, waypoint_buffer_mutex_, action_mutex_);
 
-  if (vehicle_state_ != vehicle_state_t::autonomous_flight && vehicle_state_ != vehicle_state_t::manual_flight)
-  {
-    response->success = false;
-    response->message = "Landing rejected: vehicle not flying";
-    RCLCPP_ERROR(get_logger(), "%s", response->message.c_str());
-    return true;
-  }
-
   const bool success = stopMission() && startLanding();
   if (success)
   {
     response->success = true;
     response->message = "Landing";
+    updateVehicleState(); // update the vehicle state now as it should change
     return true;
   }
   response->success = false;
@@ -821,32 +796,22 @@ bool ControlInterface::armingCallback([[maybe_unused]] const std::shared_ptr<std
 
 // | ----------------- Waypoint/path callbacks ---------------- |
 
-/* canAddWaypoints() method //{ */
-// helper method that performs the necessary checks before adding a waypoint to the waypoint_buffer_
-bool ControlInterface::canAddWaypoints(std::string& fail_reason_out)
-{
-  if (vehicle_state_ != vehicle_state_t::autonomous_flight)
-  {
-    fail_reason_out = vehicle_state_str_;
-    return false;
-  }
-  return true;
-}
-//}
-
 /* addWaypoints() method //{ */
 template<typename T>
 bool ControlInterface::addWaypoints(const T& path, const bool is_global, std::string& fail_reason_out)
 {
   // check that we are in a state in which we can add waypoints to the buffer
-  if (!canAddWaypoints(fail_reason_out))
-    return true;
+  if (vehicle_state_ != vehicle_state_t::autonomous_flight)
+  {
+    fail_reason_out = "not flying! Current state is: " + vehicle_state_str_;
+    return false;
+  }
 
   // stop the current mission (if any)
   if (!stopMission())
   {
     fail_reason_out = "previous mission cannot be aborted";
-    return true;
+    return false;
   }
 
   // finally, add the waypoints to the buffer
@@ -1348,8 +1313,6 @@ void ControlInterface::state_mission_finished()
   {
     publishDebugMarkers();
     RCLCPP_INFO(get_logger(), "Waypoints to be visited: %ld", waypoint_buffer_.size());
-    // pause the current mission (TODO: is this necessary?)
-    mission_->pause_mission();
 
     // transform and move the mission waypoints buffer to the mission_upload_waypoints_ buffer with the mavsdk type - we'll attempt to upload the waypoint_upload_buffer_ to pixhawk
     mission_upload_waypoints_.mission_items.clear();
@@ -1548,15 +1511,13 @@ void ControlInterface::state_vehicle_takeoff_ready()
   const bool healthy = telem_->health_all_ok();
   const auto land_state = telem_->landed_state();
 
-  if (takeoff_fallback_checks_)
+  if (land_state == mavsdk::Telemetry::LandedState::TakingOff)
   {
     RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 1000, "Taking off! Switching state.");
     vehicle_state_ = vehicle_state_t::taking_off;
     return;
   }
 
-  // the flight mode and landed state have to be checked after the takeoff_fallback_checks_ flag,
-  // because when the vehicle is taking off, the flight mode and landed state will be different
   if (!armed
    || !healthy
    || land_state != mavsdk::Telemetry::LandedState::OnGround)
@@ -1604,20 +1565,11 @@ void ControlInterface::state_vehicle_taking_off()
     return;
   }
 
-  // when the takeoff_fallback_checks_ flag is reset, the takeoff is complete
-  if (!takeoff_fallback_checks_)
+  if (land_state == mavsdk::Telemetry::LandedState::InAir)
   {
-    if (land_state == mavsdk::Telemetry::LandedState::TakingOff)
-    {
-      RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 1000, "Reached desired takeoff position or duration, but PixHawk is still in the TakinOff state, waiting.");
-      return;
-    }
-    else
-    {
-      RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 1000, "Takeoff complete. Switching state.");
-      vehicle_state_ = vehicle_state_t::autonomous_flight;
-      return;
-    }
+    RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 1000, "Takeoff complete. Switching state.");
+    vehicle_state_ = vehicle_state_t::autonomous_flight;
+    return;
   }
 }
 //}
@@ -1748,7 +1700,6 @@ bool ControlInterface::startTakeoff()
 
   waypoint_buffer_.push_back(current_goal);
 
-  takeoff_fallback_checks_ = true;
   takeoff_time_ = get_clock()->now();
   RCLCPP_INFO(get_logger(), "Taking off");
   return true;
@@ -1817,13 +1768,6 @@ bool ControlInterface::startMissionUpload(const mavsdk::Mission::MissionPlan& mi
     return false;
   }
 
-  const auto clear_result = mission_->clear_mission();
-  if (clear_result != mavsdk::Mission::Result::Success)
-  {
-    RCLCPP_ERROR(get_logger(), "Mission upload failed. Could not clear previous mission");
-    return false;
-  }
-
   mission_->upload_mission_async(mission_plan, [this](mavsdk::Mission::Result result)
       {
         std::scoped_lock lck(mission_upload_mutex_);
@@ -1863,10 +1807,17 @@ bool ControlInterface::stopMission()
     return false;
   }
 
-  // cancel any mission currently being executed
+  // pause any mission currently being executed
+  if (mission_->pause_mission() != mavsdk::Mission::Result::Success)
+  {
+    RCLCPP_ERROR(get_logger(), "Failed to pause current mission");
+    return false;
+  }
+
+  // clear any currently uploaded mission
   if (mission_->clear_mission() != mavsdk::Mission::Result::Success)
   {
-    RCLCPP_ERROR(get_logger(), "Previous mission cannot be stopped");
+    RCLCPP_ERROR(get_logger(), "Current mission cannot be cleared");
     return false;
   }
 
