@@ -18,5 +18,7 @@ px4:
   altitude_acceptance_radius: 0.5 # [m]
 
 mavsdk:
+  logging_print_level: 2 # 0 - Debug, 1 - Info, 2 - Warning, 3 - Error
+  logging_filename: "mavsdk.log"
   yaw_offset_correction: -1.5708 # [rad] NOTE: MAVSDK 0.42 represents yaw=0 as heading aligned with Y axis. We want to align with X axis at yaw=0
   mission_upload_attempts_threshold: 5

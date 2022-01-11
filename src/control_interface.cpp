@@ -16,11 +16,13 @@
 #include <geometry_msgs/msg/transform_stamped.hpp>
 #include <mavsdk/geometry.h>
 #include <mavsdk/mavsdk.h>
+#include <mavsdk/log_callback.h>
 #include <mavsdk/plugins/action/action.h>
 #include <mavsdk/plugins/mission/mission.h>
 #include <mavsdk/plugins/param/param.h>
 #include <mavsdk/plugins/telemetry/telemetry.h>
 #include <mutex>
+#include <fstream>
 #include <nav_msgs/msg/odometry.hpp>
 #include <px4_msgs/msg/vehicle_control_mode.hpp>
 #include <px4_msgs/msg/mission_result.hpp>
@@ -279,7 +281,12 @@ private:
   Eigen::Vector3d              pose_pos_;
   tf2::Quaternion              pose_ori_;
 
+  std::mutex mavsdk_logging_mutex_;
+  std::ofstream mavsdk_logging_file_;
+
   // config params
+  int    mavsdk_logging_print_level_        = 1;
+  std::string mavsdk_logging_filename_      = {};
   double yaw_offset_correction_             = M_PI / 2;
   double takeoff_height_                    = 2.5;
   double control_update_rate_               = 10.0;
@@ -316,6 +323,7 @@ private:
   void controlModeCallback(const px4_msgs::msg::VehicleControlMode::UniquePtr msg);
   void missionResultCallback(const px4_msgs::msg::MissionResult::UniquePtr msg);
   void missionProgressCallback(const mavsdk::Mission::MissionProgress& mission_progress);
+  bool mavsdkLogCallback(const mavsdk::log::Level level, const std::string& message, const std::string& file, const int line);
   void homePositionCallback(const px4_msgs::msg::HomePosition::UniquePtr msg);
   void odometryCallback(const nav_msgs::msg::Odometry::UniquePtr msg);
 
@@ -454,6 +462,8 @@ ControlInterface::ControlInterface(rclcpp::NodeOptions options) : Node("control_
   loaded_successfully &= parse_param("px4.waypoint_acceptance_radius", waypoint_acceptance_radius_);
   loaded_successfully &= parse_param("px4.altitude_acceptance_radius", altitude_acceptance_radius_);
 
+  loaded_successfully &= parse_param("mavsdk.logging_print_level", mavsdk_logging_print_level_);
+  loaded_successfully &= parse_param("mavsdk.logging_filename", mavsdk_logging_filename_);
   loaded_successfully &= parse_param("mavsdk.yaw_offset_correction", yaw_offset_correction_);
   loaded_successfully &= parse_param("mavsdk.mission_upload_attempts_threshold", mission_upload_attempts_threshold_);
 
@@ -472,6 +482,16 @@ ControlInterface::ControlInterface(rclcpp::NodeOptions options) : Node("control_
 
   // | ------------- misc. parameters initialization ------------ |
   desired_pose_ = Eigen::Vector4d(0.0, 0.0, 0.0, 0.0);
+
+  /* setup MavSDK logging //{ */
+  
+  // open and clear the log file first
+  mavsdk_logging_file_.open(mavsdk_logging_filename_, std::ios_base::trunc);
+  // now bind the callback
+  const auto log_cbk = std::bind(&ControlInterface::mavsdkLogCallback, this, _1, _2, _3, _4);
+  mavsdk::log::subscribe(log_cbk);
+  
+  //}
 
   /* estabilish connection with PX4 //{ */
   mavsdk::ConnectionResult connection_result;
@@ -690,6 +710,44 @@ void ControlInterface::missionProgressCallback(const mavsdk::Mission::MissionPro
     RCLCPP_INFO(get_logger(), "Current mission empty (waypoint %d/%d).", mission_progress.current, mission_progress.total);
   else
     RCLCPP_INFO(get_logger(), "Current mission waypoint: %d/%d (%.1f%%).", mission_progress.current, mission_progress.total, percent);
+}
+//}
+
+/* mavsdkLogCallback() method //{ */
+bool ControlInterface::mavsdkLogCallback(const mavsdk::log::Level level, const std::string& message, const std::string& file, const int line)
+{
+  std::scoped_lock lck(mavsdk_logging_mutex_);
+  switch (level)
+  {
+    case mavsdk::log::Level::Debug:
+      if (mavsdk_logging_file_.is_open())
+        mavsdk_logging_file_ << "Debug";
+      if (mavsdk_logging_print_level_ <= 0)
+        RCLCPP_DEBUG_STREAM(get_logger(), "MavSDK: " << message);
+      break;
+    case mavsdk::log::Level::Info:
+      if (mavsdk_logging_file_.is_open())
+        mavsdk_logging_file_ << "Info";
+      if (mavsdk_logging_print_level_ <= 1)
+        RCLCPP_INFO_STREAM(get_logger(), "MavSDK: " << message);
+      break;
+    case mavsdk::log::Level::Warn:
+      if (mavsdk_logging_file_.is_open())
+        mavsdk_logging_file_ << "Warning";
+      if (mavsdk_logging_print_level_ <= 2)
+        RCLCPP_WARN_STREAM(get_logger(), "MavSDK: " << message);
+      break;
+    case mavsdk::log::Level::Err:
+      if (mavsdk_logging_file_.is_open())
+        mavsdk_logging_file_ << "Error";
+      if (mavsdk_logging_print_level_ <= 3)
+        RCLCPP_ERROR_STREAM(get_logger(), "MavSDK: " << message);
+      break;
+  }
+  if (mavsdk_logging_file_.is_open())
+    mavsdk_logging_file_ << " (" << file << ":" << line << "): " << message << std::endl;
+  // return true so that MavSDK doesn't print out anything
+  return true;
 }
 //}
 
@@ -1632,10 +1690,10 @@ bool ControlInterface::connectPixHawk()
 {
   if (!system_connected_)
   {
-    RCLCPP_INFO(get_logger(), "Systems size: %ld", mavsdk_.systems().size());
+    RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 1000, "Systems size: %ld", mavsdk_.systems().size());
     if (mavsdk_.systems().empty())
     {
-      RCLCPP_INFO(get_logger(), "Waiting for connection at URL: %s", device_url_.c_str());
+      RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 1000, "Waiting for connection at URL: %s", device_url_.c_str());
       return false;
     }
 
@@ -1665,25 +1723,25 @@ bool ControlInterface::connectPixHawk()
 
   request->param_name = "NAV_ACC_RAD";
   request->value      = waypoint_acceptance_radius_;
-  RCLCPP_INFO(get_logger(), "Setting %s, value: %f", request->param_name.c_str(), request->value);
+  RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 1000, "Setting %s, value: %f", request->param_name.c_str(), request->value);
   setPx4ParamFloatCallback(request, response);
   succ = succ && response->success;
 
   request->param_name = "NAV_LOITER_RAD";
   request->value      = waypoint_acceptance_radius_;
-  RCLCPP_INFO(get_logger(), "Setting %s, value: %f", request->param_name.c_str(), request->value);
+  RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 1000, "Setting %s, value: %f", request->param_name.c_str(), request->value);
   setPx4ParamFloatCallback(request, response);
   succ = succ && response->success;
 
   request->param_name = "NAV_MC_ALT_RAD";
   request->value      = altitude_acceptance_radius_;
-  RCLCPP_INFO(get_logger(), "Setting %s, value: %f", request->param_name.c_str(), request->value);
+  RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 1000, "Setting %s, value: %f", request->param_name.c_str(), request->value);
   setPx4ParamFloatCallback(request, response);
   succ = succ && response->success;
 
   if (!succ)
   {
-    RCLCPP_ERROR(get_logger(), "PixHawk initialization failed!");
+    RCLCPP_ERROR_THROTTLE(get_logger(), *get_clock(), 1000, "PixHawk initialization failed!");
     return false;
   }
 
