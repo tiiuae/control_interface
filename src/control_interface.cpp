@@ -486,7 +486,8 @@ ControlInterface::ControlInterface(rclcpp::NodeOptions options) : Node("control_
   /* setup MavSDK logging //{ */
   
   // open and clear the log file first
-  mavsdk_logging_file_.open(mavsdk_logging_filename_, std::ios_base::trunc);
+  if (!mavsdk_logging_filename_.empty())
+    mavsdk_logging_file_.open(mavsdk_logging_filename_, std::ios_base::trunc);
   // now bind the callback
   const auto log_cbk = std::bind(&ControlInterface::mavsdkLogCallback, this, _1, _2, _3, _4);
   mavsdk::log::subscribe(log_cbk);
