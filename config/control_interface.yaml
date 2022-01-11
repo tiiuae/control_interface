@@ -2,13 +2,13 @@
 # world_frame: now set by launch file argument
   
 general:
-  reset_octomap_before_takeoff: true
+  octomap_reset_before_takeoff: true
+  octomap_reset_timeout: 3.0 # [s]
   control_update_rate: 20.0 # [Hz]
+  diagnostics_publish_rate: 1.0 # [Hz]
 
 takeoff:
   height: 1.0 # [m]
-  height_tolerance: 0.4 # [m]
-  blocking_timeout: 3.0 # [s]
   position_samples: 20 # before takeoff, the first waypoint will be set to the average of these samples
 
 px4:
