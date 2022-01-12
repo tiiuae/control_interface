@@ -23,6 +23,7 @@
 #include <mavsdk/plugins/telemetry/telemetry.h>
 #include <mutex>
 #include <fstream>
+#include <boost/circular_buffer.hpp>
 #include <nav_msgs/msg/odometry.hpp>
 #include <px4_msgs/msg/vehicle_control_mode.hpp>
 #include <px4_msgs/msg/mission_result.hpp>
@@ -277,7 +278,7 @@ private:
 
   // vehicle local position
   std::mutex pose_mutex_;
-  std::vector<Eigen::Vector3d> pose_takeoff_samples_;
+  boost::circular_buffer<Eigen::Vector3d> pose_takeoff_samples_;
   Eigen::Vector3d              pose_pos_;
   tf2::Quaternion              pose_ori_;
 
@@ -426,7 +427,6 @@ private:
 /* constructor //{ */
 ControlInterface::ControlInterface(rclcpp::NodeOptions options) : Node("control_interface", options)
 {
-
   RCLCPP_INFO(get_logger(), "Initializing...");
 
   try
@@ -482,6 +482,7 @@ ControlInterface::ControlInterface(rclcpp::NodeOptions options) : Node("control_
 
   // | ------------- misc. parameters initialization ------------ |
   desired_pose_ = Eigen::Vector4d(0.0, 0.0, 0.0, 0.0);
+  pose_takeoff_samples_.set_capacity(takeoff_position_samples_);
 
   /* setup MavSDK logging //{ */
   
@@ -658,8 +659,6 @@ void ControlInterface::odometryCallback(const nav_msgs::msg::Odometry::UniquePtr
 
   // add the current position to the pose samples for takeoff position estimation
   pose_takeoff_samples_.push_back(pose_pos_);
-  if (pose_takeoff_samples_.size() > (size_t)takeoff_position_samples_)
-    pose_takeoff_samples_.erase(pose_takeoff_samples_.begin());
 }
 //}
 
@@ -1514,11 +1513,12 @@ void ControlInterface::state_vehicle_not_ready()
   // otherwise tell the user what we're waiting for
   else
   {
+    const std::string gps_reason = "insufficient GPS samples (" + std::to_string(pose_takeoff_samples_.size()) + "/" + std::to_string(takeoff_position_samples_) + ")";
     std::string reasons;
     add_reason_if("not armed", !armed, reasons);
     add_reason_if("not healthy", !healthy, reasons);
     add_reason_if("GPS origin not set", !gps_origin_set_, reasons);
-    add_reason_if("insufficient GPS samples", pose_takeoff_samples_.size() < (size_t)takeoff_position_samples_, reasons);
+    add_reason_if(gps_reason, pose_takeoff_samples_.size() < (size_t)takeoff_position_samples_, reasons);
     add_reason_if("not landed (" + to_string(land_state) + ")", land_state != mavsdk::Telemetry::LandedState::OnGround, reasons);
     vehicle_state_str_ += ", " + reasons;
     RCLCPP_WARN_STREAM_THROTTLE(get_logger(), *get_clock(), 1000, "Not ready for takeoff: " << reasons);
