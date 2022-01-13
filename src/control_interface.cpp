@@ -397,10 +397,10 @@ private:
   void state_mission_uploading();
   void state_mission_in_progress();
 
-  void updateVehicleState();
+  void updateVehicleState(bool takeoff_started = false);
   void state_vehicle_not_connected();
   void state_vehicle_not_ready();
-  void state_vehicle_takeoff_ready();
+  void state_vehicle_takeoff_ready(bool takeoff_started);
   void state_vehicle_taking_off();
   void state_vehicle_autonomous_flight();
   void state_vehicle_manual_flight();
@@ -783,17 +783,16 @@ bool ControlInterface::takeoffCallback([[maybe_unused]] const std::shared_ptr<st
 
   std::scoped_lock lck(action_mutex_, pose_mutex_, waypoint_buffer_mutex_);
   std::string fail_reason;
-  const bool success = startTakeoff(fail_reason);
-  if (success)
+  if (!startTakeoff(fail_reason))
   {
-    response->success = true;
-    response->message = "Taking off";
-    updateVehicleState(); // update the vehicle state now as it should change
+    response->success = false;
+    response->message = "Takeoff rejected: " + fail_reason;
     return true;
   }
 
-  response->success = false;
-  response->message = "Takeoff rejected: " + fail_reason;
+  response->success = true;
+  response->message = "Taking off";
+  updateVehicleState(true); // update the vehicle state now as it should change
   return true;
 }
 //}
@@ -1452,7 +1451,7 @@ void ControlInterface::vehicleStateRoutine()
 /* updateVehicleState //{ */
 
 /* the updateVehicleState() method //{ */
-void ControlInterface::updateVehicleState()
+void ControlInterface::updateVehicleState(const bool takeoff_started)
 {
   // process the vehicle's state
   switch (vehicle_state_)
@@ -1462,7 +1461,7 @@ void ControlInterface::updateVehicleState()
     case vehicle_state_t::not_ready:
       state_vehicle_not_ready(); break;
     case vehicle_state_t::takeoff_ready:
-      state_vehicle_takeoff_ready(); break;
+      state_vehicle_takeoff_ready(takeoff_started); break;
     case vehicle_state_t::taking_off:
       state_vehicle_taking_off(); break;
     case vehicle_state_t::autonomous_flight:
@@ -1540,7 +1539,7 @@ void ControlInterface::state_vehicle_not_ready()
 //}
 
 /* state_vehicle_takeoff_ready() method //{ */
-void ControlInterface::state_vehicle_takeoff_ready()
+void ControlInterface::state_vehicle_takeoff_ready(const bool takeoff_started)
 {
   RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 1000, "Vehicle state: ready for takeoff.");
   vehicle_state_str_ = "ready for takeoff";
@@ -1557,7 +1556,7 @@ void ControlInterface::state_vehicle_takeoff_ready()
   const bool healthy = telem_->health_all_ok();
   const auto land_state = telem_->landed_state();
 
-  if (land_state == mavsdk::Telemetry::LandedState::TakingOff)
+  if (land_state == mavsdk::Telemetry::LandedState::TakingOff || takeoff_started)
   {
     RCLCPP_INFO(get_logger(), "Taking off! Switching state.");
     vehicle_state_ = vehicle_state_t::taking_off;
@@ -1827,7 +1826,7 @@ bool ControlInterface::startTakeoff(std::string& fail_reason_out)
 
   waypoint_buffer_.push_back(current_goal);
 
-  RCLCPP_INFO(get_logger(), "Taking off");
+  RCLCPP_WARN(get_logger(), "Takeoff action called.");
   return true;
 }
 //}
@@ -1845,7 +1844,7 @@ bool ControlInterface::startLanding(std::string& fail_reason_out)
     RCLCPP_ERROR_STREAM(get_logger(), "Landing failed: " << fail_reason_out.c_str());
     return false;
   }
-  RCLCPP_INFO(get_logger(), "Landing");
+  RCLCPP_WARN(get_logger(), "Landing action called.");
   return true;
 }
 //}
