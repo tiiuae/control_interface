@@ -776,16 +776,22 @@ void ControlInterface::missionResultCallback(const px4_msgs::msg::MissionResult:
 /* missionProgressCallback //{ */
 void ControlInterface::missionProgressCallback(const mavsdk::Mission::MissionProgress& mission_progress)
 {
-  scope_timer tim(print_callback_durations_, "missionProgressCallback", print_callback_throttle_, print_callback_min_dur_);
-  std::scoped_lock lck(mission_progress_mutex_);
-  mission_progress_size_ = mission_progress.total;
-  mission_progress_current_waypoint_ = mission_progress.current;
+  // spawn a new thread to avoid blocking in the MavSDK
+  // callback which will eventually cause a deadlock
+  // of the MavSDK processing thread
+  std::thread([this, &mission_progress]
+  {
+    scope_timer tim(print_callback_durations_, "missionProgressCallback", print_callback_throttle_, print_callback_min_dur_);
+    std::scoped_lock lck(mission_progress_mutex_);
+    mission_progress_size_ = mission_progress.total;
+    mission_progress_current_waypoint_ = mission_progress.current;
 
-  const float percent = mission_progress.total == 0 ? 100 : mission_progress.current/float(mission_progress.total)*100.0f;
-  if (mission_progress_current_waypoint_ == -1)
-    RCLCPP_INFO(get_logger(), "Current mission empty (waypoint %d/%d).", mission_progress.current, mission_progress.total);
-  else
-    RCLCPP_INFO(get_logger(), "Current mission waypoint: %d/%d (%.1f%%).", mission_progress.current, mission_progress.total, percent);
+    const float percent = mission_progress.total == 0 ? 100 : mission_progress.current/float(mission_progress.total)*100.0f;
+    if (mission_progress_current_waypoint_ == -1)
+      RCLCPP_INFO(get_logger(), "Current mission empty (waypoint %d/%d).", mission_progress.current, mission_progress.total);
+    else
+      RCLCPP_INFO(get_logger(), "Current mission waypoint: %d/%d (%.1f%%).", mission_progress.current, mission_progress.total, percent);
+  }).detach();
 }
 //}
 
@@ -2016,12 +2022,18 @@ bool ControlInterface::startMissionUpload(const mavsdk::Mission::MissionPlan& mi
   mission_upload_start_time_ = get_clock()->now();
   mission_->upload_mission_async(mission_plan, [this](mavsdk::Mission::Result result)
       {
-        std::scoped_lock lck(mission_upload_mutex_);
-        mission_upload_end_time_ = get_clock()->now();
-        if (result == mavsdk::Mission::Result::Success)
-          mission_upload_state_ = mission_upload_state_t::done;
-        else
-          mission_upload_state_ = mission_upload_state_t::failed;
+        // spawn a new thread to avoid blocking in the MavSDK
+        // callback which will eventually cause a deadlock
+        // of the MavSDK processing thread
+        std::thread([this, result]
+        {
+          std::scoped_lock lck(mission_upload_mutex_);
+          mission_upload_end_time_ = get_clock()->now();
+          if (result == mavsdk::Mission::Result::Success)
+            mission_upload_state_ = mission_upload_state_t::done;
+          else
+            mission_upload_state_ = mission_upload_state_t::failed;
+        }).detach();
       }
     );
   RCLCPP_INFO(get_logger(), "Started mission upload attempt #%d", mission_upload_attempts_);
