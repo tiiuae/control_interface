@@ -614,7 +614,7 @@ ControlInterface::ControlInterface(rclcpp::NodeOptions options) : Node("control_
 /* controlModeCallback //{ */
 void ControlInterface::controlModeCallback(const px4_msgs::msg::VehicleControlMode::UniquePtr msg)
 {
-  std::scoped_lock lck(state_mutex_, mission_mutex_, mission_upload_mutex_, waypoint_buffer_mutex_);
+  std::scoped_lock lck(telem_mutex_, mission_mutex_, mission_upload_mutex_, waypoint_buffer_mutex_);
 
   if (!system_connected_)
     return;
@@ -634,18 +634,21 @@ void ControlInterface::controlModeCallback(const px4_msgs::msg::VehicleControlMo
 
   if (manual_override_ && !msg->flag_control_manual_enabled)
   {
-    if (!msg->flag_armed && vehicle_state_ == vehicle_state_t::not_ready)
+    const auto land_state = telem_->landed_state();
+    const bool on_ground_disarmed = !msg->flag_armed && land_state == mavsdk::Telemetry::LandedState::OnGround;
+    const bool taking_off = land_state == mavsdk::Telemetry::LandedState::TakingOff;
+    if (on_ground_disarmed)
     {
       manual_override_ = false;
-      RCLCPP_INFO(get_logger(), "Vehicle is landed and disarmed, re-enabling automatic control.");
+      RCLCPP_INFO(get_logger(), "Vehicle is landed and disarmed, enabling automatic control.");
+    }
+    else if (taking_off)
+    {
+      manual_override_ = false;
+      RCLCPP_INFO(get_logger(), "Vehicle is taking off, enabling automatic control.");
     }
     else
-    {
-      std::string reasons;
-      add_reason_if("not disarmed", msg->flag_armed, reasons);
-      add_reason_if("not landed", vehicle_state_ != vehicle_state_t::not_ready, reasons);
-      RCLCPP_WARN_STREAM_THROTTLE(get_logger(), *get_clock(), 1000, "NOT re-enabling automatic control: " << reasons);
-    }
+      RCLCPP_WARN_STREAM_THROTTLE(get_logger(), *get_clock(), 1000, "NOT enabling automatic control: neither taking off nor landed and disarmed (" << to_string(land_state) << ")");
   }
 }
 //}
@@ -2038,7 +2041,8 @@ void ControlInterface::publishDebugMarkers()
 template <class T>
 bool ControlInterface::parse_param(const std::string &param_name, T &param_dest)
 {
-  declare_parameter<T>(param_name);
+  declare_parameter(param_name); // uncomment for Foxy
+  /* declare_parameter<T>(param_name); // uncomment for Galactic */
   if (!get_parameter(param_name, param_dest))
   {
     RCLCPP_ERROR(get_logger(), "Could not load param '%s'", param_name.c_str());
