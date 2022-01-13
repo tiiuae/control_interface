@@ -1546,8 +1546,16 @@ void ControlInterface::state_vehicle_not_connected()
   // advance to the next state if connection and initialization was OK
   if (succ)
   {
-    RCLCPP_INFO(get_logger(), "MavSDK system connected, switching state.");
-    vehicle_state_ = vehicle_state_t::not_ready;
+    std::string reasons;
+    if (!stopMission(reasons))
+    {
+      RCLCPP_WARN_STREAM(get_logger(), "Failed to stop mission before transitioning to not_ready (" << reasons << "). Arming may be dangerous!");
+    }
+    else
+    {
+      RCLCPP_INFO(get_logger(), "MavSDK system connected, clearing all missions and switching state to not_ready.");
+      vehicle_state_ = vehicle_state_t::not_ready;
+    }
   }
   // otherwise tell the user what we're waiting for
   else
@@ -1565,7 +1573,7 @@ void ControlInterface::state_vehicle_not_ready()
 
   if (!system_connected_)
   {
-    RCLCPP_INFO(get_logger(), "MavSDK system disconnected, switching state.");
+    RCLCPP_INFO(get_logger(), "MavSDK system disconnected, switching state to not_connected.");
     vehicle_state_ = vehicle_state_t::not_connected;
     return;
   }
@@ -1582,7 +1590,7 @@ void ControlInterface::state_vehicle_not_ready()
    && healthy
    && land_state == mavsdk::Telemetry::LandedState::OnGround)
   {
-    RCLCPP_INFO(get_logger(), "Vehicle is now ready for takeoff! Switching state.");
+    RCLCPP_INFO(get_logger(), "Vehicle is now ready for takeoff! Switching state to takeoff_ready.");
     vehicle_state_ = vehicle_state_t::takeoff_ready;
   }
   // otherwise tell the user what we're waiting for
@@ -1609,7 +1617,7 @@ void ControlInterface::state_vehicle_takeoff_ready(const bool takeoff_started)
 
   if (!system_connected_)
   {
-    RCLCPP_INFO(get_logger(), "MavSDK system disconnected, switching state.");
+    RCLCPP_INFO(get_logger(), "MavSDK system disconnected, switching state to not_connected.");
     vehicle_state_ = vehicle_state_t::not_connected;
     return;
   }
@@ -1621,7 +1629,7 @@ void ControlInterface::state_vehicle_takeoff_ready(const bool takeoff_started)
 
   if (land_state == mavsdk::Telemetry::LandedState::TakingOff || takeoff_started)
   {
-    RCLCPP_INFO(get_logger(), "Taking off! Switching state.");
+    RCLCPP_INFO(get_logger(), "Taking off! Switching state to taking_off.");
     vehicle_state_ = vehicle_state_t::taking_off;
     return;
   }
@@ -1634,7 +1642,8 @@ void ControlInterface::state_vehicle_takeoff_ready(const bool takeoff_started)
     add_reason_if("not armed", !armed, reasons);
     add_reason_if("not healthy", !healthy, reasons);
     add_reason_if("not landed (" + to_string(land_state) + ")", land_state != mavsdk::Telemetry::LandedState::OnGround, reasons);
-    RCLCPP_INFO_STREAM(get_logger(), "No longer ready for takeoff: " << reasons << ", switching state.");
+    RCLCPP_INFO_STREAM(get_logger(), "No longer ready for takeoff: " << reasons << ", stopping all missions and switching state to not_ready.");
+    stopMission(reasons); // we don't actually care about the result - if it fails, we can't do much about it anyways
     vehicle_state_ = vehicle_state_t::not_ready;
     return;
   }
@@ -1649,7 +1658,7 @@ void ControlInterface::state_vehicle_taking_off()
 
   if (!system_connected_)
   {
-    RCLCPP_INFO(get_logger(), "Takeoff interrupted: MavSDK system disconnected. Switching state.");
+    RCLCPP_INFO(get_logger(), "Takeoff interrupted: MavSDK system disconnected. Switching state to not_connected.");
     vehicle_state_ = vehicle_state_t::not_connected;
     return;
   }
@@ -1660,18 +1669,25 @@ void ControlInterface::state_vehicle_taking_off()
 
   if (!armed)
   {
-    RCLCPP_INFO(get_logger(), "Takeoff interrupted with disarm. Switching state.");
+    RCLCPP_INFO(get_logger(), "Takeoff interrupted with disarm. Stopping all missions and switching state to not_ready.");
+    std::string dummy;
+    stopMission(dummy); // we don't actually care about the result - if it fails, we can't do much about it anyways
     vehicle_state_ = vehicle_state_t::not_ready;
     return;
   }
 
   if (land_state == mavsdk::Telemetry::LandedState::InAir)
   {
-    RCLCPP_INFO(get_logger(), "Takeoff complete. Switching state.");
     if (manual_override_)
+    {
+      RCLCPP_INFO(get_logger(), "Takeoff complete. Switching state to manual_flight.");
       vehicle_state_ = vehicle_state_t::manual_flight;
+    }
     else
+    {
+      RCLCPP_INFO(get_logger(), "Takeoff complete. Switching state to autonomous_flight.");
       vehicle_state_ = vehicle_state_t::autonomous_flight;
+    }
     return;
   }
 }
@@ -1685,7 +1701,7 @@ void ControlInterface::state_vehicle_autonomous_flight()
 
   if (!system_connected_)
   {
-    RCLCPP_INFO(get_logger(), "MavSDK system disconnected, switching state.");
+    RCLCPP_INFO(get_logger(), "MavSDK system disconnected, switching state to not_connected.");
     vehicle_state_ = vehicle_state_t::not_connected;
     return;
   }
@@ -1703,14 +1719,15 @@ void ControlInterface::state_vehicle_autonomous_flight()
     add_reason_if("not armed", !armed, reasons);
     add_reason_if("not healthy", !healthy, reasons);
     add_reason_if("not flying (" + to_string(land_state) + ")", land_state != mavsdk::Telemetry::LandedState::InAir, reasons);
-    RCLCPP_INFO_STREAM(get_logger(), "Autonomous flight mode ended: " << reasons << ", switching state.");
+    RCLCPP_INFO_STREAM(get_logger(), "Autonomous flight mode ended: " << reasons << ", stopping all missions and switching state to not_ready.");
+    stopMission(reasons); // we don't actually care about the result - if it fails, we can't do much about it anyways
     vehicle_state_ = vehicle_state_t::not_ready;
     return;
   }
 
   if (manual_override_)
   {
-    RCLCPP_INFO(get_logger(), "Manual override detected, switching state.");
+    RCLCPP_INFO(get_logger(), "Manual override detected, switching state to manual_flight.");
     vehicle_state_ = vehicle_state_t::manual_flight;
   }
 }
@@ -1724,7 +1741,7 @@ void ControlInterface::state_vehicle_manual_flight()
 
   if (!system_connected_)
   {
-    RCLCPP_INFO(get_logger(), "MavSDK system disconnected, switching state.");
+    RCLCPP_INFO(get_logger(), "MavSDK system disconnected, switching state to not_connected.");
     vehicle_state_ = vehicle_state_t::not_connected;
     return;
   }
@@ -1739,7 +1756,8 @@ void ControlInterface::state_vehicle_manual_flight()
     std::string reasons;
     add_reason_if("not armed", !armed, reasons);
     add_reason_if("not flying (" + to_string(land_state) + ")", land_state != mavsdk::Telemetry::LandedState::InAir, reasons);
-    RCLCPP_INFO_STREAM(get_logger(), "Manual flight mode ended: " << reasons << ", switching state.");
+    RCLCPP_INFO_STREAM(get_logger(), "Manual flight mode ended: " << reasons << ", stopping all missions and switching state to not_ready.");
+    stopMission(reasons); // we don't actually care about the result - if it fails, we can't do much about it anyways
     vehicle_state_ = vehicle_state_t::not_ready;
     return;
   }
@@ -1909,6 +1927,15 @@ bool ControlInterface::startTakeoff(std::string& fail_reason_out)
 // action_mutex_
 bool ControlInterface::startLanding(std::string& fail_reason_out)
 {
+  /* // asynchronous variant prepared for when we implement action server */
+  /* action_->land_async([this](const mavsdk::Action::Result res) */
+  /*     { */
+  /*       if (res != mavsdk::Action::Result::Success) */
+  /*         RCLCPP_ERROR_STREAM(get_logger(), "Landing failed: " << to_string(res)); */
+  /*       else */
+  /*         RCLCPP_INFO(get_logger(), "Landing!"); */
+  /*     } */
+  /*   ); */
   const auto res = action_->land();
   if (res != mavsdk::Action::Result::Success)
   {
