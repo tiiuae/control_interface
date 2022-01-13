@@ -975,9 +975,14 @@ void ControlInterface::controlRoutine(void) {
           mission_->pause_mission();
           mission_plan_.mission_items.clear();
 
-          addToMission(waypoint_buffer_.front());
-          desired_pose_ = Eigen::Vector4d(waypoint_buffer_.front().x, waypoint_buffer_.front().y, waypoint_buffer_.front().z, waypoint_buffer_.front().yaw);
-          waypoint_buffer_.pop_front();
+          //addToMission(waypoint_buffer_.front());
+
+          for (size_t i = 0; i < waypoint_buffer_.size(); i++) {
+            addToMission(waypoint_buffer_.at(i));
+            desired_pose_ = Eigen::Vector4d(waypoint_buffer_.at(i).x, waypoint_buffer_.at(i).y, waypoint_buffer_.at(i).z, waypoint_buffer_.at(i).yaw);
+          }
+          //desired_pose_ = Eigen::Vector4d(waypoint_buffer_.front().x, waypoint_buffer_.front().y, waypoint_buffer_.front().z, waypoint_buffer_.front().yaw);
+          // waypoint_buffer_.pop_front();
 
           /* for (auto &w : waypoint_buffer_) { */
           /*   addToMission(w); */
@@ -993,6 +998,7 @@ void ControlInterface::controlRoutine(void) {
           startMission();
           mission_finished_ = false;
           start_mission_    = false;
+          waypoint_buffer_.clear();
         }
 
         // stop if final goal is reached
