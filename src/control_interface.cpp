@@ -240,8 +240,6 @@ public:
   ControlInterface(rclcpp::NodeOptions options);
 
 private:
-  bool print_callback_durations_ = true;
-
   std::recursive_mutex state_mutex_;
   enum vehicle_state_t
   {
@@ -327,6 +325,7 @@ private:
   std::ofstream mavsdk_logging_file_;
 
   // config params
+  bool   print_callback_durations_          = false;
   int    mavsdk_logging_print_level_        = 1;
   std::string mavsdk_logging_filename_      = {};
   double yaw_offset_correction_             = M_PI / 2;
@@ -494,6 +493,7 @@ ControlInterface::ControlInterface(rclcpp::NodeOptions options) : Node("control_
   loaded_successfully &= parse_param("general.octomap_reset_timeout", octomap_reset_timeout_);
   loaded_successfully &= parse_param("general.control_update_rate", control_update_rate_);
   loaded_successfully &= parse_param("general.diagnostics_publish_rate", diagnostics_publish_rate_);
+  loaded_successfully &= parse_param("general.print_callback_durations", print_callback_durations_);
 
   loaded_successfully &= parse_param("takeoff.height", takeoff_height_);
   loaded_successfully &= parse_param("takeoff.position_samples", takeoff_position_samples_);
@@ -1370,6 +1370,7 @@ bool ControlInterface::getPx4ParamFloatCallback([[maybe_unused]] const std::shar
 /* missionControlRoutine //{ */
 void ControlInterface::missionControlRoutine()
 {
+  scope_timer tim(print_callback_durations_, "missionControlRoutine", rclcpp::Duration(std::chrono::seconds(1)));
   std::scoped_lock lck(state_mutex_);
 
   // check if the vehicle is in a valid state to execute a mission
@@ -1477,6 +1478,7 @@ void ControlInterface::state_mission_in_progress()
 /*   diagnosticsRoutine(); //{ */
 void ControlInterface::diagnosticsRoutine()
 {
+  scope_timer tim(print_callback_durations_, "diagnosticsRoutine", rclcpp::Duration(std::chrono::seconds(1)));
   std::scoped_lock lock(state_mutex_, mission_mutex_, mission_progress_mutex_, telem_mutex_);
   // publish some diags
   publishDiagnostics();
@@ -1486,6 +1488,7 @@ void ControlInterface::diagnosticsRoutine()
 /* vehicleStateRoutine //{ */
 void ControlInterface::vehicleStateRoutine()
 {
+  scope_timer tim(print_callback_durations_, "vehicleStateRoutine", rclcpp::Duration(std::chrono::seconds(1)));
   std::scoped_lock lck(state_mutex_);
 
   // some debugging of pixhawk states
@@ -1973,7 +1976,6 @@ bool ControlInterface::startMissionUpload(const mavsdk::Mission::MissionPlan& mi
           mission_upload_state_ = mission_upload_state_t::failed;
       }
     );
-  mission_upload_attempts_++;
   RCLCPP_INFO(get_logger(), "Started mission upload attempt #%d", mission_upload_attempts_);
 
   mission_upload_state_ = mission_upload_state_t::started;
@@ -1989,13 +1991,12 @@ bool ControlInterface::startMissionUpload(const mavsdk::Mission::MissionPlan& mi
 bool ControlInterface::stopMission(std::string& fail_reason_out)
 {
   std::stringstream ss;
+  if (mission_state_ == mission_state_t::finished)
+    return true;
+
   // clear and reset stuff
   waypoint_buffer_.clear();
   mission_upload_waypoints_.mission_items.clear();
-  mission_state_ = mission_state_t::finished;
-
-  if (mission_state_ == mission_state_t::finished)
-    return true;
 
   // cancel any current mission upload to pixhawk
   const auto cancel_result = mission_->cancel_mission_upload();
@@ -2027,6 +2028,7 @@ bool ControlInterface::stopMission(std::string& fail_reason_out)
     return false;
   }
 
+  mission_state_ = mission_state_t::finished;
   RCLCPP_INFO(get_logger(), "Current mission stopped");
   return true;
 }
@@ -2109,8 +2111,11 @@ void ControlInterface::publishDebugMarkers()
 template <class T>
 bool ControlInterface::parse_param(const std::string &param_name, T &param_dest)
 {
-  declare_parameter(param_name); // uncomment for Foxy
-  /* declare_parameter<T>(param_name); // uncomment for Galactic */
+#ifdef ROS_FOXY
+  declare_parameter(param_name); // for Foxy
+#else
+  declare_parameter<T>(param_name); // for Galactic and newer
+#endif
   if (!get_parameter(param_name, param_dest))
   {
     RCLCPP_ERROR(get_logger(), "Could not load param '%s'", param_name.c_str());
