@@ -614,7 +614,7 @@ ControlInterface::ControlInterface(rclcpp::NodeOptions options) : Node("control_
 /* controlModeCallback //{ */
 void ControlInterface::controlModeCallback(const px4_msgs::msg::VehicleControlMode::UniquePtr msg)
 {
-  std::scoped_lock lck(mission_mutex_, mission_upload_mutex_, waypoint_buffer_mutex_);
+  std::scoped_lock lck(state_mutex_, mission_mutex_, mission_upload_mutex_, waypoint_buffer_mutex_);
 
   if (!system_connected_)
     return;
@@ -632,10 +632,20 @@ void ControlInterface::controlModeCallback(const px4_msgs::msg::VehicleControlMo
     return;
   }
 
-  if (manual_override_ && !msg->flag_control_manual_enabled && !msg->flag_armed && vehicle_state_ == vehicle_state_t::not_ready)
+  if (manual_override_ && !msg->flag_control_manual_enabled)
   {
-    manual_override_ = false;
-    RCLCPP_INFO(get_logger(), "Vehicle is landed and disarmed, re-enabling automatic control.");
+    if (!msg->flag_armed && vehicle_state_ == vehicle_state_t::not_ready)
+    {
+      manual_override_ = false;
+      RCLCPP_INFO(get_logger(), "Vehicle is landed and disarmed, re-enabling automatic control.");
+    }
+    else
+    {
+      std::string reasons;
+      add_reason_if("not disarmed", msg->flag_armed, reasons);
+      add_reason_if("not landed", vehicle_state_ != vehicle_state_t::not_ready, reasons);
+      RCLCPP_WARN_STREAM(get_logger(), "NOT re-enabling automatic control: " << reasons);
+    }
   }
 }
 //}
@@ -1590,18 +1600,13 @@ void ControlInterface::state_vehicle_taking_off()
     return;
   }
 
-  // manual control may override takeoff
-  if (manual_override_)
-  {
-    RCLCPP_INFO(get_logger(), "Takeoff interrupted with manual mode. Switching state.");
-    vehicle_state_ = vehicle_state_t::manual_flight;
-    return;
-  }
-
   if (land_state == mavsdk::Telemetry::LandedState::InAir)
   {
     RCLCPP_INFO(get_logger(), "Takeoff complete. Switching state.");
-    vehicle_state_ = vehicle_state_t::autonomous_flight;
+    if (manual_override_)
+      vehicle_state_ = vehicle_state_t::manual_flight;
+    else
+      vehicle_state_ = vehicle_state_t::autonomous_flight;
     return;
   }
 }
@@ -1669,7 +1674,7 @@ void ControlInterface::state_vehicle_manual_flight()
     std::string reasons;
     add_reason_if("not armed", !armed, reasons);
     add_reason_if("not flying (" + to_string(land_state) + ")", land_state != mavsdk::Telemetry::LandedState::InAir, reasons);
-    RCLCPP_INFO_STREAM(get_logger(), "Manual flight mode ended" << reasons << ", switching state.");
+    RCLCPP_INFO_STREAM(get_logger(), "Manual flight mode ended: " << reasons << ", switching state.");
     vehicle_state_ = vehicle_state_t::not_ready;
     return;
   }
