@@ -644,7 +644,7 @@ void ControlInterface::controlModeCallback(const px4_msgs::msg::VehicleControlMo
       std::string reasons;
       add_reason_if("not disarmed", msg->flag_armed, reasons);
       add_reason_if("not landed", vehicle_state_ != vehicle_state_t::not_ready, reasons);
-      RCLCPP_WARN_STREAM(get_logger(), "NOT re-enabling automatic control: " << reasons);
+      RCLCPP_WARN_STREAM_THROTTLE(get_logger(), *get_clock(), 1000, "NOT re-enabling automatic control: " << reasons);
     }
   }
 }
