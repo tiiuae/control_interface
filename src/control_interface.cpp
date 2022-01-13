@@ -192,28 +192,38 @@ std::string to_string(const mavsdk::ConnectionResult result);
 std::string to_string(const mavsdk::Telemetry::FlightMode mode);
 std::string to_string(const mavsdk::Telemetry::LandedState land_state);
 
+/* helper class scope_timer //{ */
+
 class scope_timer
 {
   public:
     scope_timer(
-        const bool enable,
-        const std::string& label,
-        const rclcpp::Duration& throttle = {0, 0},
-        rclcpp::Clock::SharedPtr clock_ptr = std::make_shared<rclcpp::Clock>(RCL_STEADY_TIME)
+        const bool enable, // whether to print anything - if false, nothing will be done
+        const std::string& label, // label of this timer used to uniquely identify it and for printing
+        const rclcpp::Duration& throttle = {0, 0}, // prints will not be output with a shorter period than this
+        const rclcpp::Duration& min_dur = {0, 0}, // shorter durations will be ignored
+        rclcpp::Clock::SharedPtr clock_ptr = std::make_shared<rclcpp::Clock>(RCL_STEADY_TIME) // which clock to use
       )
-      : enable_(enable), label_(label), throttle_(throttle), start_time_(clock_ptr->now()), clock_ptr_(clock_ptr)
+      : enable_(enable), label_(label), throttle_(throttle), min_dur_(min_dur), start_time_(clock_ptr->now()), clock_ptr_(clock_ptr)
     {}
+
     ~scope_timer()
     {
       if (!enable_)
         return;
+
       const rclcpp::Time end_time = clock_ptr_->now();
       const rclcpp::Duration dur = end_time - start_time_;
-      std::scoped_lock lck(last_ends_mtx_);
-      if (!last_ends_.count(label_) || end_time - last_ends_.at(label_)  > throttle_)
+      // ignore shorter durations than min_dur_
+      if (dur < min_dur_)
+        return;
+
+      // finally, check if it's been long enough from the last print for a new message
+      std::scoped_lock lck(last_message_mtx_);
+      if (!last_message_.count(label_) || end_time - last_message_.at(label_)  > throttle_)
       {
         std::cout << label_ << " took " << dur.seconds() << "s" << std::endl;
-        last_ends_.insert_or_assign(label_, end_time);
+        last_message_.insert_or_assign(label_, end_time);
       }
     }
 
@@ -221,13 +231,16 @@ class scope_timer
     const bool enable_;
     const std::string label_;
     const rclcpp::Duration throttle_;
+    const rclcpp::Duration min_dur_;
     const rclcpp::Time start_time_;
     const rclcpp::Clock::SharedPtr clock_ptr_;
-    std::mutex last_ends_mtx_;
-    static std::unordered_map<std::string, rclcpp::Time> last_ends_;
+    std::mutex last_message_mtx_;
+    static std::unordered_map<std::string, rclcpp::Time> last_message_;
 };
 
-std::unordered_map<std::string, rclcpp::Time> scope_timer::last_ends_ = {};
+//}
+
+std::unordered_map<std::string, rclcpp::Time> scope_timer::last_message_ = {};
 
 // --------------------------------------------------------------
 // |             ControlInterface class declaration             |
@@ -324,8 +337,10 @@ private:
   std::mutex mavsdk_logging_mutex_;
   std::ofstream mavsdk_logging_file_;
 
+  rclcpp::Duration print_callback_throttle_ = rclcpp::Duration(std::chrono::seconds(1));
   // config params
   bool   print_callback_durations_          = false;
+  rclcpp::Duration print_callback_min_dur_ = rclcpp::Duration::from_seconds(0.020);
   int    mavsdk_logging_print_level_        = 1;
   std::string mavsdk_logging_filename_      = {};
   double yaw_offset_correction_             = M_PI / 2;
@@ -449,6 +464,7 @@ private:
   // utils
   template <class T>
   bool parse_param(const std::string &param_name, T &param_dest);
+  bool parse_param(const std::string& param_name, rclcpp::Duration& param_dest);
 
   template<typename T>
   bool addWaypoints(const T& path, const bool is_global, std::string& fail_reason_out);
@@ -494,6 +510,7 @@ ControlInterface::ControlInterface(rclcpp::NodeOptions options) : Node("control_
   loaded_successfully &= parse_param("general.control_update_rate", control_update_rate_);
   loaded_successfully &= parse_param("general.diagnostics_publish_rate", diagnostics_publish_rate_);
   loaded_successfully &= parse_param("general.print_callback_durations", print_callback_durations_);
+  loaded_successfully &= parse_param("general.print_callback_min_dur", print_callback_min_dur_);
 
   loaded_successfully &= parse_param("takeoff.height", takeoff_height_);
   loaded_successfully &= parse_param("takeoff.position_samples", takeoff_position_samples_);
@@ -655,7 +672,7 @@ ControlInterface::ControlInterface(rclcpp::NodeOptions options) : Node("control_
 /* controlModeCallback //{ */
 void ControlInterface::controlModeCallback(const px4_msgs::msg::VehicleControlMode::UniquePtr msg)
 {
-  scope_timer tim(print_callback_durations_, "controlModeCallback", rclcpp::Duration(std::chrono::seconds(1)));
+  scope_timer tim(print_callback_durations_, "controlModeCallback", print_callback_throttle_, print_callback_min_dur_);
   std::scoped_lock lck(telem_mutex_, mission_mutex_, mission_upload_mutex_, waypoint_buffer_mutex_);
 
   if (!system_connected_)
@@ -698,7 +715,7 @@ void ControlInterface::controlModeCallback(const px4_msgs::msg::VehicleControlMo
 /* odometryCallback //{ */
 void ControlInterface::odometryCallback(const nav_msgs::msg::Odometry::UniquePtr msg)
 {
-  scope_timer tim(print_callback_durations_, "odometryCallback", rclcpp::Duration(std::chrono::seconds(1)));
+  scope_timer tim(print_callback_durations_, "odometryCallback", print_callback_throttle_, print_callback_min_dur_);
   std::scoped_lock lck(pose_mutex_);
 
   getting_odom_ = true;
@@ -721,7 +738,7 @@ void ControlInterface::odometryCallback(const nav_msgs::msg::Odometry::UniquePtr
 /* homePositionCallback //{ */
 void ControlInterface::homePositionCallback(const px4_msgs::msg::HomePosition::UniquePtr msg)
 {
-  scope_timer tim(print_callback_durations_, "homePositionCallback", rclcpp::Duration(std::chrono::seconds(1)));
+  scope_timer tim(print_callback_durations_, "homePositionCallback", print_callback_throttle_, print_callback_min_dur_);
   std::scoped_lock lck(coord_transform_mutex_);
 
   mavsdk::geometry::CoordinateTransformation::GlobalCoordinate ref;
@@ -743,7 +760,7 @@ void ControlInterface::homePositionCallback(const px4_msgs::msg::HomePosition::U
 /* missionResultCallback //{ */
 void ControlInterface::missionResultCallback(const px4_msgs::msg::MissionResult::UniquePtr msg)
 {
-  scope_timer tim(print_callback_durations_, "missionResultCallback", rclcpp::Duration(std::chrono::seconds(1)));
+  scope_timer tim(print_callback_durations_, "missionResultCallback", print_callback_throttle_, print_callback_min_dur_);
   std::scoped_lock lck(mission_mutex_);
 
   // check if a mission is currently in-progress and we got an indication that it is finished
@@ -759,7 +776,7 @@ void ControlInterface::missionResultCallback(const px4_msgs::msg::MissionResult:
 /* missionProgressCallback //{ */
 void ControlInterface::missionProgressCallback(const mavsdk::Mission::MissionProgress& mission_progress)
 {
-  scope_timer tim(print_callback_durations_, "missionProgressCallback", rclcpp::Duration(std::chrono::seconds(1)));
+  scope_timer tim(print_callback_durations_, "missionProgressCallback", print_callback_throttle_, print_callback_min_dur_);
   std::scoped_lock lck(mission_progress_mutex_);
   mission_progress_size_ = mission_progress.total;
   mission_progress_current_waypoint_ = mission_progress.current;
@@ -775,7 +792,7 @@ void ControlInterface::missionProgressCallback(const mavsdk::Mission::MissionPro
 /* mavsdkLogCallback() method //{ */
 bool ControlInterface::mavsdkLogCallback(const mavsdk::log::Level level, const std::string& message, const std::string& file, const int line)
 {
-  scope_timer tim(print_callback_durations_, "mavsdkLogCallback", rclcpp::Duration(std::chrono::seconds(1)));
+  scope_timer tim(print_callback_durations_, "mavsdkLogCallback", print_callback_throttle_, print_callback_min_dur_);
   std::scoped_lock lck(mavsdk_logging_mutex_);
   switch (level)
   {
@@ -817,7 +834,7 @@ bool ControlInterface::mavsdkLogCallback(const mavsdk::log::Level level, const s
 bool ControlInterface::takeoffCallback([[maybe_unused]] const std::shared_ptr<std_srvs::srv::Trigger::Request> request,
                                        std::shared_ptr<std_srvs::srv::Trigger::Response>                       response)
 {
-  scope_timer tim(print_callback_durations_, "takeoffCallback", rclcpp::Duration(std::chrono::seconds(1)));
+  scope_timer tim(print_callback_durations_, "takeoffCallback", print_callback_throttle_, print_callback_min_dur_);
   std::scoped_lock lck(state_mutex_, telem_mutex_, action_mutex_, pose_mutex_, waypoint_buffer_mutex_);
 
   if (vehicle_state_ != vehicle_state_t::takeoff_ready)
@@ -847,7 +864,7 @@ bool ControlInterface::takeoffCallback([[maybe_unused]] const std::shared_ptr<st
 bool ControlInterface::landCallback([[maybe_unused]] const std::shared_ptr<std_srvs::srv::Trigger::Request> request,
                                     std::shared_ptr<std_srvs::srv::Trigger::Response>                       response)
 {
-  scope_timer tim(print_callback_durations_, "landCallback", rclcpp::Duration(std::chrono::seconds(1)));
+  scope_timer tim(print_callback_durations_, "landCallback", print_callback_throttle_, print_callback_min_dur_);
   std::scoped_lock lck(state_mutex_, mission_mutex_, waypoint_buffer_mutex_, action_mutex_);
 
   std::string fail_reason;
@@ -876,7 +893,7 @@ bool ControlInterface::landCallback([[maybe_unused]] const std::shared_ptr<std_s
 bool ControlInterface::armingCallback([[maybe_unused]] const std::shared_ptr<std_srvs::srv::SetBool::Request> request,
                                       std::shared_ptr<std_srvs::srv::SetBool::Response>                       response)
 {
-  scope_timer tim(print_callback_durations_, "armingCallback", rclcpp::Duration(std::chrono::seconds(1)));
+  scope_timer tim(print_callback_durations_, "armingCallback", print_callback_throttle_, print_callback_min_dur_);
   std::scoped_lock lck(state_mutex_, action_mutex_);
 
   if (!system_connected_)
@@ -932,7 +949,7 @@ bool ControlInterface::armingCallback([[maybe_unused]] const std::shared_ptr<std
 template<typename T>
 bool ControlInterface::addWaypoints(const T& path, const bool is_global, std::string& fail_reason_out)
 {
-  scope_timer tim(print_callback_durations_, "addWaypoints", rclcpp::Duration(std::chrono::seconds(1)));
+  scope_timer tim(print_callback_durations_, "addWaypoints", print_callback_throttle_, print_callback_min_dur_);
   // check that we are in a state in which we can add waypoints to the buffer
   if (vehicle_state_ != vehicle_state_t::autonomous_flight)
   {
@@ -960,7 +977,7 @@ bool ControlInterface::addWaypoints(const T& path, const bool is_global, std::st
 bool ControlInterface::localWaypointCallback(const std::shared_ptr<fog_msgs::srv::Vec4::Request> request,
                                              std::shared_ptr<fog_msgs::srv::Vec4::Response>      response)
 {
-  scope_timer tim(print_callback_durations_, "localWaypointCallback", rclcpp::Duration(std::chrono::seconds(1)));
+  scope_timer tim(print_callback_durations_, "localWaypointCallback", print_callback_throttle_, print_callback_min_dur_);
   std::scoped_lock lck(state_mutex_, waypoint_buffer_mutex_, mission_mutex_, mission_upload_mutex_);
 
   // convert the single waypoint to a path containing a single point
@@ -985,7 +1002,7 @@ bool ControlInterface::localWaypointCallback(const std::shared_ptr<fog_msgs::srv
 /* localPathCallback //{ */
 bool ControlInterface::localPathCallback(const std::shared_ptr<fog_msgs::srv::Path::Request> request, std::shared_ptr<fog_msgs::srv::Path::Response> response)
 {
-  scope_timer tim(print_callback_durations_, "localPathCallback", rclcpp::Duration(std::chrono::seconds(1)));
+  scope_timer tim(print_callback_durations_, "localPathCallback", print_callback_throttle_, print_callback_min_dur_);
   std::scoped_lock lck(state_mutex_, waypoint_buffer_mutex_, mission_mutex_, mission_upload_mutex_);
 
   // check that we are in a state in which we can add waypoints to the buffer
@@ -1008,7 +1025,7 @@ bool ControlInterface::localPathCallback(const std::shared_ptr<fog_msgs::srv::Pa
 bool ControlInterface::gpsWaypointCallback(const std::shared_ptr<fog_msgs::srv::Vec4::Request> request,
                                            std::shared_ptr<fog_msgs::srv::Vec4::Response>      response)
 {
-  scope_timer tim(print_callback_durations_, "gpsWaypointCallback", rclcpp::Duration(std::chrono::seconds(1)));
+  scope_timer tim(print_callback_durations_, "gpsWaypointCallback", print_callback_throttle_, print_callback_min_dur_);
   std::scoped_lock lck(state_mutex_, waypoint_buffer_mutex_, mission_mutex_, mission_upload_mutex_, coord_transform_mutex_);
 
   // convert the single waypoint to a path containing a single point
@@ -1033,7 +1050,7 @@ bool ControlInterface::gpsWaypointCallback(const std::shared_ptr<fog_msgs::srv::
 /* gpsPathCallback //{ */
 bool ControlInterface::gpsPathCallback(const std::shared_ptr<fog_msgs::srv::Path::Request> request, std::shared_ptr<fog_msgs::srv::Path::Response> response)
 {
-  scope_timer tim(print_callback_durations_, "gpsPathCallback", rclcpp::Duration(std::chrono::seconds(1)));
+  scope_timer tim(print_callback_durations_, "gpsPathCallback", print_callback_throttle_, print_callback_min_dur_);
   std::scoped_lock lck(state_mutex_, waypoint_buffer_mutex_, mission_mutex_, mission_upload_mutex_, coord_transform_mutex_);
 
   // check that we are in a state in which we can add waypoints to the buffer
@@ -1056,7 +1073,7 @@ bool ControlInterface::gpsPathCallback(const std::shared_ptr<fog_msgs::srv::Path
 bool ControlInterface::waypointToLocalCallback(const std::shared_ptr<fog_msgs::srv::WaypointToLocal::Request> request,
                                                std::shared_ptr<fog_msgs::srv::WaypointToLocal::Response>      response)
 {
-  scope_timer tim(print_callback_durations_, "waypointToLocalCallback", rclcpp::Duration(std::chrono::seconds(1)));
+  scope_timer tim(print_callback_durations_, "waypointToLocalCallback", print_callback_throttle_, print_callback_min_dur_);
   std::scoped_lock lock(state_mutex_, coord_transform_mutex_);
 
   if (!system_connected_)
@@ -1095,7 +1112,7 @@ bool ControlInterface::waypointToLocalCallback(const std::shared_ptr<fog_msgs::s
 bool ControlInterface::pathToLocalCallback(const std::shared_ptr<fog_msgs::srv::PathToLocal::Request> request,
                                            std::shared_ptr<fog_msgs::srv::PathToLocal::Response>      response)
 {
-  scope_timer tim(print_callback_durations_, "pathToLocalCallback", rclcpp::Duration(std::chrono::seconds(1)));
+  scope_timer tim(print_callback_durations_, "pathToLocalCallback", print_callback_throttle_, print_callback_min_dur_);
   std::scoped_lock lock(state_mutex_, coord_transform_mutex_);
 
   if (!system_connected_)
@@ -1154,7 +1171,7 @@ bool ControlInterface::pathToLocalCallback(const std::shared_ptr<fog_msgs::srv::
 /* parametersCallback //{ */
 rcl_interfaces::msg::SetParametersResult ControlInterface::parametersCallback(const std::vector<rclcpp::Parameter> &parameters)
 {
-  scope_timer tim(print_callback_durations_, "parametersCallback", rclcpp::Duration(std::chrono::seconds(1)));
+  scope_timer tim(print_callback_durations_, "parametersCallback", print_callback_throttle_, print_callback_min_dur_);
   rcl_interfaces::msg::SetParametersResult result;
   result.successful = false;
   result.reason     = "";
@@ -1227,7 +1244,7 @@ rcl_interfaces::msg::SetParametersResult ControlInterface::parametersCallback(co
 bool ControlInterface::setPx4ParamIntCallback([[maybe_unused]] const std::shared_ptr<fog_msgs::srv::SetPx4ParamInt::Request> request,
                                               std::shared_ptr<fog_msgs::srv::SetPx4ParamInt::Response>                       response)
 {
-  scope_timer tim(print_callback_durations_, "setPx4ParamIntCallback", rclcpp::Duration(std::chrono::seconds(1)));
+  scope_timer tim(print_callback_durations_, "setPx4ParamIntCallback", print_callback_throttle_, print_callback_min_dur_);
   std::scoped_lock lock(state_mutex_, param_mutex_);
 
   if (!system_connected_)
@@ -1262,7 +1279,7 @@ bool ControlInterface::setPx4ParamIntCallback([[maybe_unused]] const std::shared
 bool ControlInterface::getPx4ParamIntCallback([[maybe_unused]] const std::shared_ptr<fog_msgs::srv::GetPx4ParamInt::Request> request,
                                               std::shared_ptr<fog_msgs::srv::GetPx4ParamInt::Response>                       response)
 {
-  scope_timer tim(print_callback_durations_, "getPx4ParamIntCallback", rclcpp::Duration(std::chrono::seconds(1)));
+  scope_timer tim(print_callback_durations_, "getPx4ParamIntCallback", print_callback_throttle_, print_callback_min_dur_);
   std::scoped_lock lock(state_mutex_, param_mutex_);
 
   if (!system_connected_)
@@ -1297,7 +1314,7 @@ bool ControlInterface::getPx4ParamIntCallback([[maybe_unused]] const std::shared
 bool ControlInterface::setPx4ParamFloatCallback([[maybe_unused]] const std::shared_ptr<fog_msgs::srv::SetPx4ParamFloat::Request> request,
                                                 std::shared_ptr<fog_msgs::srv::SetPx4ParamFloat::Response>                       response)
 {
-  scope_timer tim(print_callback_durations_, "setPx4ParamFloatCallback", rclcpp::Duration(std::chrono::seconds(1)));
+  scope_timer tim(print_callback_durations_, "setPx4ParamFloatCallback", print_callback_throttle_, print_callback_min_dur_);
   std::scoped_lock lock(state_mutex_, param_mutex_);
 
   if (!system_connected_)
@@ -1332,7 +1349,7 @@ bool ControlInterface::setPx4ParamFloatCallback([[maybe_unused]] const std::shar
 bool ControlInterface::getPx4ParamFloatCallback([[maybe_unused]] const std::shared_ptr<fog_msgs::srv::GetPx4ParamFloat::Request> request,
                                                 std::shared_ptr<fog_msgs::srv::GetPx4ParamFloat::Response>                       response)
 {
-  scope_timer tim(print_callback_durations_, "getPx4ParamFloatCallback", rclcpp::Duration(std::chrono::seconds(1)));
+  scope_timer tim(print_callback_durations_, "getPx4ParamFloatCallback", print_callback_throttle_, print_callback_min_dur_);
   std::scoped_lock lock(state_mutex_, param_mutex_);
 
   if (!system_connected_)
@@ -1370,7 +1387,7 @@ bool ControlInterface::getPx4ParamFloatCallback([[maybe_unused]] const std::shar
 /* missionControlRoutine //{ */
 void ControlInterface::missionControlRoutine()
 {
-  scope_timer tim(print_callback_durations_, "missionControlRoutine", rclcpp::Duration(std::chrono::seconds(1)));
+  scope_timer tim(print_callback_durations_, "missionControlRoutine", print_callback_throttle_, print_callback_min_dur_);
   std::scoped_lock lck(state_mutex_);
 
   // check if the vehicle is in a valid state to execute a mission
@@ -1478,7 +1495,7 @@ void ControlInterface::state_mission_in_progress()
 /*   diagnosticsRoutine(); //{ */
 void ControlInterface::diagnosticsRoutine()
 {
-  scope_timer tim(print_callback_durations_, "diagnosticsRoutine", rclcpp::Duration(std::chrono::seconds(1)));
+  scope_timer tim(print_callback_durations_, "diagnosticsRoutine", print_callback_throttle_, print_callback_min_dur_);
   std::scoped_lock lock(state_mutex_, mission_mutex_, mission_progress_mutex_, telem_mutex_);
   // publish some diags
   publishDiagnostics();
@@ -1488,7 +1505,7 @@ void ControlInterface::diagnosticsRoutine()
 /* vehicleStateRoutine //{ */
 void ControlInterface::vehicleStateRoutine()
 {
-  scope_timer tim(print_callback_durations_, "vehicleStateRoutine", rclcpp::Duration(std::chrono::seconds(1)));
+  scope_timer tim(print_callback_durations_, "vehicleStateRoutine", print_callback_throttle_, print_callback_min_dur_);
   std::scoped_lock lck(state_mutex_);
 
   // some debugging of pixhawk states
@@ -1644,6 +1661,7 @@ void ControlInterface::state_vehicle_takeoff_ready(const bool takeoff_started)
     add_reason_if("not landed (" + to_string(land_state) + ")", land_state != mavsdk::Telemetry::LandedState::OnGround, reasons);
     RCLCPP_INFO_STREAM(get_logger(), "No longer ready for takeoff: " << reasons << ", stopping all missions and switching state to not_ready.");
     stopMission(reasons); // we don't actually care about the result - if it fails, we can't do much about it anyways
+    pose_takeoff_samples_.clear(); // clear the takeoff pose samples to estimate a new one
     vehicle_state_ = vehicle_state_t::not_ready;
     return;
   }
@@ -1672,6 +1690,7 @@ void ControlInterface::state_vehicle_taking_off()
     RCLCPP_INFO(get_logger(), "Takeoff interrupted with disarm. Stopping all missions and switching state to not_ready.");
     std::string dummy;
     stopMission(dummy); // we don't actually care about the result - if it fails, we can't do much about it anyways
+    pose_takeoff_samples_.clear(); // clear the takeoff pose samples to estimate a new one
     vehicle_state_ = vehicle_state_t::not_ready;
     return;
   }
@@ -1721,6 +1740,7 @@ void ControlInterface::state_vehicle_autonomous_flight()
     add_reason_if("not flying (" + to_string(land_state) + ")", land_state != mavsdk::Telemetry::LandedState::InAir, reasons);
     RCLCPP_INFO_STREAM(get_logger(), "Autonomous flight mode ended: " << reasons << ", stopping all missions and switching state to not_ready.");
     stopMission(reasons); // we don't actually care about the result - if it fails, we can't do much about it anyways
+    pose_takeoff_samples_.clear(); // clear the takeoff pose samples to estimate a new one
     vehicle_state_ = vehicle_state_t::not_ready;
     return;
   }
@@ -1758,6 +1778,7 @@ void ControlInterface::state_vehicle_manual_flight()
     add_reason_if("not flying (" + to_string(land_state) + ")", land_state != mavsdk::Telemetry::LandedState::InAir, reasons);
     RCLCPP_INFO_STREAM(get_logger(), "Manual flight mode ended: " << reasons << ", stopping all missions and switching state to not_ready.");
     stopMission(reasons); // we don't actually care about the result - if it fails, we can't do much about it anyways
+    pose_takeoff_samples_.clear(); // clear the takeoff pose samples to estimate a new one
     vehicle_state_ = vehicle_state_t::not_ready;
     return;
   }
@@ -2151,6 +2172,28 @@ bool ControlInterface::parse_param(const std::string &param_name, T &param_dest)
   else
   {
     RCLCPP_INFO_STREAM(get_logger(), "Loaded '" << param_name << "' = '" << param_dest << "'");
+  }
+  return true;
+}
+
+bool ControlInterface::parse_param(const std::string& param_name, rclcpp::Duration& param_dest)
+{
+  using T = double;
+#ifdef ROS_FOXY
+  declare_parameter(param_name); // for Foxy
+#else
+  declare_parameter<T>(param_name); // for Galactic and newer
+#endif
+  T tmp;
+  if (!get_parameter(param_name, tmp))
+  {
+    RCLCPP_ERROR(get_logger(), "Could not load param '%s'", param_name.c_str());
+    return false;
+  }
+  else
+  {
+    param_dest = rclcpp::Duration::from_seconds(tmp);
+    RCLCPP_INFO_STREAM(get_logger(), "Loaded '" << param_name << "' = '" << tmp << "s'");
   }
   return true;
 }

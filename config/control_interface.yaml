@@ -6,7 +6,8 @@ general:
   octomap_reset_timeout: 3.0 # [s]
   control_update_rate: 20.0 # [Hz]
   diagnostics_publish_rate: 1.0 # [Hz]
-  print_callback_durations: false # for debugging purposes
+  print_callback_durations: true # for debugging purposes
+  print_callback_min_dur: 0.020 # [s] shorter callback durations than this will be ignored and not printed
 
 takeoff:
   height: 1.0 # [m]
