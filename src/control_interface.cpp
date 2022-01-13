@@ -943,11 +943,12 @@ void ControlInterface::publishDiagnostics() {
   msg.airborne               = !landed_;
   msg.moving                 = motion_started_;
   msg.mission_finished       = mission_finished_;
-  msg.buffered_mission_items = waypoint_buffer_.size();
-  msg.getting_gps            = getting_gps_;
+  msg.last_mission_size      = waypoint_buffer_.size();
+  msg.gps_origin_set         = getting_gps_;
   msg.getting_odom           = getting_pixhawk_odom_;
   msg.getting_control_mode   = getting_control_mode_;
   msg.getting_land_sensor    = getting_landed_info_;
+  msg.manual_control         = false;
   diagnostics_publisher_->publish(msg);
 }
 //}
