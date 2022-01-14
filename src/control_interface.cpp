@@ -321,7 +321,7 @@ private:
   std::mutex                    waypoint_buffer_mutex_;  // guards the following block of variables
   std::vector<local_waypoint_t> waypoint_buffer_;        // this buffer is used for storing new incoming waypoints (it is moved to the mission_upload_waypoints_ buffer when upload starts)
 
-  Eigen::Vector4d desired_pose_;
+  Eigen::Vector4d cmd_pose_ = Eigen::Vector4d(0, 0, 0, 0);
   Eigen::Vector3d home_position_offset_ = Eigen::Vector3d(0, 0, 0);
 
   // use takeoff lat and long to initialize local frame
@@ -357,7 +357,7 @@ private:
   int    mission_upload_attempts_threshold_ = 5;
 
   // publishers
-  rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr desired_pose_publisher_;  // https://ctu-mrs.github.io/docs/system/relative_commands.html
+  rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr cmd_pose_publisher_;  // https://ctu-mrs.github.io/docs/system/relative_commands.html
   rclcpp::Publisher<geometry_msgs::msg::PoseArray>::SharedPtr   waypoint_publisher_;
   rclcpp::Publisher<fog_msgs::msg::ControlInterfaceDiagnostics>::SharedPtr diagnostics_publisher_;
 
@@ -435,7 +435,7 @@ private:
   bool stopMission(std::string& fail_reason_out);
 
   void publishDebugMarkers();
-  void publishDesiredPose();
+  void publishCmdPose();
 
   // timers
   rclcpp::TimerBase::SharedPtr mission_control_timer_;
@@ -539,7 +539,6 @@ ControlInterface::ControlInterface(rclcpp::NodeOptions options) : Node("control_
   //}
 
   // | ------------- misc. parameters initialization ------------ |
-  desired_pose_ = Eigen::Vector4d(0.0, 0.0, 0.0, 0.0);
   pose_takeoff_samples_.set_capacity(takeoff_position_samples_);
 
   /* setup MavSDK logging //{ */
@@ -579,7 +578,7 @@ ControlInterface::ControlInterface(rclcpp::NodeOptions options) : Node("control_
 
   rclcpp::QoS qos(rclcpp::KeepLast(3));
   // | ------------------ initialize publishers ----------------- |
-  desired_pose_publisher_ = create_publisher<geometry_msgs::msg::PoseStamped>("~/desired_pose_out", qos);
+  cmd_pose_publisher_     = create_publisher<geometry_msgs::msg::PoseStamped>("~/cmd_pose_out", qos);
   waypoint_publisher_     = create_publisher<geometry_msgs::msg::PoseArray>("~/waypoints_out", qos);
   diagnostics_publisher_  = create_publisher<fog_msgs::msg::ControlInterfaceDiagnostics>("~/diagnostics_out", qos);
 
@@ -782,15 +781,19 @@ void ControlInterface::missionProgressCallback(const mavsdk::Mission::MissionPro
   std::thread([this, &mission_progress]
   {
     scope_timer tim(print_callback_durations_, "missionProgressCallback", print_callback_throttle_, print_callback_min_dur_);
-    std::scoped_lock lck(mission_progress_mutex_);
+    std::scoped_lock lck(mission_mutex_, mission_progress_mutex_);
+
+    // if no mission is in progress, don't print or update anything to avoid spamming garbage
+    if (mission_state_ != mission_state_t::in_progress)
+      return;
+
     mission_progress_size_ = mission_progress.total;
     mission_progress_current_waypoint_ = mission_progress.current;
-
     const float percent = mission_progress.total == 0 ? 100 : mission_progress.current/float(mission_progress.total)*100.0f;
     if (mission_progress_current_waypoint_ == -1)
       RCLCPP_INFO(get_logger(), "Current mission cancelled (waypoint %d/%d).", mission_progress.current, mission_progress.total);
-    else if (mission_progress_current_waypoint_ == 0)
-      RCLCPP_INFO(get_logger(), "Current mission not started yet (waypoint %d/%d).", mission_progress.current, mission_progress.total);
+    else if (mission_progress.total == 0)
+      RCLCPP_INFO(get_logger(), "Current mission is empty (waypoint %d/%d).", mission_progress.current, mission_progress.total);
     else
       RCLCPP_INFO(get_logger(), "Current mission waypoint: %d/%d (%.1f%%).", mission_progress.current, mission_progress.total, percent);
   }).detach();
@@ -1417,7 +1420,7 @@ void ControlInterface::missionControlRoutine()
       state_mission_in_progress(); break;
   }
 
-  publishDesiredPose();
+  publishCmdPose();
 }
 
 // | -------- Implementation of mission control states -------- |
@@ -1438,9 +1441,9 @@ void ControlInterface::state_mission_finished()
     for (const auto& pt : waypoint_buffer_)
       mission_upload_waypoints_.mission_items.push_back(to_mission_item(pt));
 
-    // update the current desired_pose_
-    const auto& last_wp = waypoint_buffer_.back();
-    desired_pose_ = Eigen::Vector4d(last_wp.x, last_wp.y, last_wp.z, last_wp.yaw);
+    // update the current cmd_pose_
+    const auto& first_wp = waypoint_buffer_.back();
+    cmd_pose_ = Eigen::Vector4d(first_wp.x, first_wp.y, first_wp.z, first_wp.yaw);
 
     // clear the waypoint buffer
     waypoint_buffer_.clear();
@@ -1949,7 +1952,7 @@ bool ControlInterface::startTakeoff(std::string& fail_reason_out)
 
   current_goal.z   = takeoff_height_;
   current_goal.yaw = getYaw(pose_ori_);
-  desired_pose_    = Eigen::Vector4d(current_goal.x, current_goal.y, current_goal.z, current_goal.yaw);
+  cmd_pose_    = Eigen::Vector4d(current_goal.x, current_goal.y, current_goal.z, current_goal.yaw);
 
   waypoint_buffer_.push_back(current_goal);
 
@@ -2061,12 +2064,13 @@ bool ControlInterface::startMissionUpload(const mavsdk::Mission::MissionPlan& mi
 bool ControlInterface::stopMission(std::string& fail_reason_out)
 {
   std::stringstream ss;
-  if (mission_state_ == mission_state_t::finished)
-    return true;
 
   // clear and reset stuff
   waypoint_buffer_.clear();
   mission_upload_waypoints_.mission_items.clear();
+
+  if (mission_state_ == mission_state_t::finished)
+    return true;
 
   // cancel any current mission upload to pixhawk if applicable
   if (mission_upload_state_ == mission_upload_state_t::started)
@@ -2127,21 +2131,21 @@ void ControlInterface::publishDiagnostics()
 }
 //}
 
-/* publishDesiredPose //{ */
-void ControlInterface::publishDesiredPose()
+/* publishCmdPose //{ */
+void ControlInterface::publishCmdPose()
 {
   geometry_msgs::msg::PoseStamped msg;
   msg.header.stamp     = get_clock()->now();
   msg.header.frame_id  = world_frame_;
-  msg.pose.position.x  = desired_pose_.x();
-  msg.pose.position.y  = desired_pose_.y();
-  msg.pose.position.z  = desired_pose_.z();
-  const Eigen::Quaterniond q(Eigen::AngleAxisd(desired_pose_.w(), Eigen::Vector3d::UnitZ()));
+  msg.pose.position.x  = cmd_pose_.x();
+  msg.pose.position.y  = cmd_pose_.y();
+  msg.pose.position.z  = cmd_pose_.z();
+  const Eigen::Quaterniond q(Eigen::AngleAxisd(cmd_pose_.w(), Eigen::Vector3d::UnitZ()));
   msg.pose.orientation.w = q.w();
   msg.pose.orientation.x = q.x();
   msg.pose.orientation.y = q.y();
   msg.pose.orientation.z = q.z();
-  desired_pose_publisher_->publish(msg);
+  cmd_pose_publisher_->publish(msg);
 }
 //}
 

@@ -43,7 +43,7 @@ def generate_launch_description():
                     {"world_frame": launch.substitutions.LaunchConfiguration("world_frame")},
                 ],
                 remappings=[
-                    ("~/desired_pose_out", "~/desired_pose"),
+                    ("~/cmd_pose_out", "~/cmd_pose"),
                     ("~/diagnostics_out", "~/diagnostics"),
                     ("~/waypoints_out", "~/waypoints"),
 
