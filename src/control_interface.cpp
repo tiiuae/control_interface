@@ -1748,7 +1748,6 @@ void ControlInterface::state_vehicle_autonomous_flight()
     add_reason_if("not healthy", !healthy, reasons);
     add_reason_if("not flying (" + to_string(land_state) + ")", land_state != mavsdk::Telemetry::LandedState::InAir, reasons);
     RCLCPP_INFO_STREAM(get_logger(), "Autonomous flight mode ended: " << reasons << ", stopping all missions and switching state to not_ready.");
-    std::string reasons;
     if (!stopMission(reasons))
       RCLCPP_WARN_STREAM(get_logger(), "Failed to stop mission before transitioning to not_ready (" << reasons << "). Arming may be dangerous!");
     pose_takeoff_samples_.clear(); // clear the takeoff pose samples to estimate a new one
@@ -2070,16 +2069,6 @@ bool ControlInterface::stopMission(std::string& fail_reason_out)
   if (cancel_result != mavsdk::Mission::Result::Success)
   {
     ss << "cannot stop mission upload (" << to_string(cancel_result) << ")";
-    fail_reason_out = ss.str();
-    RCLCPP_ERROR_STREAM(get_logger(), "Failed to stop current mission: " << fail_reason_out);
-    return false;
-  }
-
-  // pause any mission currently being executed
-  const auto pause_result = mission_->pause_mission();
-  if (pause_result != mavsdk::Mission::Result::Success)
-  {
-    ss << "cannot pause current mission (" << to_string(cancel_result) << ")";
     fail_reason_out = ss.str();
     RCLCPP_ERROR_STREAM(get_logger(), "Failed to stop current mission: " << fail_reason_out);
     return false;
