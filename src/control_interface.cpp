@@ -320,7 +320,6 @@ private:
 
   std::mutex                    waypoint_buffer_mutex_;  // guards the following block of variables
   std::vector<local_waypoint_t> waypoint_buffer_;        // this buffer is used for storing new incoming waypoints (it is moved to the mission_upload_waypoints_ buffer when upload starts)
-  Eigen::Vector4d               cmd_pose_ = Eigen::Vector4d(0, 0, 0, 0); // this is also protected by the waypoint_buffer_mutex_
 
   // use takeoff lat and long to initialize local frame
   std::mutex coord_transform_mutex_;
@@ -356,7 +355,6 @@ private:
   int    mission_upload_attempts_threshold_ = 5;
 
   // publishers
-  rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr cmd_pose_publisher_;  // https://ctu-mrs.github.io/docs/system/relative_commands.html
   rclcpp::Publisher<geometry_msgs::msg::PoseArray>::SharedPtr   waypoint_publisher_;
   rclcpp::Publisher<fog_msgs::msg::ControlInterfaceDiagnostics>::SharedPtr diagnostics_publisher_;
 
@@ -434,7 +432,6 @@ private:
   bool stopMission(std::string& fail_reason_out);
 
   void publishDebugMarkers();
-  void publishCmdPose();
 
   // timers
   rclcpp::TimerBase::SharedPtr mission_control_timer_;
@@ -461,8 +458,6 @@ private:
   void state_vehicle_landing();
 
   // utils
-  Eigen::Vector4d obtainCmdPose(const mavsdk::Mission::MissionPlan& cur_mission, const int cur_wp);
-
   template <class T>
   bool parse_param(const std::string &param_name, T &param_dest);
   bool parse_param(const std::string& param_name, rclcpp::Duration& param_dest);
@@ -580,7 +575,6 @@ ControlInterface::ControlInterface(rclcpp::NodeOptions options) : Node("control_
 
   rclcpp::QoS qos(rclcpp::KeepLast(3));
   // | ------------------ initialize publishers ----------------- |
-  cmd_pose_publisher_     = create_publisher<geometry_msgs::msg::PoseStamped>("~/cmd_pose_out", qos);
   waypoint_publisher_     = create_publisher<geometry_msgs::msg::PoseArray>("~/waypoints_out", qos);
   diagnostics_publisher_  = create_publisher<fog_msgs::msg::ControlInterfaceDiagnostics>("~/diagnostics_out", qos);
 
@@ -791,10 +785,6 @@ void ControlInterface::missionProgressCallback(const mavsdk::Mission::MissionPro
 
     mission_progress_size_ = mission_progress.total;
     mission_progress_current_waypoint_ = mission_progress.current;
-
-    // update cmd_pose_ if necessary
-    if (mission_progress_current_waypoint_ > 0)
-      cmd_pose_ = obtainCmdPose(mission_upload_waypoints_, mission_progress_current_waypoint_);
 
     const float percent = mission_progress.total == 0 ? 100 : mission_progress.current/float(mission_progress.total)*100.0f;
     if (mission_progress.current == -1)
@@ -1426,8 +1416,6 @@ void ControlInterface::missionControlRoutine()
     case mission_state_t::in_progress:
       state_mission_in_progress(); break;
   }
-
-  publishCmdPose();
 }
 
 // | -------- Implementation of mission control states -------- |
@@ -1447,10 +1435,6 @@ void ControlInterface::state_mission_finished()
     // transform the points
     for (const auto& pt : waypoint_buffer_)
       mission_upload_waypoints_.mission_items.push_back(to_mission_item(pt));
-
-    // update the current cmd_pose_
-    const auto& first_wp = waypoint_buffer_.back();
-    cmd_pose_ = Eigen::Vector4d(first_wp.x, first_wp.y, first_wp.z, first_wp.yaw);
 
     // clear the waypoint buffer
     waypoint_buffer_.clear();
@@ -1959,7 +1943,6 @@ bool ControlInterface::startTakeoff(std::string& fail_reason_out)
 
   current_goal.z   = takeoff_height_;
   current_goal.yaw = getYaw(pose_ori_);
-  cmd_pose_    = Eigen::Vector4d(current_goal.x, current_goal.y, current_goal.z, current_goal.yaw);
 
   waypoint_buffer_.push_back(current_goal);
 
@@ -2073,8 +2056,6 @@ bool ControlInterface::stopMission(std::string& fail_reason_out)
 {
   std::stringstream ss;
 
-  // update the command pose before clearing the necessary buffers
-  cmd_pose_ = obtainCmdPose(mission_upload_waypoints_, mission_progress_current_waypoint_);
   // clear and reset stuff
   waypoint_buffer_.clear();
   mission_upload_waypoints_.mission_items.clear();
@@ -2159,24 +2140,6 @@ void ControlInterface::publishDiagnostics()
 }
 //}
 
-/* publishCmdPose //{ */
-void ControlInterface::publishCmdPose()
-{
-  geometry_msgs::msg::PoseStamped msg;
-  msg.header.stamp     = get_clock()->now();
-  msg.header.frame_id  = world_frame_;
-  msg.pose.position.x  = cmd_pose_.x();
-  msg.pose.position.y  = cmd_pose_.y();
-  msg.pose.position.z  = cmd_pose_.z();
-  const Eigen::Quaterniond q(Eigen::AngleAxisd(cmd_pose_.w(), Eigen::Vector3d::UnitZ()));
-  msg.pose.orientation.w = q.w();
-  msg.pose.orientation.x = q.x();
-  msg.pose.orientation.y = q.y();
-  msg.pose.orientation.z = q.z();
-  cmd_pose_publisher_->publish(msg);
-}
-//}
-
 /* publishDebugMarkers //{ */
 void ControlInterface::publishDebugMarkers()
 {
@@ -2201,29 +2164,6 @@ void ControlInterface::publishDebugMarkers()
 //}
 
 // | --------------------- Utility methods -------------------- |
-
-/* obtainCmdPose() method //{ */
-Eigen::Vector4d ControlInterface::obtainCmdPose(const mavsdk::Mission::MissionPlan& cur_mission, const int cur_wp_id)
-{
-  Eigen::Vector4d ret;
-  // subtract one because if current is 1, it's flying to the 1st waypoint, which is index 0
-  const int cur_wp_idx = cur_wp_id-1;
-  // if possible, take the current mission waypoint as cmd_pose_
-  if (cur_wp_idx >= 0 && (size_t)cur_wp_idx < cur_mission.mission_items.size())
-  {
-    const local_waypoint_t cur_wp = to_local_waypoint(cur_mission.mission_items.at(cur_wp_idx));
-    ret = Eigen::Vector4d(cur_wp.x, cur_wp.y, cur_wp.z, cur_wp.yaw);
-  }
-  // otherwise, take the current pose as a fallback
-  else
-  {
-    RCLCPP_WARN_STREAM(get_logger(), "Current waypoint is not in the corresnponding mission (waypoint index: " << cur_wp_idx << ", mission length: " << cur_mission.mission_items.size() << ")! Using current position as cmd_pose_");
-    ret.head<3>() = pose_pos_;
-    ret.w() = getYaw(pose_ori_);
-  }
-  return ret;
-}
-//}
 
 /* parse_param //{ */
 template <class T>
