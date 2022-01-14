@@ -871,7 +871,7 @@ bool ControlInterface::landCallback([[maybe_unused]] const std::shared_ptr<std_s
                                     std::shared_ptr<std_srvs::srv::Trigger::Response>                       response)
 {
   scope_timer tim(print_callback_durations_, "landCallback", print_callback_throttle_, print_callback_min_dur_);
-  std::scoped_lock lck(state_mutex_, mission_mutex_, waypoint_buffer_mutex_, action_mutex_);
+  std::scoped_lock lck(state_mutex_, mission_mutex_, mission_upload_mutex_, waypoint_buffer_mutex_, action_mutex_);
 
   std::string fail_reason;
   if (!stopMission(fail_reason))
@@ -1564,7 +1564,7 @@ void ControlInterface::state_vehicle_not_connected()
   RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 1000, "Vehicle state: MavSDK system not connected.");
   vehicle_state_str_ = "MavSDK system not connected";
 
-  std::scoped_lock lck(action_mutex_, mission_mutex_, param_mutex_, telem_mutex_);
+  std::scoped_lock lck(action_mutex_, mission_mutex_, mission_upload_mutex_, param_mutex_, telem_mutex_);
   const bool succ = connectPixHawk();
   // advance to the next state if connection and initialization was OK
   if (succ)
@@ -1645,7 +1645,7 @@ void ControlInterface::state_vehicle_takeoff_ready(const bool takeoff_started)
     return;
   }
 
-  std::scoped_lock lck(telem_mutex_);
+  std::scoped_lock lck(telem_mutex_, mission_upload_mutex_);
   const bool armed = telem_->armed();
   const bool healthy = telem_->health_all_ok();
   const auto land_state = telem_->landed_state();
@@ -1666,7 +1666,6 @@ void ControlInterface::state_vehicle_takeoff_ready(const bool takeoff_started)
     add_reason_if("not healthy", !healthy, reasons);
     add_reason_if("not landed (" + to_string(land_state) + ")", land_state != mavsdk::Telemetry::LandedState::OnGround, reasons);
     RCLCPP_INFO_STREAM(get_logger(), "No longer ready for takeoff: " << reasons << ", stopping all missions and switching state to not_ready.");
-    std::string reasons;
     if (!stopMission(reasons))
       RCLCPP_WARN_STREAM(get_logger(), "Failed to stop mission before transitioning to not_ready (" << reasons << "). Arming may be dangerous!");
     pose_takeoff_samples_.clear(); // clear the takeoff pose samples to estimate a new one
@@ -1689,7 +1688,7 @@ void ControlInterface::state_vehicle_taking_off()
     return;
   }
 
-  std::scoped_lock lck(telem_mutex_);
+  std::scoped_lock lck(telem_mutex_, mission_upload_mutex_);
   const bool armed = telem_->armed();
   const auto land_state = telem_->landed_state();
 
@@ -1734,7 +1733,7 @@ void ControlInterface::state_vehicle_autonomous_flight()
     return;
   }
 
-  std::scoped_lock lck(telem_mutex_);
+  std::scoped_lock lck(telem_mutex_, mission_upload_mutex_);
   const bool armed = telem_->armed();
   const bool healthy = telem_->health_all_ok();
   const auto land_state = telem_->landed_state();
@@ -1776,7 +1775,7 @@ void ControlInterface::state_vehicle_manual_flight()
     return;
   }
 
-  std::scoped_lock lck(telem_mutex_);
+  std::scoped_lock lck(telem_mutex_, mission_upload_mutex_);
   const bool armed = telem_->armed();
   const auto land_state = telem_->landed_state();
 
@@ -1787,7 +1786,6 @@ void ControlInterface::state_vehicle_manual_flight()
     add_reason_if("not armed", !armed, reasons);
     add_reason_if("not flying (" + to_string(land_state) + ")", land_state != mavsdk::Telemetry::LandedState::InAir, reasons);
     RCLCPP_INFO_STREAM(get_logger(), "Manual flight mode ended: " << reasons << ", stopping all missions and switching state to not_ready.");
-    std::string reasons;
     if (!stopMission(reasons))
       RCLCPP_WARN_STREAM(get_logger(), "Failed to stop mission before transitioning to not_ready (" << reasons << "). Arming may be dangerous!");
     pose_takeoff_samples_.clear(); // clear the takeoff pose samples to estimate a new one
@@ -2064,21 +2062,24 @@ bool ControlInterface::stopMission(std::string& fail_reason_out)
   waypoint_buffer_.clear();
   mission_upload_waypoints_.mission_items.clear();
 
-  // cancel any current mission upload to pixhawk
-  const auto cancel_result = mission_->cancel_mission_upload();
-  if (cancel_result != mavsdk::Mission::Result::Success)
+  // cancel any current mission upload to pixhawk if applicable
+  if (mission_upload_state_ == mission_upload_state_t::started)
   {
-    ss << "cannot stop mission upload (" << to_string(cancel_result) << ")";
-    fail_reason_out = ss.str();
-    RCLCPP_ERROR_STREAM(get_logger(), "Failed to stop current mission: " << fail_reason_out);
-    return false;
+    const auto cancel_result = mission_->cancel_mission_upload();
+    if (cancel_result != mavsdk::Mission::Result::Success)
+    {
+      ss << "cannot stop mission upload (" << to_string(cancel_result) << ")";
+      fail_reason_out = ss.str();
+      RCLCPP_ERROR_STREAM(get_logger(), "Failed to stop current mission: " << fail_reason_out);
+      return false;
+    }
   }
 
   // clear any currently uploaded mission
   const auto clear_result = mission_->clear_mission();
   if (clear_result != mavsdk::Mission::Result::Success)
   {
-    ss << "cannot clear current mission (" << to_string(cancel_result) << ")";
+    ss << "cannot clear current mission (" << to_string(clear_result) << ")";
     fail_reason_out = ss.str();
     RCLCPP_ERROR_STREAM(get_logger(), "Failed to stop current mission: " << fail_reason_out);
     return false;
