@@ -1666,7 +1666,9 @@ void ControlInterface::state_vehicle_takeoff_ready(const bool takeoff_started)
     add_reason_if("not healthy", !healthy, reasons);
     add_reason_if("not landed (" + to_string(land_state) + ")", land_state != mavsdk::Telemetry::LandedState::OnGround, reasons);
     RCLCPP_INFO_STREAM(get_logger(), "No longer ready for takeoff: " << reasons << ", stopping all missions and switching state to not_ready.");
-    stopMission(reasons); // we don't actually care about the result - if it fails, we can't do much about it anyways
+    std::string reasons;
+    if (!stopMission(reasons))
+      RCLCPP_WARN_STREAM(get_logger(), "Failed to stop mission before transitioning to not_ready (" << reasons << "). Arming may be dangerous!");
     pose_takeoff_samples_.clear(); // clear the takeoff pose samples to estimate a new one
     vehicle_state_ = vehicle_state_t::not_ready;
     return;
@@ -1694,8 +1696,9 @@ void ControlInterface::state_vehicle_taking_off()
   if (!armed)
   {
     RCLCPP_INFO(get_logger(), "Takeoff interrupted with disarm. Stopping all missions and switching state to not_ready.");
-    std::string dummy;
-    stopMission(dummy); // we don't actually care about the result - if it fails, we can't do much about it anyways
+    std::string reasons;
+    if (!stopMission(reasons))
+      RCLCPP_WARN_STREAM(get_logger(), "Failed to stop mission before transitioning to not_ready (" << reasons << "). Arming may be dangerous!");
     pose_takeoff_samples_.clear(); // clear the takeoff pose samples to estimate a new one
     vehicle_state_ = vehicle_state_t::not_ready;
     return;
@@ -1745,7 +1748,9 @@ void ControlInterface::state_vehicle_autonomous_flight()
     add_reason_if("not healthy", !healthy, reasons);
     add_reason_if("not flying (" + to_string(land_state) + ")", land_state != mavsdk::Telemetry::LandedState::InAir, reasons);
     RCLCPP_INFO_STREAM(get_logger(), "Autonomous flight mode ended: " << reasons << ", stopping all missions and switching state to not_ready.");
-    stopMission(reasons); // we don't actually care about the result - if it fails, we can't do much about it anyways
+    std::string reasons;
+    if (!stopMission(reasons))
+      RCLCPP_WARN_STREAM(get_logger(), "Failed to stop mission before transitioning to not_ready (" << reasons << "). Arming may be dangerous!");
     pose_takeoff_samples_.clear(); // clear the takeoff pose samples to estimate a new one
     vehicle_state_ = vehicle_state_t::not_ready;
     return;
@@ -1783,7 +1788,9 @@ void ControlInterface::state_vehicle_manual_flight()
     add_reason_if("not armed", !armed, reasons);
     add_reason_if("not flying (" + to_string(land_state) + ")", land_state != mavsdk::Telemetry::LandedState::InAir, reasons);
     RCLCPP_INFO_STREAM(get_logger(), "Manual flight mode ended: " << reasons << ", stopping all missions and switching state to not_ready.");
-    stopMission(reasons); // we don't actually care about the result - if it fails, we can't do much about it anyways
+    std::string reasons;
+    if (!stopMission(reasons))
+      RCLCPP_WARN_STREAM(get_logger(), "Failed to stop mission before transitioning to not_ready (" << reasons << "). Arming may be dangerous!");
     pose_takeoff_samples_.clear(); // clear the takeoff pose samples to estimate a new one
     vehicle_state_ = vehicle_state_t::not_ready;
     return;
