@@ -320,13 +320,12 @@ private:
 
   std::mutex                    waypoint_buffer_mutex_;  // guards the following block of variables
   std::vector<local_waypoint_t> waypoint_buffer_;        // this buffer is used for storing new incoming waypoints (it is moved to the mission_upload_waypoints_ buffer when upload starts)
-
-  Eigen::Vector4d cmd_pose_ = Eigen::Vector4d(0, 0, 0, 0);
-  Eigen::Vector3d home_position_offset_ = Eigen::Vector3d(0, 0, 0);
+  Eigen::Vector4d               cmd_pose_ = Eigen::Vector4d(0, 0, 0, 0); // this is also protected by the waypoint_buffer_mutex_
 
   // use takeoff lat and long to initialize local frame
-  std::mutex                                                  coord_transform_mutex_;
+  std::mutex coord_transform_mutex_;
   std::shared_ptr<mavsdk::geometry::CoordinateTransformation> coord_transform_;
+  Eigen::Vector3d home_position_offset_ = Eigen::Vector3d(0, 0, 0); // this is also protected by the coord_transform_mutex_
 
   // vehicle local position
   std::mutex pose_mutex_;
@@ -462,6 +461,8 @@ private:
   void state_vehicle_landing();
 
   // utils
+  Eigen::Vector4d obtainCmdPose(const mavsdk::Mission::MissionPlan& cur_mission, const int cur_wp);
+
   template <class T>
   bool parse_param(const std::string &param_name, T &param_dest);
   bool parse_param(const std::string& param_name, rclcpp::Duration& param_dest);
@@ -470,6 +471,7 @@ private:
   bool addWaypoints(const T& path, const bool is_global, std::string& fail_reason_out);
   mavsdk::Mission::MissionItem to_mission_item(const local_waypoint_t& w_in);
   local_waypoint_t to_local_waypoint(const geometry_msgs::msg::PoseStamped& in, const bool is_global);
+  local_waypoint_t to_local_waypoint(const mavsdk::Mission::MissionItem& in);
   local_waypoint_t to_local_waypoint(const fog_msgs::srv::WaypointToLocal::Request& in, const bool is_global);
   local_waypoint_t to_local_waypoint(const std::vector<double>& in, const bool is_global);
   local_waypoint_t to_local_waypoint(const Eigen::Vector4d& in, const bool is_global);
@@ -789,8 +791,13 @@ void ControlInterface::missionProgressCallback(const mavsdk::Mission::MissionPro
 
     mission_progress_size_ = mission_progress.total;
     mission_progress_current_waypoint_ = mission_progress.current;
+
+    // update cmd_pose_ if necessary
+    if (mission_progress_current_waypoint_ > 0)
+      cmd_pose_ = obtainCmdPose(mission_upload_waypoints_, mission_progress_current_waypoint_);
+
     const float percent = mission_progress.total == 0 ? 100 : mission_progress.current/float(mission_progress.total)*100.0f;
-    if (mission_progress_current_waypoint_ == -1)
+    if (mission_progress.current == -1)
       RCLCPP_INFO(get_logger(), "Current mission cancelled (waypoint %d/%d).", mission_progress.current, mission_progress.total);
     else if (mission_progress.total == 0)
       RCLCPP_INFO(get_logger(), "Current mission is empty (waypoint %d/%d).", mission_progress.current, mission_progress.total);
@@ -989,7 +996,7 @@ bool ControlInterface::localWaypointCallback(const std::shared_ptr<fog_msgs::srv
                                              std::shared_ptr<fog_msgs::srv::Vec4::Response>      response)
 {
   scope_timer tim(print_callback_durations_, "localWaypointCallback", print_callback_throttle_, print_callback_min_dur_);
-  std::scoped_lock lck(state_mutex_, waypoint_buffer_mutex_, mission_mutex_, mission_upload_mutex_);
+  std::scoped_lock lck(state_mutex_, waypoint_buffer_mutex_, mission_mutex_, mission_upload_mutex_, mission_progress_mutex_);
 
   // convert the single waypoint to a path containing a single point
   std::vector<std::vector<double>> path {request->goal};
@@ -1015,7 +1022,7 @@ bool ControlInterface::localWaypointCallback(const std::shared_ptr<fog_msgs::srv
 bool ControlInterface::localPathCallback(const std::shared_ptr<fog_msgs::srv::Path::Request> request, std::shared_ptr<fog_msgs::srv::Path::Response> response)
 {
   scope_timer tim(print_callback_durations_, "localPathCallback", print_callback_throttle_, print_callback_min_dur_);
-  std::scoped_lock lck(state_mutex_, waypoint_buffer_mutex_, mission_mutex_, mission_upload_mutex_);
+  std::scoped_lock lck(state_mutex_, waypoint_buffer_mutex_, mission_mutex_, mission_upload_mutex_, mission_progress_mutex_);
 
   // check that we are in a state in which we can add waypoints to the buffer
   std::string reason;
@@ -1039,7 +1046,7 @@ bool ControlInterface::gpsWaypointCallback(const std::shared_ptr<fog_msgs::srv::
                                            std::shared_ptr<fog_msgs::srv::Vec4::Response>      response)
 {
   scope_timer tim(print_callback_durations_, "gpsWaypointCallback", print_callback_throttle_, print_callback_min_dur_);
-  std::scoped_lock lck(state_mutex_, waypoint_buffer_mutex_, mission_mutex_, mission_upload_mutex_, coord_transform_mutex_);
+  std::scoped_lock lck(state_mutex_, waypoint_buffer_mutex_, mission_mutex_, mission_upload_mutex_, mission_progress_mutex_, coord_transform_mutex_);
 
   // convert the single waypoint to a path containing a single point
   std::vector<std::vector<double>> path {request->goal};
@@ -1065,7 +1072,7 @@ bool ControlInterface::gpsWaypointCallback(const std::shared_ptr<fog_msgs::srv::
 bool ControlInterface::gpsPathCallback(const std::shared_ptr<fog_msgs::srv::Path::Request> request, std::shared_ptr<fog_msgs::srv::Path::Response> response)
 {
   scope_timer tim(print_callback_durations_, "gpsPathCallback", print_callback_throttle_, print_callback_min_dur_);
-  std::scoped_lock lck(state_mutex_, waypoint_buffer_mutex_, mission_mutex_, mission_upload_mutex_, coord_transform_mutex_);
+  std::scoped_lock lck(state_mutex_, waypoint_buffer_mutex_, mission_mutex_, mission_upload_mutex_, mission_progress_mutex_, coord_transform_mutex_);
 
   // check that we are in a state in which we can add waypoints to the buffer
   std::string reason;
@@ -1428,7 +1435,7 @@ void ControlInterface::missionControlRoutine()
 /* ControlInterface::state_mission_finished() //{ */
 void ControlInterface::state_mission_finished()
 {
-  const std::scoped_lock lock(waypoint_buffer_mutex_, mission_mutex_, mission_upload_mutex_);
+  const std::scoped_lock lock(waypoint_buffer_mutex_, mission_mutex_, mission_upload_mutex_, coord_transform_mutex_);
   // create a new mission plan if there are unused points in the buffer
   if (!waypoint_buffer_.empty())
   {
@@ -1573,7 +1580,7 @@ void ControlInterface::state_vehicle_not_connected()
   RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 1000, "Vehicle state: MavSDK system not connected.");
   vehicle_state_str_ = "MavSDK system not connected";
 
-  std::scoped_lock lck(action_mutex_, mission_mutex_, mission_upload_mutex_, param_mutex_, telem_mutex_);
+  std::scoped_lock lck(action_mutex_, mission_mutex_, param_mutex_, telem_mutex_, mission_upload_mutex_, mission_progress_mutex_);
   const bool succ = connectPixHawk();
   // advance to the next state if connection and initialization was OK
   if (succ)
@@ -1654,7 +1661,7 @@ void ControlInterface::state_vehicle_takeoff_ready(const bool takeoff_started)
     return;
   }
 
-  std::scoped_lock lck(telem_mutex_, mission_upload_mutex_);
+  std::scoped_lock lck(telem_mutex_, mission_upload_mutex_, mission_progress_mutex_);
   const bool armed = telem_->armed();
   const bool healthy = telem_->health_all_ok();
   const auto land_state = telem_->landed_state();
@@ -1697,7 +1704,7 @@ void ControlInterface::state_vehicle_taking_off()
     return;
   }
 
-  std::scoped_lock lck(telem_mutex_, mission_upload_mutex_);
+  std::scoped_lock lck(telem_mutex_, mission_upload_mutex_, mission_progress_mutex_);
   const bool armed = telem_->armed();
   const auto land_state = telem_->landed_state();
 
@@ -1742,7 +1749,7 @@ void ControlInterface::state_vehicle_autonomous_flight()
     return;
   }
 
-  std::scoped_lock lck(telem_mutex_, mission_upload_mutex_);
+  std::scoped_lock lck(telem_mutex_, mission_upload_mutex_, mission_progress_mutex_);
   const bool armed = telem_->armed();
   const bool healthy = telem_->health_all_ok();
   const auto land_state = telem_->landed_state();
@@ -1784,7 +1791,7 @@ void ControlInterface::state_vehicle_manual_flight()
     return;
   }
 
-  std::scoped_lock lck(telem_mutex_, mission_upload_mutex_);
+  std::scoped_lock lck(telem_mutex_, mission_upload_mutex_, mission_progress_mutex_);
   const bool armed = telem_->armed();
   const auto land_state = telem_->landed_state();
 
@@ -2061,14 +2068,16 @@ bool ControlInterface::startMissionUpload(const mavsdk::Mission::MissionPlan& mi
 // waypoint_buffer_mutex_
 // mission_mutex_
 // mission_upload_mutex_
+// mission_progress_mutex_
 bool ControlInterface::stopMission(std::string& fail_reason_out)
 {
   std::stringstream ss;
 
+  // update the command pose before clearing the necessary buffers
+  cmd_pose_ = obtainCmdPose(mission_upload_waypoints_, mission_progress_current_waypoint_);
   // clear and reset stuff
   waypoint_buffer_.clear();
   mission_upload_waypoints_.mission_items.clear();
-
   if (mission_state_ == mission_state_t::finished)
     return true;
 
@@ -2113,19 +2122,38 @@ void ControlInterface::publishDiagnostics()
 {
   const bool armed = telem_ != nullptr && telem_->armed();
 
-  fog_msgs::msg::ControlInterfaceDiagnostics msg;
-  msg.header.stamp         = get_clock()->now();
-  msg.header.frame_id      = world_frame_;
-  msg.armed                = armed;
-  msg.airborne             = vehicle_state_ == vehicle_state_t::autonomous_flight || vehicle_state_ == vehicle_state_t::manual_flight;
-  msg.moving               = mission_state_ == mission_state_t::in_progress;
-  msg.mission_finished     = mission_state_ == mission_state_t::finished;
-  msg.mission_size         = mission_progress_size_;
-  msg.mission_waypoint     = mission_progress_current_waypoint_;
-  msg.gps_origin_set       = gps_origin_set_;
+  using msg_t = fog_msgs::msg::ControlInterfaceDiagnostics;
+  msg_t msg;
+  msg.header.stamp = get_clock()->now();
+  msg.header.frame_id = world_frame_;
+
+  msg.armed = armed;
+
+  switch (vehicle_state_)
+  {
+    case vehicle_state_t::not_connected:      msg.vehicle_state = msg_t::VEHICLE_NOT_INITIALIZED; break;
+    case vehicle_state_t::not_ready:          msg.vehicle_state = msg_t::VEHICLE_NOT_READY; break;
+    case vehicle_state_t::takeoff_ready:      msg.vehicle_state = msg_t::VEHICLE_TAKEOFF_READY; break;
+    case vehicle_state_t::taking_off:         msg.vehicle_state = msg_t::VEHICLE_TAKING_OFF; break;
+    case vehicle_state_t::autonomous_flight:  msg.vehicle_state = msg_t::VEHICLE_AUTONOMOUS_FLIGHT; break;
+    case vehicle_state_t::manual_flight:      msg.vehicle_state = msg_t::VEHICLE_MANUAL_FLIGHT; break;
+    default:                                  msg.vehicle_state = 255; break;
+  }
+
+  switch (mission_state_)
+  {
+    case mission_state_t::uploading:    msg.mission_state = msg_t::MISSION_UPLOADING; break;
+    case mission_state_t::in_progress:  msg.mission_state = msg_t::MISSION_IN_PROGRESS; break;
+    case mission_state_t::finished:     msg.mission_state = msg_t::MISSION_FINISHED; break;
+    default:                            msg.mission_state = 255; break;
+  }
+
+  msg.mission_size = mission_progress_size_;
+  msg.mission_waypoint = mission_progress_current_waypoint_;
+
+  msg.gps_origin_set = gps_origin_set_;
+  msg.getting_odom = getting_odom_;
   msg.getting_control_mode = getting_control_mode_;
-  msg.getting_odom         = getting_odom_;
-  msg.manual_control       = manual_override_;
 
   diagnostics_publisher_->publish(msg);
 }
@@ -2173,6 +2201,29 @@ void ControlInterface::publishDebugMarkers()
 //}
 
 // | --------------------- Utility methods -------------------- |
+
+/* obtainCmdPose() method //{ */
+Eigen::Vector4d ControlInterface::obtainCmdPose(const mavsdk::Mission::MissionPlan& cur_mission, const int cur_wp_id)
+{
+  Eigen::Vector4d ret;
+  // subtract one because if current is 1, it's flying to the 1st waypoint, which is index 0
+  const int cur_wp_idx = cur_wp_id-1;
+  // if possible, take the current mission waypoint as cmd_pose_
+  if (cur_wp_idx >= 0 && (size_t)cur_wp_idx < cur_mission.mission_items.size())
+  {
+    const local_waypoint_t cur_wp = to_local_waypoint(cur_mission.mission_items.at(cur_wp_idx));
+    ret = Eigen::Vector4d(cur_wp.x, cur_wp.y, cur_wp.z, cur_wp.yaw);
+  }
+  // otherwise, take the current pose as a fallback
+  else
+  {
+    RCLCPP_WARN_STREAM(get_logger(), "Current waypoint is not in the corresnponding mission (waypoint index: " << cur_wp_idx << ", mission length: " << cur_mission.mission_items.size() << ")! Using current position as cmd_pose_");
+    ret.head<3>() = pose_pos_;
+    ret.w() = getYaw(pose_ori_);
+  }
+  return ret;
+}
+//}
 
 /* parse_param //{ */
 template <class T>
@@ -2251,6 +2302,23 @@ mavsdk::Mission::MissionItem ControlInterface::to_mission_item(const local_waypo
 local_waypoint_t ControlInterface::to_local_waypoint(const geometry_msgs::msg::PoseStamped& in, const bool is_global)
 {
   return to_local_waypoint(Eigen::Vector4d{in.pose.position.x, in.pose.position.y, in.pose.position.z, getYaw(in.pose.orientation)}, is_global);
+}
+
+local_waypoint_t ControlInterface::to_local_waypoint(const mavsdk::Mission::MissionItem& in)
+{
+  gps_waypoint_t global;
+  global.latitude = in.latitude_deg;
+  global.longitude = in.longitude_deg;
+  global.altitude = in.relative_altitude_m;
+  global.yaw = degToRad(-in.yaw_deg) - yaw_offset_correction_;
+
+  local_waypoint_t w = globalToLocal(coord_transform_, global);
+  // apply home offset correction
+  w.x += home_position_offset_.x();
+  w.y += home_position_offset_.y();
+  w.z += home_position_offset_.z();
+
+  return w;
 }
 
 local_waypoint_t ControlInterface::to_local_waypoint(const fog_msgs::srv::WaypointToLocal::Request& in, const bool is_global)
