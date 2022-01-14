@@ -788,7 +788,9 @@ void ControlInterface::missionProgressCallback(const mavsdk::Mission::MissionPro
 
     const float percent = mission_progress.total == 0 ? 100 : mission_progress.current/float(mission_progress.total)*100.0f;
     if (mission_progress_current_waypoint_ == -1)
-      RCLCPP_INFO(get_logger(), "Current mission empty (waypoint %d/%d).", mission_progress.current, mission_progress.total);
+      RCLCPP_INFO(get_logger(), "Current mission cancelled (waypoint %d/%d).", mission_progress.current, mission_progress.total);
+    else if (mission_progress_current_waypoint_ == 0)
+      RCLCPP_INFO(get_logger(), "Current mission not started yet (waypoint %d/%d).", mission_progress.current, mission_progress.total);
     else
       RCLCPP_INFO(get_logger(), "Current mission waypoint: %d/%d (%.1f%%).", mission_progress.current, mission_progress.total, percent);
   }).detach();
@@ -994,13 +996,14 @@ bool ControlInterface::localWaypointCallback(const std::shared_ptr<fog_msgs::srv
   if (!addWaypoints(path, false, reason))
   {
     response->success = false;
-    response->message = "Waypoints not set, " + reason;
-    RCLCPP_ERROR(get_logger(), "%s", response->message.c_str());
+    response->message = "Waypoint not set: " + reason;
+    RCLCPP_ERROR_STREAM(get_logger(), response->message);
     return true;
   }
 
   response->success = true;
-  response->message = "Waypoints set";
+  response->message = "New waypoint set";
+  RCLCPP_INFO_STREAM(get_logger(), response->message);
   return true;
 }
 //}
@@ -1016,13 +1019,14 @@ bool ControlInterface::localPathCallback(const std::shared_ptr<fog_msgs::srv::Pa
   if (!addWaypoints(request->path.poses, false, reason))
   {
     response->success = false;
-    response->message = "Waypoints not set, " + reason;
-    RCLCPP_ERROR(get_logger(), "%s", response->message.c_str());
+    response->message = "Waypoints not set: " + reason;
+    RCLCPP_ERROR_STREAM(get_logger(), response->message);
     return true;
   }
 
   response->success = true;
-  response->message = "Waypoints set";
+  response->message = std::to_string(request->path.poses.size()) + " new waypoints set";
+  RCLCPP_INFO_STREAM(get_logger(), response->message);
   return true;
 }
 //}
@@ -1042,13 +1046,14 @@ bool ControlInterface::gpsWaypointCallback(const std::shared_ptr<fog_msgs::srv::
   if (!addWaypoints(path, true, reason))
   {
     response->success = false;
-    response->message = "Waypoints not set, " + reason;
-    RCLCPP_ERROR(get_logger(), "%s", response->message.c_str());
+    response->message = "Waypoint not set: " + reason;
+    RCLCPP_ERROR_STREAM(get_logger(), response->message);
     return true;
   }
 
   response->success = true;
-  response->message = "Waypoints set";
+  response->message = "New waypoint set";
+  RCLCPP_INFO_STREAM(get_logger(), response->message);
   return true;
 }
 //}
@@ -1064,13 +1069,14 @@ bool ControlInterface::gpsPathCallback(const std::shared_ptr<fog_msgs::srv::Path
   if (!addWaypoints(request->path.poses, true, reason))
   {
     response->success = false;
-    response->message = "Waypoints not set, " + reason;
-    RCLCPP_ERROR(get_logger(), "%s", response->message.c_str());
+    response->message = "Waypoints not set: " + reason;
+    RCLCPP_ERROR_STREAM(get_logger(), response->message);
     return true;
   }
 
   response->success = true;
-  response->message = "Waypoints set";
+  response->message = std::to_string(request->path.poses.size()) + " new waypoints set";
+  RCLCPP_INFO_STREAM(get_logger(), response->message);
   return true;
 }
 //}
@@ -1424,7 +1430,7 @@ void ControlInterface::state_mission_finished()
   if (!waypoint_buffer_.empty())
   {
     publishDebugMarkers();
-    RCLCPP_INFO(get_logger(), "Waypoints to be visited: %ld", waypoint_buffer_.size());
+    RCLCPP_INFO(get_logger(), "New waypoints to be visited: %ld", waypoint_buffer_.size());
 
     // transform and move the mission waypoints buffer to the mission_upload_waypoints_ buffer with the mavsdk type - we'll attempt to upload the waypoint_upload_buffer_ to pixhawk
     mission_upload_waypoints_.mission_items.clear();
