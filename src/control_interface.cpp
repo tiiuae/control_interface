@@ -1074,6 +1074,7 @@ bool ControlInterface::takeoff() {
   current_goal.y   = pos_[0];
   current_goal.z   = takeoff_height_;
   current_goal.yaw = getYaw(ori_) - yaw_offset_correction_;
+  desired_pose_    = Eigen::Vector4d(current_goal.x, current_goal.y, current_goal.z, current_goal.yaw);
   waypoint_buffer_.push_back(current_goal);
   motion_started_ = true;
   RCLCPP_INFO(this->get_logger(), "[%s]: Taking off", this->get_name());
@@ -1237,9 +1238,6 @@ void ControlInterface::publishLocalOdom() {
 
 /* publishDesiredPose //{ */
 void ControlInterface::publishDesiredPose() {
-  if (desired_pose_.z() < 0.5) {
-    return;
-  }
   geometry_msgs::msg::PoseStamped msg;
   msg.header.stamp     = this->get_clock()->now();
   msg.header.frame_id  = world_frame_;
