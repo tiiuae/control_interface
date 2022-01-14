@@ -287,7 +287,7 @@ private:
   int mission_progress_size_ = 0;
   int mission_progress_current_waypoint_ = 0;
 
-  std::mutex mission_upload_mutex_;
+  std::recursive_mutex mission_upload_mutex_;
   int mission_upload_attempts_;
   mavsdk::Mission::MissionPlan  mission_upload_waypoints_; // this buffer is used for repeated attempts at mission uploads
   rclcpp::Time mission_upload_start_time_;
