@@ -27,6 +27,7 @@
 #include <tf2_geometry_msgs/tf2_geometry_msgs.h>  // This has to be here otherwise you will get cryptic linker error about missing function 'getTimestamp'
 #include <tf2_ros/static_transform_broadcaster.h>
 #include <tf2_ros/transform_broadcaster.h>
+#include <tf2_ros/buffer.h>
 #include <tf2_ros/transform_listener.h>
 #include <visualization_msgs/msg/marker_array.hpp>
 #include <deque>
@@ -733,7 +734,7 @@ bool ControlInterface::localPathCallback(const std::shared_ptr<fog_msgs::srv::Pa
     return true;
   }
 
-  RCLCPP_INFO(this->get_logger(), "[%s]: Got %d waypoints", this->get_name(), request->path.poses.size());
+  RCLCPP_INFO(this->get_logger(), "[%s]: Got %ld waypoints", this->get_name(), request->path.poses.size());
   for (size_t i = 0; i < request->path.poses.size(); i++) {
     local_waypoint_t w;
     w.x   = request->path.poses[i].pose.position.x;
@@ -827,7 +828,7 @@ bool ControlInterface::gpsPathCallback(const std::shared_ptr<fog_msgs::srv::Path
     return true;
   }
 
-  RCLCPP_INFO(this->get_logger(), "[%s]: Got %d waypoints", this->get_name(), request->path.poses.size());
+  RCLCPP_INFO(this->get_logger(), "[%s]: Got %ld waypoints", this->get_name(), request->path.poses.size());
   for (size_t i = 0; i < request->path.poses.size(); i++) {
     gps_waypoint_t w;
     w.latitude  = request->path.poses[i].pose.position.x;
@@ -974,9 +975,14 @@ void ControlInterface::controlRoutine(void) {
           mission_->pause_mission();
           mission_plan_.mission_items.clear();
 
-          addToMission(waypoint_buffer_.front());
-          desired_pose_ = Eigen::Vector4d(waypoint_buffer_.front().x, waypoint_buffer_.front().y, waypoint_buffer_.front().z, waypoint_buffer_.front().yaw);
-          waypoint_buffer_.pop_front();
+          //addToMission(waypoint_buffer_.front());
+
+          for (size_t i = 0; i < waypoint_buffer_.size(); i++) {
+            addToMission(waypoint_buffer_.at(i));
+            desired_pose_ = Eigen::Vector4d(waypoint_buffer_.at(i).x, waypoint_buffer_.at(i).y, waypoint_buffer_.at(i).z, waypoint_buffer_.at(i).yaw);
+          }
+          //desired_pose_ = Eigen::Vector4d(waypoint_buffer_.front().x, waypoint_buffer_.front().y, waypoint_buffer_.front().z, waypoint_buffer_.front().yaw);
+          // waypoint_buffer_.pop_front();
 
           /* for (auto &w : waypoint_buffer_) { */
           /*   addToMission(w); */
@@ -992,6 +998,7 @@ void ControlInterface::controlRoutine(void) {
           startMission();
           mission_finished_ = false;
           start_mission_    = false;
+          waypoint_buffer_.clear();
         }
 
         // stop if final goal is reached
@@ -1032,11 +1039,12 @@ void ControlInterface::publishDiagnostics() {
   msg.airborne               = !landed_;
   msg.moving                 = motion_started_;
   msg.mission_finished       = mission_finished_;
-  msg.buffered_mission_items = waypoint_buffer_.size();
-  /* msg.getting_gps            = getting_gps_; */
-  msg.getting_odom         = getting_pixhawk_odom_;
-  msg.getting_control_mode = getting_control_mode_;
-  msg.getting_land_sensor  = getting_landed_info_;
+  msg.last_mission_size      = waypoint_buffer_.size();
+  msg.gps_origin_set         = getting_gps_;
+  msg.getting_odom           = getting_pixhawk_odom_;
+  msg.getting_control_mode   = getting_control_mode_;
+  msg.getting_land_sensor    = getting_landed_info_;
+  msg.manual_control         = false;
   diagnostics_publisher_->publish(msg);
 }
 //}
@@ -1066,6 +1074,7 @@ bool ControlInterface::takeoff() {
   current_goal.y   = pos_[0];
   current_goal.z   = takeoff_height_;
   current_goal.yaw = getYaw(ori_) - yaw_offset_correction_;
+  desired_pose_    = Eigen::Vector4d(current_goal.x, current_goal.y, current_goal.z, current_goal.yaw);
   waypoint_buffer_.push_back(current_goal);
   motion_started_ = true;
   RCLCPP_INFO(this->get_logger(), "[%s]: Taking off", this->get_name());
@@ -1229,9 +1238,6 @@ void ControlInterface::publishLocalOdom() {
 
 /* publishDesiredPose //{ */
 void ControlInterface::publishDesiredPose() {
-  if (desired_pose_.z() < 0.5) {
-    return;
-  }
   geometry_msgs::msg::PoseStamped msg;
   msg.header.stamp     = this->get_clock()->now();
   msg.header.frame_id  = world_frame_;
