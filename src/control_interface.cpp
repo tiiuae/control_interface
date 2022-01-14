@@ -514,6 +514,11 @@ void ControlInterface::missionResultCallback(const px4_msgs::msg::MissionResult:
     mission_finished_      = true;
     last_mission_instance_ = msg->instance_count;
   }
+  unsigned seq_remaining = msg->seq_total - msg->seq_current;
+  if (!msg->finished && instance_count != last_mission_instance_ && seq_remaining <= 1) {
+    mission_finished_      = true;
+    last_mission_instance_ = msg->instance_count;
+  }
 }
 //}
 
