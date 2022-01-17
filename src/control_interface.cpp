@@ -21,6 +21,7 @@
 #include <mavsdk/plugins/mission/mission.h>
 #include <mavsdk/plugins/param/param.h>
 #include <mavsdk/plugins/telemetry/telemetry.h>
+#include <memory>
 #include <mutex>
 #include <fstream>
 #include <boost/circular_buffer.hpp>
@@ -29,6 +30,7 @@
 #include <px4_msgs/msg/mission_result.hpp>
 #include <px4_msgs/msg/home_position.hpp>
 #include <px4_msgs/msg/vehicle_land_detected.hpp>
+#include <px4_msgs/msg/vehicle_local_position_setpoint.hpp>
 #include <rcl_interfaces/msg/set_parameters_result.hpp>
 #include <rclcpp/callback_group.hpp>
 #include <rclcpp/duration.hpp>
@@ -355,14 +357,16 @@ private:
   int    mission_upload_attempts_threshold_ = 5;
 
   // publishers
-  rclcpp::Publisher<geometry_msgs::msg::PoseArray>::SharedPtr   waypoint_publisher_;
-  rclcpp::Publisher<fog_msgs::msg::ControlInterfaceDiagnostics>::SharedPtr diagnostics_publisher_;
+  rclcpp::Publisher<geometry_msgs::msg::PoseArray>::SharedPtr               waypoint_publisher_;
+  rclcpp::Publisher<fog_msgs::msg::ControlInterfaceDiagnostics>::SharedPtr  diagnostics_publisher_;
+  rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr             cmd_pose_publisher_;
 
   // subscribers
-  rclcpp::Subscription<px4_msgs::msg::VehicleControlMode>::SharedPtr  control_mode_subscriber_;
-  rclcpp::Subscription<px4_msgs::msg::MissionResult>::SharedPtr       mission_result_subscriber_;
-  rclcpp::Subscription<px4_msgs::msg::HomePosition>::SharedPtr        home_position_subscriber_;
-  rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr            odometry_subscriber_;
+  rclcpp::Subscription<px4_msgs::msg::VehicleControlMode>::SharedPtr            control_mode_subscriber_;
+  rclcpp::Subscription<px4_msgs::msg::MissionResult>::SharedPtr                 mission_result_subscriber_;
+  rclcpp::Subscription<px4_msgs::msg::HomePosition>::SharedPtr                  home_position_subscriber_;
+  rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr                      odometry_subscriber_;
+  rclcpp::Subscription<px4_msgs::msg::VehicleLocalPositionSetpoint>::SharedPtr  cmd_pose_subscriber_;
 
   // callback groups
   // a shared pointer to each callback group has to be saved or the callbacks will never get called
@@ -379,6 +383,7 @@ private:
   bool mavsdkLogCallback(const mavsdk::log::Level level, const std::string& message, const std::string& file, const int line);
   void homePositionCallback(const px4_msgs::msg::HomePosition::UniquePtr msg);
   void odometryCallback(const nav_msgs::msg::Odometry::UniquePtr msg);
+  void cmdPoseCallback(const px4_msgs::msg::VehicleLocalPositionSetpoint::UniquePtr msg);
 
   // services provided
   rclcpp::Service<std_srvs::srv::SetBool>::SharedPtr          arming_service_;
@@ -573,10 +578,11 @@ ControlInterface::ControlInterface(rclcpp::NodeOptions options) : Node("control_
 
   //}
 
-  rclcpp::QoS qos(rclcpp::KeepLast(3));
   // | ------------------ initialize publishers ----------------- |
+  rclcpp::QoS qos(rclcpp::KeepLast(3));
   waypoint_publisher_     = create_publisher<geometry_msgs::msg::PoseArray>("~/waypoints_out", qos);
   diagnostics_publisher_  = create_publisher<fog_msgs::msg::ControlInterfaceDiagnostics>("~/diagnostics_out", qos);
+  cmd_pose_publisher_     = create_publisher<geometry_msgs::msg::PoseStamped>("~/cmd_pose_out", qos);
 
   // service clients
   octomap_reset_client_ = create_client<std_srvs::srv::Empty>("~/octomap_reset_out");
@@ -603,6 +609,10 @@ ControlInterface::ControlInterface(rclcpp::NodeOptions options) : Node("control_
   subopts.callback_group = new_cbk_grp();
   odometry_subscriber_ = create_subscription<nav_msgs::msg::Odometry>("~/local_odom_in",
       rclcpp::SystemDefaultsQoS(), std::bind(&ControlInterface::odometryCallback, this, _1), subopts);
+
+  subopts.callback_group = new_cbk_grp();
+  cmd_pose_subscriber_ = create_subscription<px4_msgs::msg::VehicleLocalPositionSetpoint>("~/cmd_pose_in",
+      rclcpp::SystemDefaultsQoS(), std::bind(&ControlInterface::cmdPoseCallback, this, _1), subopts);
 
   // service handlers
   const auto qos_profile = qos.get_rmw_qos_profile();
@@ -729,6 +739,30 @@ void ControlInterface::odometryCallback(const nav_msgs::msg::Odometry::UniquePtr
   pose_takeoff_samples_.push_back(pose_pos_);
 }
 //}
+
+  /* cmdPoseCallback //{ */
+  void ControlInterface::cmdPoseCallback(const px4_msgs::msg::VehicleLocalPositionSetpoint::UniquePtr msg)
+  {
+    // convert from NED (north-east-down) coordinates to ENU (east-north-up)
+    const Eigen::Vector3d enu_cmd_pos(msg->y, msg->x, -msg->z);
+    const double yaw_corrected = -msg->yaw - yaw_offset_correction_;
+    const Eigen::Quaterniond ori(Eigen::AngleAxisd(yaw_corrected, Eigen::Vector3d::UnitZ()));
+    /* set_mutexed(cmd_pose_mutex_, std::make_tuple(enu_cmd_pose, true), std::forward_as_tuple(cmd_pose_, getting_cmd_pose_)); */
+    geometry_msgs::msg::PoseStamped::UniquePtr msg_out = std::make_unique<geometry_msgs::msg::PoseStamped>();
+    msg_out->header.stamp = get_clock()->now();
+    msg_out->header.frame_id = world_frame_;
+    msg_out->pose.position.x = enu_cmd_pos.x();
+    msg_out->pose.position.y = enu_cmd_pos.y();
+    msg_out->pose.position.z = enu_cmd_pos.z();
+    msg_out->pose.orientation.x = ori.x();
+    msg_out->pose.orientation.y = ori.y();
+    msg_out->pose.orientation.z = ori.z();
+    msg_out->pose.orientation.w = ori.w();
+    cmd_pose_publisher_->publish(std::move(msg_out));
+
+    RCLCPP_INFO_ONCE(get_logger(), "Getting cmd pose, republishing");
+  }
+  //}
 
 /* homePositionCallback //{ */
 void ControlInterface::homePositionCallback(const px4_msgs::msg::HomePosition::UniquePtr msg)
@@ -1423,7 +1457,7 @@ void ControlInterface::missionControlRoutine()
 /* ControlInterface::state_mission_finished() //{ */
 void ControlInterface::state_mission_finished()
 {
-  const std::scoped_lock lock(waypoint_buffer_mutex_, mission_mutex_, mission_upload_mutex_, coord_transform_mutex_);
+  const std::scoped_lock lock(waypoint_buffer_mutex_, mission_mutex_, mission_upload_mutex_, mission_progress_mutex_, coord_transform_mutex_);
   // create a new mission plan if there are unused points in the buffer
   if (!waypoint_buffer_.empty())
   {
@@ -1468,6 +1502,8 @@ void ControlInterface::state_mission_uploading()
       }
       else
       {
+        mission_progress_size_ = 0;
+        mission_progress_current_waypoint_ = 0;
         mission_state_ = mission_state_t::finished;
         RCLCPP_WARN(get_logger(), "Mission upload failed too many times. Scrapping mission.");
       }
@@ -1492,6 +1528,8 @@ void ControlInterface::state_mission_in_progress()
   if (mission_finished_flag_) // this flag is set from the missionResultCallback
   {
     RCLCPP_INFO(get_logger(), "All waypoints have been visited");
+    mission_progress_size_ = 0;
+    mission_progress_current_waypoint_ = 0;
     mission_state_ = mission_state_t::finished;
   }
 }
@@ -2059,6 +2097,8 @@ bool ControlInterface::stopMission(std::string& fail_reason_out)
   // clear and reset stuff
   waypoint_buffer_.clear();
   mission_upload_waypoints_.mission_items.clear();
+  mission_progress_size_ = 0;
+  mission_progress_current_waypoint_ = 0;
   if (mission_state_ == mission_state_t::finished)
     return true;
 

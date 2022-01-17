@@ -45,6 +45,7 @@ def generate_launch_description():
                 remappings=[
                     ("~/diagnostics_out", "~/diagnostics"),
                     ("~/waypoints_out", "~/waypoints"),
+                    ("~/cmd_pose_out", "~/cmd_pose"),
 
                     ("~/octomap_reset_out", "/" + DRONE_DEVICE_ID + "/octomap_server/reset"),
 
@@ -53,6 +54,7 @@ def generate_launch_description():
                     ("~/mission_result_in", "/" + DRONE_DEVICE_ID + "/fmu/mission_result/out"),
                     ("~/home_position_in", "/" + DRONE_DEVICE_ID + "/fmu/home_position/out"),
                     ("~/local_odom_in", "/" + DRONE_DEVICE_ID + "/odometry/local_odom"),
+                    ("~/cmd_pose_in", "/" + DRONE_DEVICE_ID + "/fmu/vehicle_local_position_setpoint/out"),
                     
                     ("~/arming_in", "~/arming"),
                     ("~/takeoff_in", "~/takeoff"),
