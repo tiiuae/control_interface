@@ -185,6 +185,17 @@ void add_reason_if(const std::string& reason, const bool condition, std::string&
   }
 }
 
+void add_unhealthy_reasons(const mavsdk::Telemetry::Health& health, std::string& to_str)
+{
+  add_reason_if("gyrometer calibration not ok", !health.is_gyrometer_calibration_ok, to_str);
+  add_reason_if("accelerometer calibration not ok", !health.is_accelerometer_calibration_ok, to_str);
+  add_reason_if("magnetometer calibration not ok", !health.is_magnetometer_calibration_ok, to_str);
+  add_reason_if("local position not ok", !health.is_local_position_ok, to_str);
+  add_reason_if("global position not ok", !health.is_global_position_ok, to_str);
+  add_reason_if("home position not ok", !health.is_home_position_ok, to_str);
+  add_reason_if("not armable", !health.is_armable, to_str);
+}
+
 //}
 
 std::string to_string(const mavsdk::Action::Result result);
@@ -264,6 +275,7 @@ private:
     taking_off,
     autonomous_flight,
     manual_flight,
+    landing,
   } vehicle_state_ = not_connected;
   std::string vehicle_state_str_ = "MavSDK system not connected";
 
@@ -475,6 +487,7 @@ private:
   local_waypoint_t to_local_waypoint(const fog_msgs::srv::WaypointToLocal::Request& in, const bool is_global);
   local_waypoint_t to_local_waypoint(const std::vector<double>& in, const bool is_global);
   local_waypoint_t to_local_waypoint(const Eigen::Vector4d& in, const bool is_global);
+  bool is_healthy(const mavsdk::Telemetry::Health& health);
 };
 //}
 
@@ -1641,7 +1654,8 @@ void ControlInterface::state_vehicle_not_ready()
 
   std::scoped_lock lck(telem_mutex_);
   const bool armed = telem_->armed();
-  const bool healthy = telem_->health_all_ok();
+  const auto health = telem_->health();
+  const bool healthy = is_healthy(health);
   const auto land_state = telem_->landed_state();
 
   // advance to the next state if all conditions are met
@@ -1660,7 +1674,7 @@ void ControlInterface::state_vehicle_not_ready()
     const std::string gps_reason = "insufficient GPS samples (" + std::to_string(pose_takeoff_samples_.size()) + "/" + std::to_string(takeoff_position_samples_) + ")";
     std::string reasons;
     add_reason_if("not armed", !armed, reasons);
-    add_reason_if("not healthy", !healthy, reasons);
+    add_unhealthy_reasons(health, reasons);
     add_reason_if("GPS origin not set", !gps_origin_set_, reasons);
     add_reason_if(gps_reason, pose_takeoff_samples_.size() < (size_t)takeoff_position_samples_, reasons);
     add_reason_if("not landed (" + to_string(land_state) + ")", land_state != mavsdk::Telemetry::LandedState::OnGround, reasons);
@@ -1685,7 +1699,8 @@ void ControlInterface::state_vehicle_takeoff_ready(const bool takeoff_started)
 
   std::scoped_lock lck(telem_mutex_, mission_upload_mutex_, mission_progress_mutex_);
   const bool armed = telem_->armed();
-  const bool healthy = telem_->health_all_ok();
+  const auto health = telem_->health();
+  const bool healthy = is_healthy(health);
   const auto land_state = telem_->landed_state();
 
   if (land_state == mavsdk::Telemetry::LandedState::TakingOff || takeoff_started)
@@ -1701,7 +1716,7 @@ void ControlInterface::state_vehicle_takeoff_ready(const bool takeoff_started)
   {
     std::string reasons;
     add_reason_if("not armed", !armed, reasons);
-    add_reason_if("not healthy", !healthy, reasons);
+    add_unhealthy_reasons(health, reasons);
     add_reason_if("not landed (" + to_string(land_state) + ")", land_state != mavsdk::Telemetry::LandedState::OnGround, reasons);
     RCLCPP_INFO_STREAM(get_logger(), "No longer ready for takeoff: " << reasons << ", stopping all missions and switching state to not_ready.");
     if (!stopMission(reasons))
@@ -1773,8 +1788,16 @@ void ControlInterface::state_vehicle_autonomous_flight()
 
   std::scoped_lock lck(telem_mutex_, mission_upload_mutex_, mission_progress_mutex_);
   const bool armed = telem_->armed();
-  const bool healthy = telem_->health_all_ok();
+  const auto health = telem_->health();
+  const bool healthy = is_healthy(health);
   const auto land_state = telem_->landed_state();
+
+  if (land_state == mavsdk::Telemetry::LandedState::Landing)
+  {
+    RCLCPP_INFO(get_logger(), "Landing! Switching state to landing.");
+    vehicle_state_ = vehicle_state_t::landing;
+    return;
+  }
 
   if (!armed
    || !healthy
@@ -1782,7 +1805,7 @@ void ControlInterface::state_vehicle_autonomous_flight()
   {
     std::string reasons;
     add_reason_if("not armed", !armed, reasons);
-    add_reason_if("not healthy", !healthy, reasons);
+    add_unhealthy_reasons(health, reasons);
     add_reason_if("not flying (" + to_string(land_state) + ")", land_state != mavsdk::Telemetry::LandedState::InAir, reasons);
     RCLCPP_INFO_STREAM(get_logger(), "Autonomous flight mode ended: " << reasons << ", stopping all missions and switching state to not_ready.");
     if (!stopMission(reasons))
@@ -1817,6 +1840,13 @@ void ControlInterface::state_vehicle_manual_flight()
   const bool armed = telem_->armed();
   const auto land_state = telem_->landed_state();
 
+  if (land_state == mavsdk::Telemetry::LandedState::Landing)
+  {
+    RCLCPP_INFO(get_logger(), "Landing! Switching state to landing.");
+    vehicle_state_ = vehicle_state_t::landing;
+    return;
+  }
+
   if (!armed
    || land_state != mavsdk::Telemetry::LandedState::InAir)
   {
@@ -1829,6 +1859,47 @@ void ControlInterface::state_vehicle_manual_flight()
     pose_takeoff_samples_.clear(); // clear the takeoff pose samples to estimate a new one
     vehicle_state_ = vehicle_state_t::not_ready;
     return;
+  }
+}
+//}
+
+/* state_vehicle_landing() method //{ */
+void ControlInterface::state_vehicle_landing()
+{
+  RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 1000, "Vehicle state: landing.");
+  vehicle_state_str_ = "landing";
+
+  if (!system_connected_)
+  {
+    RCLCPP_INFO(get_logger(), "MavSDK system disconnected, switching state to not_connected.");
+    vehicle_state_ = vehicle_state_t::not_connected;
+    return;
+  }
+
+  std::scoped_lock lck(telem_mutex_);
+  const bool armed = telem_->armed();
+  const auto land_state = telem_->landed_state();
+
+  if (!armed)
+  {
+    RCLCPP_INFO(get_logger(), "Landing interrupted with disarm. Switching state to not_ready.");
+    pose_takeoff_samples_.clear(); // clear the takeoff pose samples to estimate a new one
+    vehicle_state_ = vehicle_state_t::not_ready;
+    return;
+  }
+
+  if (land_state == mavsdk::Telemetry::LandedState::OnGround)
+  {
+    RCLCPP_INFO(get_logger(), "Landing complete. Switching state to not_ready.");
+    pose_takeoff_samples_.clear(); // clear the takeoff pose samples to estimate a new one
+    vehicle_state_ = vehicle_state_t::not_ready;
+    return;
+  }
+
+  if (manual_override_)
+  {
+    RCLCPP_INFO(get_logger(), "Manual override detected, switching state to manual_flight.");
+    vehicle_state_ = vehicle_state_t::manual_flight;
   }
 }
 //}
@@ -1970,16 +2041,19 @@ bool ControlInterface::startTakeoff(std::string& fail_reason_out)
   // averaging desired takeoff position
   current_goal.x = 0;
   current_goal.y = 0;
+  current_goal.z = 0;
 
   for (const auto &p : pose_takeoff_samples_)
   {
     current_goal.x += p.x();
     current_goal.y += p.y();
+    current_goal.z += p.z();
   }
   current_goal.x /= pose_takeoff_samples_.size();
   current_goal.y /= pose_takeoff_samples_.size();
+  current_goal.z /= pose_takeoff_samples_.size();
 
-  current_goal.z   = takeoff_height_;
+  current_goal.z   += takeoff_height_;
   current_goal.yaw = getYaw(pose_ori_);
 
   waypoint_buffer_.push_back(current_goal);
@@ -2459,6 +2533,13 @@ rclcpp::CallbackGroup::SharedPtr ControlInterface::new_cbk_grp()
   const rclcpp::CallbackGroup::SharedPtr new_group = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
   callback_groups_.push_back(new_group);
   return new_group;
+}
+//}
+
+/* is_healthy() method //{ */
+bool ControlInterface::is_healthy(const mavsdk::Telemetry::Health& health);
+{
+  return health.is_gyrometer_calibration_ok && health.is_accelerometer_calibration_ok && health.is_magnetometer_calibration_ok && health.is_local_position_ok && health.is_global_position_ok && health.is_home_position_ok && health.is_armable;
 }
 //}
 
