@@ -1078,7 +1078,19 @@ bool ControlInterface::takeoff() {
   current_goal.x   = pos_[1];
   current_goal.y   = pos_[0];
   current_goal.z   = takeoff_height_;
-  current_goal.yaw = getYaw(ori_) - yaw_offset_correction_;
+  tf2::Quaternion q_orig, q_rot, q_new;
+
+  q_orig.setW(ori_[0]);
+  q_orig.setX(ori_[1]);
+  q_orig.setY(ori_[2]);
+  q_orig.setZ(ori_[3]);
+
+  q_rot.setRPY(M_PI, 0, 0);
+  q_new = q_orig * q_rot;
+  q_new.normalize();
+  
+  current_goal.yaw = getYaw(tf2::toMsg(q_new));
+  //current_goal.yaw = getYaw(ori_) - yaw_offset_correction_;
   desired_pose_    = Eigen::Vector4d(current_goal.x, current_goal.y, current_goal.z, current_goal.yaw);
   waypoint_buffer_.push_back(current_goal);
   motion_started_ = true;
