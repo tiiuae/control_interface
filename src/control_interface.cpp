@@ -48,6 +48,8 @@
 #include <unordered_map>
 #include <visualization_msgs/msg/marker_array.hpp>
 
+#include <fog_lib/mutex_utils.h>
+
 //}
 
 using namespace std::placeholders;

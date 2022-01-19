@@ -30,6 +30,8 @@ find_package(tf2_ros REQUIRED)
 find_package(MAVSDK 0.42.0 EXACT REQUIRED)
 find_package(Threads REQUIRED)
 
+find_package(fog_lib REQUIRED)
+
 ## --------------------------------------------------------------
 ## |                       compile                              |
 ## --------------------------------------------------------------
@@ -56,6 +58,7 @@ ament_target_dependencies(control_interface
   tf2_ros
   MAVSDK
   Threads
+  fog_lib
   )
 
 target_link_libraries(control_interface
