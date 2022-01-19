@@ -46,7 +46,6 @@
 #include <tf2/LinearMath/Quaternion.h>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.h>  // This has to be here otherwise you will get cryptic linker error about missing function 'getTimestamp'
 #include <unordered_map>
-#include <visualization_msgs/msg/marker_array.hpp>
 
 #include <control_interface/enums.h>
 #include <fog_lib/mutex_utils.h>
@@ -444,7 +443,7 @@ private:
   bool startMissionUpload(const mavsdk::Mission::MissionPlan& mission_plan);
   bool stopMission(std::string& fail_reason_out);
 
-  void publishDebugMarkers();
+  void printAndPublishWaypoints(const std::vector<local_waypoint_t>& wps);
 
   // timers
   rclcpp::TimerBase::SharedPtr mission_control_timer_;
@@ -1235,60 +1234,59 @@ rcl_interfaces::msg::SetParametersResult ControlInterface::parametersCallback(co
     std::stringstream result_ss;
 
     /* takeoff_height //{ */
-    if (param.get_name() == "takeoff.height") {
-      if (param.get_type() == rclcpp::ParameterType::PARAMETER_DOUBLE) {
-        if (param.as_double() >= 0.5 && param.as_double() < 10) {
-          takeoff_height_   = param.as_double();
-          result.successful = true;
-          RCLCPP_INFO(get_logger(), "Parameter: '%s' set to %1.2f", param.get_name().c_str(), param.as_double());
-        } else {
-          result_ss << "parameter '" << param.get_name() << "' cannot be set to " << param.as_double() << " because it is not in range <0.5;10>";
-          result.reason = result_ss.str();
-        }
-      } else {
-        result_ss << "parameter '" << param.get_name() << "' has to be type DOUBLE";
+    if (param.get_name() == "takeoff.height")
+    {
+      const double val = param.as_double();
+      if (val >= 0.5 && val < 10)
+      {
+        takeoff_height_   = val;
+        result.successful = true;
+        RCLCPP_INFO(get_logger(), "Parameter: '%s' set to %1.2f", param.get_name().c_str(), val);
+      }
+      else
+      {
+        result_ss << "parameter '" << param.get_name() << "' cannot be set to " << val << " because it is not in range <0.5;10>";
         result.reason = result_ss.str();
       }
-      //}
+    }
+    //}
 
-      /* waypoint_loiter_time //{ */
-    } else if (param.get_name() == "px4.waypoint_loiter_time") {
-      if (param.get_type() == rclcpp::ParameterType::PARAMETER_DOUBLE) {
-        if (param.as_double() >= 0.0) {
-          waypoint_loiter_time_ = param.as_double();
-          result.successful     = true;
-          RCLCPP_INFO(get_logger(), "Parameter: '%s' set to %1.2f", param.get_name().c_str(), param.as_double());
-        } else {
-          result_ss << "parameter '" << param.get_name() << "' cannot be set to " << param.as_double() << " because it is a negative value";
-          result.reason = result_ss.str();
-        }
-      } else {
-        result_ss << "parameter '" << param.get_name() << "' has to be type DOUBLE";
+    /* waypoint_loiter_time //{ */
+    else if (param.get_name() == "px4.waypoint_loiter_time")
+    {
+      const double val = param.as_double();
+      if (val >= 0.0)
+      {
+        waypoint_loiter_time_ = val;
+        result.successful     = true;
+        RCLCPP_INFO(get_logger(), "Parameter: '%s' set to %1.2f", param.get_name().c_str(), val);
+      }
+      else
+      {
+        result_ss << "parameter '" << param.get_name() << "' cannot be set to " << val << " because it is a negative value";
         result.reason = result_ss.str();
       }
-      //}
+    }
+    //}
 
-      /* reset_octomap_before_takeoff //{ */
-    } else if (param.get_name() == "general.reset_octomap_before_takeoff") {
-      if (param.get_type() == rclcpp::ParameterType::PARAMETER_BOOL) {
-        octomap_reset_before_takeoff_ = param.as_bool();
-        result.successful             = true;
-        RCLCPP_INFO(get_logger(), "Parameter: '%s' set to %s", param.get_name().c_str(), param.as_bool() ? "TRUE" : "FALSE");
-      } else {
-        result_ss << "parameter '" << param.get_name() << "' has to be type BOOL";
-        result.reason = result_ss.str();
-      }
-      //}
+    /* reset_octomap_before_takeoff //{ */
+    else if (param.get_name() == "general.reset_octomap_before_takeoff")
+    {
+      octomap_reset_before_takeoff_ = param.as_bool();
+      result.successful = true;
+      RCLCPP_INFO(get_logger(), "Parameter: '%s' set to %s", param.get_name().c_str(), param.as_bool() ? "TRUE" : "FALSE");
+    }
+    //}
 
-    } else {
+    else
+    {
       result_ss << "parameter '" << param.get_name() << "' cannot be changed dynamically";
       result.reason = result_ss.str();
     }
   }
 
-  if (!result.successful) {
-    RCLCPP_WARN(get_logger(), "Failed to set parameter: %s", result.reason.c_str());
-  }
+  if (!result.successful)
+    RCLCPP_WARN_STREAM(get_logger(), "Failed to set parameter: " << result.reason);
 
   return result;
 }
@@ -1473,8 +1471,8 @@ void ControlInterface::state_mission_finished()
   // create a new mission plan if there are unused points in the buffer
   if (!waypoint_buffer_.empty())
   {
-    publishDebugMarkers();
     RCLCPP_INFO(get_logger(), "New waypoints to be visited: %ld", waypoint_buffer_.size());
+    printAndPublishWaypoints(waypoint_buffer_);
 
     // transform and move the mission waypoints buffer to the mission_upload_waypoints_ buffer with the mavsdk type - we'll attempt to upload the waypoint_upload_buffer_ to pixhawk
     mission_upload_waypoints_.mission_items.clear();
@@ -2060,6 +2058,8 @@ bool ControlInterface::startTakeoff(std::string& fail_reason_out)
 
   current_goal.z   += takeoff_height_;
   current_goal.yaw = getYaw(pose_ori_);
+  if (current_goal.z > 10.0)
+    RCLCPP_WARN(get_logger(), "Takeoff height is too damn high (%.2f)! Height sensor may be malfunctioning.", current_goal.z);
 
   waypoint_buffer_.push_back(current_goal);
 
@@ -2242,14 +2242,16 @@ void ControlInterface::publishDiagnostics()
 }
 //}
 
-/* publishDebugMarkers //{ */
-void ControlInterface::publishDebugMarkers()
+/* printAndPublishWaypoints //{ */
+void ControlInterface::printAndPublishWaypoints(const std::vector<local_waypoint_t>& wps)
 {
   geometry_msgs::msg::PoseArray msg;
   msg.header.stamp    = get_clock()->now();
   msg.header.frame_id = world_frame_;
 
-  for (auto &w : waypoint_buffer_) {
+  for (const auto &w : wps)
+  {
+    RCLCPP_INFO_STREAM(get_logger(), "\t[" << w.x << ", " << w.y << ", " << w.z << ", " << w.yaw << "]");
     geometry_msgs::msg::Pose p;
     p.position.x = w.x;
     p.position.y = w.y;
