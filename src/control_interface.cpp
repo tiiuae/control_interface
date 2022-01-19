@@ -48,6 +48,7 @@
 #include <unordered_map>
 #include <visualization_msgs/msg/marker_array.hpp>
 
+#include <control_interface/enums.h>
 #include <fog_lib/mutex_utils.h>
 
 //}
@@ -200,6 +201,13 @@ void add_unhealthy_reasons(const mavsdk::Telemetry::Health& health, std::string&
 
 //}
 
+/* is_healthy() method //{ */
+bool is_healthy(const mavsdk::Telemetry::Health& health)
+{
+  return health.is_gyrometer_calibration_ok && health.is_accelerometer_calibration_ok && health.is_magnetometer_calibration_ok && health.is_local_position_ok && health.is_global_position_ok && health.is_home_position_ok && health.is_armable;
+}
+//}
+
 std::string to_string(const mavsdk::Action::Result result);
 std::string to_string(const mavsdk::Mission::Result result);
 std::string to_string(const mavsdk::Param::Result result);
@@ -269,16 +277,7 @@ public:
 
 private:
   std::recursive_mutex state_mutex_;
-  enum vehicle_state_t
-  {
-    not_connected,
-    not_ready,
-    takeoff_ready,
-    taking_off,
-    autonomous_flight,
-    manual_flight,
-    landing,
-  } vehicle_state_ = not_connected;
+  vehicle_state_t vehicle_state_ = vehicle_state_t::not_connected;
   std::string vehicle_state_str_ = "MavSDK system not connected";
 
   std::atomic_bool system_connected_ = false; // set to true when MavSDK connection is established
@@ -292,12 +291,7 @@ private:
   std::shared_ptr<mavsdk::Mission> mission_;
   bool mission_finished_flag_; // set to true in the missionResultCallback, this flag is cleared in the main missionControlRoutine
   unsigned mission_last_instance_ = 1;
-  enum mission_state_t
-  {
-    uploading,
-    in_progress,
-    finished
-  } mission_state_ = finished;
+  mission_state_t mission_state_ = mission_state_t::finished;
 
   std::mutex mission_progress_mutex_;
   int mission_progress_size_ = 0;
@@ -489,7 +483,6 @@ private:
   local_waypoint_t to_local_waypoint(const fog_msgs::srv::WaypointToLocal::Request& in, const bool is_global);
   local_waypoint_t to_local_waypoint(const std::vector<double>& in, const bool is_global);
   local_waypoint_t to_local_waypoint(const Eigen::Vector4d& in, const bool is_global);
-  bool is_healthy(const mavsdk::Telemetry::Health& health);
 };
 //}
 
@@ -1464,6 +1457,10 @@ void ControlInterface::missionControlRoutine()
       state_mission_uploading(); break;
     case mission_state_t::in_progress:
       state_mission_in_progress(); break;
+    default:
+      assert(false);
+      RCLCPP_ERROR(get_logger(), "Invalid mission state, this should never happen!");
+      return;
   }
 }
 
@@ -1607,6 +1604,12 @@ void ControlInterface::updateVehicleState(const bool takeoff_started)
       state_vehicle_autonomous_flight(); break;
     case vehicle_state_t::manual_flight:
       state_vehicle_manual_flight(); break;
+    case vehicle_state_t::landing:
+      state_vehicle_landing(); break;
+    default:
+      assert(false);
+      RCLCPP_ERROR(get_logger(), "Invalid vehicle state, this should never happen!");
+      return;
   }
 }
 //}
@@ -2225,25 +2228,8 @@ void ControlInterface::publishDiagnostics()
   msg.header.frame_id = world_frame_;
 
   msg.armed = armed;
-
-  switch (vehicle_state_)
-  {
-    case vehicle_state_t::not_connected:      msg.vehicle_state = msg_t::VEHICLE_NOT_INITIALIZED; break;
-    case vehicle_state_t::not_ready:          msg.vehicle_state = msg_t::VEHICLE_NOT_READY; break;
-    case vehicle_state_t::takeoff_ready:      msg.vehicle_state = msg_t::VEHICLE_TAKEOFF_READY; break;
-    case vehicle_state_t::taking_off:         msg.vehicle_state = msg_t::VEHICLE_TAKING_OFF; break;
-    case vehicle_state_t::autonomous_flight:  msg.vehicle_state = msg_t::VEHICLE_AUTONOMOUS_FLIGHT; break;
-    case vehicle_state_t::manual_flight:      msg.vehicle_state = msg_t::VEHICLE_MANUAL_FLIGHT; break;
-    default:                                  msg.vehicle_state = 255; break;
-  }
-
-  switch (mission_state_)
-  {
-    case mission_state_t::uploading:    msg.mission_state = msg_t::MISSION_UPLOADING; break;
-    case mission_state_t::in_progress:  msg.mission_state = msg_t::MISSION_IN_PROGRESS; break;
-    case mission_state_t::finished:     msg.mission_state = msg_t::MISSION_FINISHED; break;
-    default:                            msg.mission_state = 255; break;
-  }
+  msg.vehicle_state = to_msg(vehicle_state_);
+  msg.mission_state = to_msg(mission_state_);
 
   msg.mission_size = mission_progress_size_;
   msg.mission_waypoint = mission_progress_current_waypoint_;
@@ -2535,13 +2521,6 @@ rclcpp::CallbackGroup::SharedPtr ControlInterface::new_cbk_grp()
   const rclcpp::CallbackGroup::SharedPtr new_group = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
   callback_groups_.push_back(new_group);
   return new_group;
-}
-//}
-
-/* is_healthy() method //{ */
-bool ControlInterface::is_healthy(const mavsdk::Telemetry::Health& health);
-{
-  return health.is_gyrometer_calibration_ok && health.is_accelerometer_calibration_ok && health.is_magnetometer_calibration_ok && health.is_local_position_ok && health.is_global_position_ok && health.is_home_position_ok && health.is_armable;
 }
 //}
 

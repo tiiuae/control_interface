@@ -32,6 +32,10 @@ find_package(Threads REQUIRED)
 
 find_package(fog_lib REQUIRED)
 
+include_directories(
+  include
+)
+
 ## --------------------------------------------------------------
 ## |                       compile                              |
 ## --------------------------------------------------------------
@@ -93,5 +97,11 @@ install(DIRECTORY config
 install(DIRECTORY scripts
   DESTINATION lib/${PROJECT_NAME}
 )
+
+install(DIRECTORY include
+  DESTINATION .
+)
+
+ament_export_include_directories(include)
 
 ament_package()
