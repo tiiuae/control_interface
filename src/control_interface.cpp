@@ -2251,7 +2251,7 @@ void ControlInterface::printAndPublishWaypoints(const std::vector<local_waypoint
 
   for (const auto &w : wps)
   {
-    RCLCPP_INFO_STREAM(get_logger(), "\t[" << w.x << ", " << w.y << ", " << w.z << ", " << w.yaw << "]");
+    RCLCPP_INFO(get_logger(), "\t[%.2f, %.2f, %.2f, %.2f]", w.x, w.y, w.z, w.yaw);
     geometry_msgs::msg::Pose p;
     p.position.x = w.x;
     p.position.y = w.y;
