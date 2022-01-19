@@ -79,12 +79,7 @@ rclcpp_components_register_nodes(control_interface PLUGIN "${PROJECT_NAME}::Cont
 ## |                           install                          |
 ## --------------------------------------------------------------
 
-install(TARGETS
-  control_interface
-  ARCHIVE DESTINATION lib
-  LIBRARY DESTINATION lib
-  RUNTIME DESTINATION bin
-)
+ament_export_include_directories(include)
 
 install(DIRECTORY launch
   DESTINATION share/${PROJECT_NAME}
@@ -98,10 +93,17 @@ install(DIRECTORY scripts
   DESTINATION lib/${PROJECT_NAME}
 )
 
-install(DIRECTORY include
-  DESTINATION .
+install(
+  DIRECTORY include/
+  DESTINATION include
 )
 
-ament_export_include_directories(include)
+install(TARGETS
+  control_interface
+  ARCHIVE DESTINATION lib
+  LIBRARY DESTINATION lib
+  RUNTIME DESTINATION bin
+  INCLUDES DESTINATION include
+)
 
 ament_package()
