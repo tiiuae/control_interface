@@ -2231,8 +2231,8 @@ void ControlInterface::publishDiagnostics()
   msg.vehicle_state = to_msg(vehicle_state_);
   msg.mission_state = to_msg(mission_state_);
 
-  msg.mission_size = mission_progress_size_;
-  msg.mission_waypoint = mission_progress_current_waypoint_;
+  msg.mission_progress.size = mission_progress_size_;
+  msg.mission_progress.current_waypoint = mission_progress_current_waypoint_;
 
   msg.gps_origin_set = gps_origin_set_;
   msg.getting_odom = getting_odom_;
