@@ -295,6 +295,7 @@ private:
   std::mutex mission_progress_mutex_;
   int mission_progress_size_ = 0;
   int mission_progress_current_waypoint_ = 0;
+  std::atomic<int> control_response_id_ = -1;
 
   std::recursive_mutex mission_upload_mutex_;
   int mission_upload_attempts_;
@@ -1060,13 +1061,14 @@ bool ControlInterface::localPathCallback(const std::shared_ptr<fog_msgs::srv::Pa
   if (!addWaypoints(request->path.poses, false, reason))
   {
     response->success = false;
-    response->message = "Waypoints not set: " + reason;
+    response->message = "#" + std::to_string(request->id) + ": Waypoints not set: " + reason;
     RCLCPP_ERROR_STREAM(get_logger(), response->message);
     return true;
   }
 
   response->success = true;
-  response->message = std::to_string(request->path.poses.size()) + " new waypoints set";
+  response->message = "#" +  std::to_string(request->id) + ": " + std::to_string(request->path.poses.size()) + " new waypoints set";
+  control_response_id_= request->id;
   RCLCPP_INFO_STREAM(get_logger(), response->message);
   return true;
 }
@@ -2233,6 +2235,7 @@ void ControlInterface::publishDiagnostics()
 
   msg.mission_size = mission_progress_size_;
   msg.mission_waypoint = mission_progress_current_waypoint_;
+  msg.control_response_id = control_response_id_;
 
   msg.gps_origin_set = gps_origin_set_;
   msg.getting_odom = getting_odom_;
