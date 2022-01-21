@@ -56,20 +56,13 @@ struct gps_waypoint_t
 
 /* getYaw //{ */
 double getYaw(const Eigen::Quaterniond &q) {
-  auto euler = q.toRotationMatrix().eulerAngles(0, 1, 2);
-  return euler[2];
+  return atan2(2.0 * (q.z() * q.w() + q.x() * q.y()), -1.0 + 2.0 * (q.w() * q.w() + q.x() * q.x()));
 }
-
 double getYaw(const geometry_msgs::msg::Quaternion &q) {
-  Eigen::Quaterniond eq(q.w, q.x, q.y, q.z);
-  auto               euler = eq.toRotationMatrix().eulerAngles(0, 1, 2);
-  return euler[2];
+  return atan2(2.0 * (q.z * q.w + q.x * q.y), -1.0 + 2.0 * (q.w * q.w + q.x * q.x));
 }
-
 double getYaw(const float q[4]) {
-  Eigen::Quaterniond eq(q[0], q[1], q[2], q[3]);
-  auto               euler = eq.toRotationMatrix().eulerAngles(0, 1, 2);
-  return euler[2];
+  return atan2(2.0 * (q[3] * q[0] + q[1] * q[2]), -1.0 + 2.0 * (q[0] * q[0] + q[1] * q[1]));
 }
 //}
 
@@ -1068,33 +1061,36 @@ bool ControlInterface::takeoff() {
     RCLCPP_INFO(this->get_logger(), "[%s]: Resetting octomap server", this->get_name());
   }
 
+  // Moved the takeoff goal calculation before action_->takeoff() call
+  // The takeoff() method is blocking, so the odometry callback might be blocked and not updated
+  
+  local_waypoint_t current_goal;
+  current_goal.x   = pos_[1];
+  current_goal.y   = pos_[0];
+  current_goal.z   = takeoff_height_;
+  auto tf = transformBetween(fcu_frame_, world_frame_);
+  current_goal.yaw = getYaw(tf.pose.orientation);
+  
+
+  RCLCPP_INFO(this->get_logger(), "[%s]: Current position: [%.2f, %.2f, %.2f, %.2f]", this->get_name(), 
+    pos_[0], pos_[1], pos_[2], getYaw(ori_));
+
+  RCLCPP_INFO(this->get_logger(), "[%s]: Transformed position: [%.2f, %.2f, %.2f, %.2f]", this->get_name(), 
+    tf.pose.position.x, tf.pose.position.y, tf.pose.position.z ,getYaw(tf.pose.orientation));
+  
+  RCLCPP_INFO(this->get_logger(), "[%s]: Takeoff goal waypoint: [%.2f, %.2f, %.2f, %.2f]", 
+    this->get_name(), current_goal.x, current_goal.y, current_goal.z, current_goal.yaw);
+
   action_->takeoff();
   if (result != mavsdk::Action::Result::Success) {
     RCLCPP_ERROR(this->get_logger(), "[%s]: Takeoff failed", this->get_name());
     return false;
   }
 
-  local_waypoint_t current_goal;
-  current_goal.x   = pos_[1];
-  current_goal.y   = pos_[0];
-  current_goal.z   = takeoff_height_;
-  tf2::Quaternion q_orig, q_rot, q_new;
-
-  q_orig.setW(ori_[0]);
-  q_orig.setX(ori_[1]);
-  q_orig.setY(ori_[2]);
-  q_orig.setZ(ori_[3]);
-
-  q_rot.setRPY(M_PI, 0, 0);
-  q_new = q_orig * q_rot;
-  q_new.normalize();
-  
-  current_goal.yaw = getYaw(tf2::toMsg(q_new));
-  //current_goal.yaw = getYaw(ori_) - yaw_offset_correction_;
   desired_pose_    = Eigen::Vector4d(current_goal.x, current_goal.y, current_goal.z, current_goal.yaw);
   waypoint_buffer_.push_back(current_goal);
   motion_started_ = true;
-  RCLCPP_INFO(this->get_logger(), "[%s]: Taking off", this->get_name());
+  RCLCPP_INFO(this->get_logger(), "[%s]: Taking off to %.2f m", this->get_name(), takeoff_height_);
   return true;
 }
 //}
