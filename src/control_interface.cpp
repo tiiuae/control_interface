@@ -531,13 +531,15 @@ ControlInterface::ControlInterface(rclcpp::NodeOptions options) : Node("control_
   loaded_successfully &= parse_param("mavsdk.yaw_offset_correction", yaw_offset_correction_, *this);
   loaded_successfully &= parse_param("mavsdk.mission_upload_attempts_threshold", mission_upload_attempts_threshold_, *this);
 
-  if (!loaded_successfully) {
+  if (!loaded_successfully)
+  {
     RCLCPP_ERROR_STREAM(get_logger(), "Could not load all non-optional parameters. Shutting down.");
     rclcpp::shutdown();
     return;
   }
 
-  if (control_update_rate_ < 5.0) {
+  if (control_update_rate_ < 5.0)
+  {
     control_update_rate_ = 5.0;
     RCLCPP_WARN(get_logger(), "Control update rate set too slow. Defaulting to 5 Hz");
   }
@@ -799,7 +801,7 @@ void ControlInterface::missionResultCallback(const px4_msgs::msg::MissionResult:
   // check if a mission is currently in-progress and we got an indication that it is finished
   if (mission_state_ == mission_state_t::in_progress && msg->finished && msg->instance_count != mission_last_instance_)
   {
-    RCLCPP_INFO(get_logger(), "Mission #%u finished by callback", msg->instance_count);
+    RCLCPP_INFO_STREAM(get_logger(), "Mission finished by callback (PixHawk mission instance " << msg->instance_count << ")");
     mission_finished_flag_ = true; // set the appropriate flag to signal the state machine to change state
     mission_last_instance_ = msg->instance_count;
   }
