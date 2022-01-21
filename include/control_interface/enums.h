@@ -1,6 +1,7 @@
 #ifndef ENUMS_H
 #define ENUMS_H
 
+#include <cassert>
 #include <fog_msgs/msg/control_interface_vehicle_state.hpp>
 #include <fog_msgs/msg/control_interface_mission_state.hpp>
 
@@ -51,6 +52,21 @@ namespace control_interface
     }
     return msg;
   }
+
+  std::string to_string(const vehicle_state_t enum_val)
+  {
+    switch (enum_val)
+    {
+      case vehicle_state_t::not_connected:       return "not_connected";
+      case vehicle_state_t::not_ready:           return "not_ready";
+      case vehicle_state_t::takeoff_ready:       return "takeoff_ready";
+      case vehicle_state_t::taking_off:          return "taking_off";
+      case vehicle_state_t::autonomous_flight:   return "autonomous_flight";
+      case vehicle_state_t::manual_flight:       return "manual_flight";
+      case vehicle_state_t::landing:             return "landing";
+      default:                                   assert(false); return "invalid";
+    }
+  }
   
   //}
 
@@ -86,6 +102,17 @@ namespace control_interface
       default:                           assert(false); msg.state = fog_msgs::msg::ControlInterfaceMissionState::INVALID; break;
     }
     return msg;
+  }
+
+  std::string to_string(const mission_state_t enum_val)
+  {
+    switch (enum_val)
+    {
+      case mission_state_t::uploading:    return "uploading";
+      case mission_state_t::in_progress:  return "in_progress";
+      case mission_state_t::finished:     return "finished";
+      default:                            assert(false); return "invalid";
+    }
   }
   
   //}

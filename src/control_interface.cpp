@@ -49,6 +49,7 @@
 
 #include <control_interface/enums.h>
 #include <fog_lib/mutex_utils.h>
+#include <fog_lib/params.h>
 
 //}
 
@@ -289,13 +290,13 @@ private:
   std::recursive_mutex mission_mutex_;
   std::shared_ptr<mavsdk::Mission> mission_;
   bool mission_finished_flag_; // set to true in the missionResultCallback, this flag is cleared in the main missionControlRoutine
+  uint32_t mission_id_ = 0;
   unsigned mission_last_instance_ = 1;
   mission_state_t mission_state_ = mission_state_t::finished;
 
   std::mutex mission_progress_mutex_;
-  int mission_progress_size_ = 0;
-  int mission_progress_current_waypoint_ = 0;
-  std::atomic<int> control_response_id_ = -1;
+  int32_t mission_progress_size_ = 0;
+  int32_t mission_progress_current_waypoint_ = 0;
 
   std::recursive_mutex mission_upload_mutex_;
   int mission_upload_attempts_;
@@ -470,11 +471,6 @@ private:
   void state_vehicle_manual_flight();
   void state_vehicle_landing();
 
-  // utils
-  template <class T>
-  bool parse_param(const std::string &param_name, T &param_dest);
-  bool parse_param(const std::string& param_name, rclcpp::Duration& param_dest);
-
   template<typename T>
   bool addWaypoints(const T& path, const bool is_global, std::string& fail_reason_out);
   mavsdk::Mission::MissionItem to_mission_item(const local_waypoint_t& w_in);
@@ -510,30 +506,30 @@ ControlInterface::ControlInterface(rclcpp::NodeOptions options) : Node("control_
 
   /* parse params from launch file //{ */
   bool loaded_successfully = true;
-  loaded_successfully &= parse_param("device_url", device_url_);
-  loaded_successfully &= parse_param("world_frame", world_frame_);
+  loaded_successfully &= parse_param("device_url", device_url_, *this);
+  loaded_successfully &= parse_param("world_frame", world_frame_, *this);
   //}
 
   /* parse params from config file //{ */
-  loaded_successfully &= parse_param("general.octomap_reset_before_takeoff", octomap_reset_before_takeoff_);
-  loaded_successfully &= parse_param("general.octomap_reset_timeout", octomap_reset_timeout_);
-  loaded_successfully &= parse_param("general.control_update_rate", control_update_rate_);
-  loaded_successfully &= parse_param("general.diagnostics_publish_rate", diagnostics_publish_rate_);
-  loaded_successfully &= parse_param("general.print_callback_durations", print_callback_durations_);
-  loaded_successfully &= parse_param("general.print_callback_min_dur", print_callback_min_dur_);
+  loaded_successfully &= parse_param("general.octomap_reset_before_takeoff", octomap_reset_before_takeoff_, *this);
+  loaded_successfully &= parse_param("general.octomap_reset_timeout", octomap_reset_timeout_, *this);
+  loaded_successfully &= parse_param("general.control_update_rate", control_update_rate_, *this);
+  loaded_successfully &= parse_param("general.diagnostics_publish_rate", diagnostics_publish_rate_, *this);
+  loaded_successfully &= parse_param("general.print_callback_durations", print_callback_durations_, *this);
+  loaded_successfully &= parse_param("general.print_callback_min_dur", print_callback_min_dur_, *this);
 
-  loaded_successfully &= parse_param("takeoff.height", takeoff_height_);
-  loaded_successfully &= parse_param("takeoff.position_samples", takeoff_position_samples_);
+  loaded_successfully &= parse_param("takeoff.height", takeoff_height_, *this);
+  loaded_successfully &= parse_param("takeoff.position_samples", takeoff_position_samples_, *this);
 
-  loaded_successfully &= parse_param("px4.target_velocity", target_velocity_);
-  loaded_successfully &= parse_param("px4.waypoint_loiter_time", waypoint_loiter_time_);
-  loaded_successfully &= parse_param("px4.waypoint_acceptance_radius", waypoint_acceptance_radius_);
-  loaded_successfully &= parse_param("px4.altitude_acceptance_radius", altitude_acceptance_radius_);
+  loaded_successfully &= parse_param("px4.target_velocity", target_velocity_, *this);
+  loaded_successfully &= parse_param("px4.waypoint_loiter_time", waypoint_loiter_time_, *this);
+  loaded_successfully &= parse_param("px4.waypoint_acceptance_radius", waypoint_acceptance_radius_, *this);
+  loaded_successfully &= parse_param("px4.altitude_acceptance_radius", altitude_acceptance_radius_, *this);
 
-  loaded_successfully &= parse_param("mavsdk.logging_print_level", mavsdk_logging_print_level_);
-  loaded_successfully &= parse_param("mavsdk.logging_filename", mavsdk_logging_filename_);
-  loaded_successfully &= parse_param("mavsdk.yaw_offset_correction", yaw_offset_correction_);
-  loaded_successfully &= parse_param("mavsdk.mission_upload_attempts_threshold", mission_upload_attempts_threshold_);
+  loaded_successfully &= parse_param("mavsdk.logging_print_level", mavsdk_logging_print_level_, *this);
+  loaded_successfully &= parse_param("mavsdk.logging_filename", mavsdk_logging_filename_, *this);
+  loaded_successfully &= parse_param("mavsdk.yaw_offset_correction", yaw_offset_correction_, *this);
+  loaded_successfully &= parse_param("mavsdk.mission_upload_attempts_threshold", mission_upload_attempts_threshold_, *this);
 
   if (!loaded_successfully) {
     RCLCPP_ERROR_STREAM(get_logger(), "Could not load all non-optional parameters. Shutting down.");
@@ -706,9 +702,9 @@ void ControlInterface::controlModeCallback(const px4_msgs::msg::VehicleControlMo
 
   if (manual_override_ && !msg->flag_control_manual_enabled)
   {
-    const auto land_state = telem_->landed_state();
-    const bool on_ground_disarmed = !msg->flag_armed && land_state == mavsdk::Telemetry::LandedState::OnGround;
-    const bool taking_off = land_state == mavsdk::Telemetry::LandedState::TakingOff;
+    const vehicle_state_t state = fog_lib::get_mutexed(state_mutex_, vehicle_state_);
+    const bool on_ground_disarmed = !msg->flag_armed && state == vehicle_state_t::not_ready;
+    const bool taking_off = state == vehicle_state_t::taking_off;
     if (on_ground_disarmed)
     {
       manual_override_ = false;
@@ -720,7 +716,7 @@ void ControlInterface::controlModeCallback(const px4_msgs::msg::VehicleControlMo
       RCLCPP_INFO(get_logger(), "Vehicle is taking off, enabling automatic control.");
     }
     else
-      RCLCPP_WARN_STREAM_THROTTLE(get_logger(), *get_clock(), 1000, "NOT enabling automatic control: neither taking off nor landed and disarmed (" << to_string(land_state) << ")");
+      RCLCPP_WARN_STREAM_THROTTLE(get_logger(), *get_clock(), 1000, "NOT enabling automatic control: neither taking off nor landed and disarmed (" << to_string(state) << ")");
   }
 }
 //}
@@ -1061,14 +1057,14 @@ bool ControlInterface::localPathCallback(const std::shared_ptr<fog_msgs::srv::Pa
   if (!addWaypoints(request->path.poses, false, reason))
   {
     response->success = false;
-    response->message = "#" + std::to_string(request->id) + ": Waypoints not set: " + reason;
+    response->message = "Mission #" + std::to_string(request->mission_id) + ": " + std::to_string(request->path.poses.size()) + " new waypoints not set: " + reason;
     RCLCPP_ERROR_STREAM(get_logger(), response->message);
     return true;
   }
 
   response->success = true;
-  response->message = "#" +  std::to_string(request->id) + ": " + std::to_string(request->path.poses.size()) + " new waypoints set";
-  control_response_id_= request->id;
+  response->message = "Mission #" +  std::to_string(request->mission_id) + ": " + std::to_string(request->path.poses.size()) + " new waypoints set";
+  mission_id_= request->mission_id;
   RCLCPP_INFO_STREAM(get_logger(), response->message);
   return true;
 }
@@ -1625,22 +1621,15 @@ void ControlInterface::state_vehicle_not_connected()
   // advance to the next state if connection and initialization was OK
   if (succ)
   {
+    RCLCPP_INFO(get_logger(), "MavSDK system connected, clearing all missions and switching state to not_ready.");
     std::string reasons;
     if (!stopMission(reasons))
-    {
       RCLCPP_WARN_STREAM(get_logger(), "Failed to stop mission before transitioning to not_ready (" << reasons << "). Arming may be dangerous!");
-    }
-    else
-    {
-      RCLCPP_INFO(get_logger(), "MavSDK system connected, clearing all missions and switching state to not_ready.");
-      vehicle_state_ = vehicle_state_t::not_ready;
-    }
+    vehicle_state_ = vehicle_state_t::not_ready;
   }
   // otherwise tell the user what we're waiting for
   else
-  {
     RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 1000, "Waiting for MavSDK system connection.");
-  }
 }
 //}
 
@@ -1904,6 +1893,9 @@ void ControlInterface::state_vehicle_landing()
   if (manual_override_)
   {
     RCLCPP_INFO(get_logger(), "Manual override detected, switching state to manual_flight.");
+    std::string reasons;
+    if (!stopMission(reasons))
+      RCLCPP_WARN_STREAM(get_logger(), "Failed to stop mission before transitioning to manual_flight (" << reasons << ")!");
     vehicle_state_ = vehicle_state_t::manual_flight;
   }
 }
@@ -2233,9 +2225,9 @@ void ControlInterface::publishDiagnostics()
   msg.vehicle_state = to_msg(vehicle_state_);
   msg.mission_state = to_msg(mission_state_);
 
+  msg.mission_id = mission_id_;
   msg.mission_size = mission_progress_size_;
   msg.mission_waypoint = mission_progress_current_waypoint_;
-  msg.control_response_id = control_response_id_;
 
   msg.gps_origin_set = gps_origin_set_;
   msg.getting_odom = getting_odom_;
@@ -2271,50 +2263,6 @@ void ControlInterface::printAndPublishWaypoints(const std::vector<local_waypoint
 //}
 
 // | --------------------- Utility methods -------------------- |
-
-/* parse_param //{ */
-template <class T>
-bool ControlInterface::parse_param(const std::string &param_name, T &param_dest)
-{
-#ifdef ROS_FOXY
-  declare_parameter(param_name); // for Foxy
-#else
-  declare_parameter<T>(param_name); // for Galactic and newer
-#endif
-  if (!get_parameter(param_name, param_dest))
-  {
-    RCLCPP_ERROR(get_logger(), "Could not load param '%s'", param_name.c_str());
-    return false;
-  }
-  else
-  {
-    RCLCPP_INFO_STREAM(get_logger(), "Loaded '" << param_name << "' = '" << param_dest << "'");
-  }
-  return true;
-}
-
-bool ControlInterface::parse_param(const std::string& param_name, rclcpp::Duration& param_dest)
-{
-  using T = double;
-#ifdef ROS_FOXY
-  declare_parameter(param_name); // for Foxy
-#else
-  declare_parameter<T>(param_name); // for Galactic and newer
-#endif
-  T tmp;
-  if (!get_parameter(param_name, tmp))
-  {
-    RCLCPP_ERROR(get_logger(), "Could not load param '%s'", param_name.c_str());
-    return false;
-  }
-  else
-  {
-    param_dest = rclcpp::Duration::from_seconds(tmp);
-    RCLCPP_INFO_STREAM(get_logger(), "Loaded '" << param_name << "' = '" << tmp << "s'");
-  }
-  return true;
-}
-//}
 
 /* to_mission_item //{ */
 mavsdk::Mission::MissionItem ControlInterface::to_mission_item(const local_waypoint_t& w_in)
