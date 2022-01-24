@@ -302,12 +302,13 @@ private:
   int mission_upload_attempts_;
   mavsdk::Mission::MissionPlan  mission_upload_waypoints_; // this buffer is used for repeated attempts at mission uploads
   rclcpp::Time mission_upload_start_time_;
-  rclcpp::Time mission_upload_end_time_;
   enum mission_upload_state_t
   {
-    started,
+    upload_called,
+    upload_retry,
+    start_called,
+    start_retry,
     done,
-    failed
   } mission_upload_state_ = done;
 
   // the mavsdk::Action is used for requesting actions such as takeoff and landing
@@ -1485,7 +1486,7 @@ void ControlInterface::state_mission_finished()
 
     // start upload of the new waypoints
     mission_upload_attempts_ = 0;
-    startMissionUpload(mission_upload_waypoints_); // this starts the asynchronous upload process
+    mission_upload_state_ = mission_upload_state_t::upload_retry; // this will start the asynchronous upload process
     mission_state_ = mission_state_t::uploading;
   }
 }
@@ -1498,15 +1499,13 @@ void ControlInterface::state_mission_uploading()
   switch (mission_upload_state_)
   {
     // if the mission is being uploaded, just wait for it to either fail or finish
-    case mission_upload_state_t::started:
+    case mission_upload_state_t::upload_called:
       break;
 
     // if the mission upload failed, either retry, or fail altogether
-    case mission_upload_state_t::failed:
-      RCLCPP_WARN(get_logger(), "Mission upload of %ld waypoints failed after %.2fs.", mission_upload_waypoints_.mission_items.size(), (mission_upload_end_time_ - mission_upload_start_time_).seconds());
+    case mission_upload_state_t::upload_retry:
       if (mission_upload_attempts_ < mission_upload_attempts_threshold_)
       {
-        RCLCPP_INFO(get_logger(), "Retrying upload of %ld waypoints", mission_upload_waypoints_.mission_items.size());
         mission_upload_attempts_++;
         startMissionUpload(mission_upload_waypoints_); // this starts the asynchronous upload process
       }
@@ -1519,12 +1518,29 @@ void ControlInterface::state_mission_uploading()
       }
       break;
 
+    case mission_upload_state_t::start_called:
+      break;
+
+    // if the mission start failed, either retry, or fail altogether
+    case mission_upload_state_t::start_retry:
+      if (mission_upload_attempts_ < mission_upload_attempts_threshold_)
+      {
+        mission_upload_attempts_++;
+        // clear the mission finish flag and start the uploaded mission
+        mission_finished_flag_ = false;
+        startMission(); // this calls the asynchronous mission start
+      }
+      else
+      {
+        mission_progress_size_ = 0;
+        mission_progress_current_waypoint_ = 0;
+        mission_state_ = mission_state_t::finished;
+        RCLCPP_WARN(get_logger(), "Calling mission start failed too many times. Scrapping mission.");
+      }
+      break;
+
     case mission_upload_state_t::done:
-      RCLCPP_INFO(get_logger(), "Mission upload of %ld waypoints succeeded after %.2fs.", mission_upload_waypoints_.mission_items.size(), (mission_upload_end_time_ - mission_upload_start_time_).seconds());
-      // clear the mission finish flag and start the uploaded mission
-      mission_finished_flag_ = false;
-      if (startMission())
-        mission_state_ = mission_state_t::in_progress;
+      mission_state_ = mission_state_t::in_progress;
       break;
   }
 }
@@ -1784,8 +1800,6 @@ void ControlInterface::state_vehicle_autonomous_flight()
 
   std::scoped_lock lck(telem_mutex_, mission_upload_mutex_, mission_progress_mutex_);
   const bool armed = telem_->armed();
-  const auto health = telem_->health();
-  const bool healthy = is_healthy(health);
   const auto land_state = telem_->landed_state();
 
   if (land_state == mavsdk::Telemetry::LandedState::Landing)
@@ -1796,12 +1810,10 @@ void ControlInterface::state_vehicle_autonomous_flight()
   }
 
   if (!armed
-   || !healthy
    || land_state != mavsdk::Telemetry::LandedState::InAir)
   {
     std::string reasons;
     add_reason_if("not armed", !armed, reasons);
-    add_unhealthy_reasons(health, reasons);
     add_reason_if("not flying (" + to_string(land_state) + ")", land_state != mavsdk::Telemetry::LandedState::InAir, reasons);
     RCLCPP_INFO_STREAM(get_logger(), "Autonomous flight mode ended: " << reasons << ", stopping all missions and switching state to not_ready.");
     if (!stopMission(reasons))
@@ -2095,21 +2107,44 @@ bool ControlInterface::startLanding(std::string& fail_reason_out)
 // the following mutexes have to be locked by the calling function:
 // state_mutex_
 // mission_mutex_
+// mission_upload_mutex_
 bool ControlInterface::startMission()
 {
+  mission_upload_state_ = mission_upload_state_t::start_retry;
+
   if (manual_override_)
   {
     RCLCPP_WARN(get_logger(), "Mission start prevented by manual override");
     return false;
   }
 
-  const auto result = mission_->start_mission();
-  if (result != mavsdk::Mission::Result::Success)
-  {
-    RCLCPP_ERROR(get_logger(), "Mission start rejected with exit symbol %s", to_string(result).c_str());
-    return false;
-  }
-  RCLCPP_INFO(get_logger(), "Mission started");
+  mission_upload_start_time_ = get_clock()->now();
+  mission_->start_mission_async([this](mavsdk::Mission::Result result)
+      {
+        // spawn a new thread to avoid blocking in the MavSDK
+        // callback which will eventually cause a deadlock
+        // of the MavSDK processing thread
+        std::thread([this, result]
+        {
+          std::scoped_lock lck(mission_upload_mutex_);
+          const double dur_s = (get_clock()->now() - mission_upload_start_time_).seconds();
+          if (result == mavsdk::Mission::Result::Success)
+          {
+            RCLCPP_INFO(get_logger(), "Mission successfully started after %.2fs.", dur_s);
+            mission_upload_attempts_ = 0;
+            mission_upload_state_ = mission_upload_state_t::done;
+          }
+          else
+          {
+            RCLCPP_ERROR(get_logger(), "Calling mission start rejected after %.2fs: %s", dur_s, to_string(result).c_str());
+            mission_upload_state_ = mission_upload_state_t::start_retry;
+          }
+        }).detach();
+      }
+    );
+
+  RCLCPP_INFO(get_logger(), "Called mission start (attempt %d/%d).", mission_upload_attempts_+1, mission_upload_attempts_threshold_+1);
+  mission_upload_state_ = mission_upload_state_t::start_called;
   return true;
 }
 //}
@@ -2121,7 +2156,7 @@ bool ControlInterface::startMission()
 // mission_upload_mutex_
 bool ControlInterface::startMissionUpload(const mavsdk::Mission::MissionPlan& mission_plan)
 {
-  mission_upload_state_ = mission_upload_state_t::failed;
+  mission_upload_state_ = mission_upload_state_t::upload_retry;
 
   if (mission_plan.mission_items.empty())
   {
@@ -2144,17 +2179,24 @@ bool ControlInterface::startMissionUpload(const mavsdk::Mission::MissionPlan& mi
         std::thread([this, result]
         {
           std::scoped_lock lck(mission_upload_mutex_);
-          mission_upload_end_time_ = get_clock()->now();
+          const double dur_s = (get_clock()->now() - mission_upload_start_time_).seconds();
           if (result == mavsdk::Mission::Result::Success)
-            mission_upload_state_ = mission_upload_state_t::done;
+          {
+            RCLCPP_INFO(get_logger(), "Mission upload of %ld waypoints succeeded after %.2fs.", mission_upload_waypoints_.mission_items.size(), dur_s);
+            mission_upload_attempts_ = 0;
+            mission_upload_state_ = mission_upload_state_t::start_retry;
+          }
           else
-            mission_upload_state_ = mission_upload_state_t::failed;
+          {
+            RCLCPP_INFO(get_logger(), "Mission waypoints upload failed after %.2fs: %s", dur_s, to_string(result).c_str());
+            mission_upload_state_ = mission_upload_state_t::upload_retry;
+          }
         }).detach();
       }
     );
-  RCLCPP_INFO(get_logger(), "Started mission upload attempt #%d", mission_upload_attempts_);
 
-  mission_upload_state_ = mission_upload_state_t::started;
+  RCLCPP_INFO(get_logger(), "Started mission upload (attempt %d/%d).", mission_upload_attempts_+1, mission_upload_attempts_threshold_+1);
+  mission_upload_state_ = mission_upload_state_t::upload_called;
   return true;
 }
 //}
@@ -2178,7 +2220,7 @@ bool ControlInterface::stopMission(std::string& fail_reason_out)
     return true;
 
   // cancel any current mission upload to pixhawk if applicable
-  if (mission_upload_state_ == mission_upload_state_t::started)
+  if (mission_upload_state_ == mission_upload_state_t::upload_called)
   {
     const auto cancel_result = mission_->cancel_mission_upload();
     if (cancel_result != mavsdk::Mission::Result::Success)
