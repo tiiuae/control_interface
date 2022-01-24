@@ -47,9 +47,12 @@
 #include <tf2_geometry_msgs/tf2_geometry_msgs.h>  // This has to be here otherwise you will get cryptic linker error about missing function 'getTimestamp'
 #include <unordered_map>
 
-#include <control_interface/enums.h>
 #include <fog_lib/mutex_utils.h>
 #include <fog_lib/params.h>
+
+#include <control_interface/utils.h>
+#include <control_interface/enums.h>
+#include <control_interface/mission_manager.h>
 
 //}
 
@@ -208,13 +211,6 @@ bool is_healthy(const mavsdk::Telemetry::Health& health)
 }
 //}
 
-std::string to_string(const mavsdk::Action::Result result);
-std::string to_string(const mavsdk::Mission::Result result);
-std::string to_string(const mavsdk::Param::Result result);
-std::string to_string(const mavsdk::ConnectionResult result);
-std::string to_string(const mavsdk::Telemetry::FlightMode mode);
-std::string to_string(const mavsdk::Telemetry::LandedState land_state);
-
 /* helper class scope_timer //{ */
 
 class scope_timer
@@ -288,28 +284,10 @@ private:
   std::atomic_bool manual_override_ = false;
 
   std::recursive_mutex mission_mutex_;
-  std::shared_ptr<mavsdk::Mission> mission_;
+  std::unique_ptr<MissionManager> mission_mgr_;
   bool mission_finished_flag_; // set to true in the missionResultCallback, this flag is cleared in the main missionControlRoutine
   uint32_t mission_id_ = 0;
   unsigned mission_last_instance_ = 1;
-  mission_state_t mission_state_ = mission_state_t::finished;
-
-  std::mutex mission_progress_mutex_;
-  int32_t mission_progress_size_ = 0;
-  int32_t mission_progress_current_waypoint_ = 0;
-
-  std::recursive_mutex mission_upload_mutex_;
-  int mission_upload_attempts_;
-  mavsdk::Mission::MissionPlan  mission_upload_waypoints_; // this buffer is used for repeated attempts at mission uploads
-  rclcpp::Time mission_upload_start_time_;
-  enum mission_upload_state_t
-  {
-    upload_called,
-    upload_retry,
-    start_called,
-    start_retry,
-    done,
-  } mission_upload_state_ = done;
 
   // the mavsdk::Action is used for requesting actions such as takeoff and landing
   std::mutex action_mutex_;
@@ -389,7 +367,6 @@ private:
   // subscriber callbacks
   void controlModeCallback(const px4_msgs::msg::VehicleControlMode::UniquePtr msg);
   void missionResultCallback(const px4_msgs::msg::MissionResult::UniquePtr msg);
-  void missionProgressCallback(const mavsdk::Mission::MissionProgress& mission_progress);
   bool mavsdkLogCallback(const mavsdk::log::Level level, const std::string& message, const std::string& file, const int line);
   void homePositionCallback(const px4_msgs::msg::HomePosition::UniquePtr msg);
   void odometryCallback(const nav_msgs::msg::Odometry::UniquePtr msg);
@@ -443,15 +420,11 @@ private:
   bool startTakeoff(std::string& fail_reason_out);
   bool startLanding(std::string& fail_reason_out);
   bool startMission();
-  bool startMissionUpload(const mavsdk::Mission::MissionPlan& mission_plan);
   bool stopMission(std::string& fail_reason_out);
 
   void printAndPublishWaypoints(const std::vector<local_waypoint_t>& wps);
 
   // timers
-  rclcpp::TimerBase::SharedPtr mission_control_timer_;
-  void missionControlRoutine();
-
   rclcpp::TimerBase::SharedPtr vehicle_state_timer_;
   void vehicleStateRoutine();
 
@@ -662,9 +635,6 @@ ControlInterface::ControlInterface(rclcpp::NodeOptions options) : Node("control_
   get_px4_param_float_service_ = create_service<fog_msgs::srv::GetPx4ParamFloat>("~/get_px4_param_float_in",
       std::bind(&ControlInterface::getPx4ParamFloatCallback, this, _1, _2), qos_profile, param_grp_ptr);
 
-  mission_control_timer_ = create_wall_timer(std::chrono::duration<double>(1.0 / control_update_rate_),
-      std::bind(&ControlInterface::missionControlRoutine, this), new_cbk_grp());
-
   vehicle_state_timer_ = create_wall_timer(std::chrono::duration<double>(1.0 / control_update_rate_),
       std::bind(&ControlInterface::vehicleStateRoutine, this), new_cbk_grp());
 
@@ -685,7 +655,7 @@ ControlInterface::ControlInterface(rclcpp::NodeOptions options) : Node("control_
 void ControlInterface::controlModeCallback(const px4_msgs::msg::VehicleControlMode::UniquePtr msg)
 {
   scope_timer tim(print_callback_durations_, "controlModeCallback", print_callback_throttle_, print_callback_min_dur_);
-  std::scoped_lock lck(telem_mutex_, mission_mutex_, mission_upload_mutex_, waypoint_buffer_mutex_);
+  std::scoped_lock lck(telem_mutex_, mission_mutex_, waypoint_buffer_mutex_);
 
   if (!system_connected_)
     return;
@@ -800,41 +770,12 @@ void ControlInterface::missionResultCallback(const px4_msgs::msg::MissionResult:
   std::scoped_lock lck(mission_mutex_);
 
   // check if a mission is currently in-progress and we got an indication that it is finished
-  if (mission_state_ == mission_state_t::in_progress && msg->finished && msg->instance_count != mission_last_instance_)
+  if (mission_mgr_->state() == mission_state_t::in_progress && msg->finished && msg->instance_count != mission_last_instance_)
   {
     RCLCPP_INFO_STREAM(get_logger(), "Mission finished by callback (PixHawk mission instance " << msg->instance_count << ")");
     mission_finished_flag_ = true; // set the appropriate flag to signal the state machine to change state
     mission_last_instance_ = msg->instance_count;
   }
-}
-//}
-
-/* missionProgressCallback //{ */
-void ControlInterface::missionProgressCallback(const mavsdk::Mission::MissionProgress& mission_progress)
-{
-  // spawn a new thread to avoid blocking in the MavSDK
-  // callback which will eventually cause a deadlock
-  // of the MavSDK processing thread
-  std::thread([this, &mission_progress]
-  {
-    scope_timer tim(print_callback_durations_, "missionProgressCallback", print_callback_throttle_, print_callback_min_dur_);
-    std::scoped_lock lck(mission_mutex_, mission_progress_mutex_);
-
-    // if no mission is in progress, don't print or update anything to avoid spamming garbage
-    if (mission_state_ != mission_state_t::in_progress)
-      return;
-
-    mission_progress_size_ = mission_progress.total;
-    mission_progress_current_waypoint_ = mission_progress.current;
-
-    const float percent = mission_progress.total == 0 ? 100 : mission_progress.current/float(mission_progress.total)*100.0f;
-    if (mission_progress.current == -1)
-      RCLCPP_INFO(get_logger(), "Current mission cancelled (waypoint %d/%d).", mission_progress.current, mission_progress.total);
-    else if (mission_progress.total == 0)
-      RCLCPP_INFO(get_logger(), "Current mission is empty (waypoint %d/%d).", mission_progress.current, mission_progress.total);
-    else
-      RCLCPP_INFO(get_logger(), "Current mission waypoint: %d/%d (%.1f%%).", mission_progress.current, mission_progress.total, percent);
-  }).detach();
 }
 //}
 
@@ -914,7 +855,7 @@ bool ControlInterface::landCallback([[maybe_unused]] const std::shared_ptr<std_s
                                     std::shared_ptr<std_srvs::srv::Trigger::Response>                       response)
 {
   scope_timer tim(print_callback_durations_, "landCallback", print_callback_throttle_, print_callback_min_dur_);
-  std::scoped_lock lck(state_mutex_, mission_mutex_, mission_upload_mutex_, waypoint_buffer_mutex_, action_mutex_);
+  std::scoped_lock lck(state_mutex_, mission_mutex_, waypoint_buffer_mutex_, action_mutex_);
 
   std::string fail_reason;
   if (!stopMission(fail_reason))
@@ -1027,7 +968,7 @@ bool ControlInterface::localWaypointCallback(const std::shared_ptr<fog_msgs::srv
                                              std::shared_ptr<fog_msgs::srv::Vec4::Response>      response)
 {
   scope_timer tim(print_callback_durations_, "localWaypointCallback", print_callback_throttle_, print_callback_min_dur_);
-  std::scoped_lock lck(state_mutex_, waypoint_buffer_mutex_, mission_mutex_, mission_upload_mutex_, mission_progress_mutex_);
+  std::scoped_lock lck(state_mutex_, waypoint_buffer_mutex_, mission_mutex_);
 
   // convert the single waypoint to a path containing a single point
   std::vector<std::vector<double>> path {request->goal};
@@ -1053,7 +994,7 @@ bool ControlInterface::localWaypointCallback(const std::shared_ptr<fog_msgs::srv
 bool ControlInterface::localPathCallback(const std::shared_ptr<fog_msgs::srv::Path::Request> request, std::shared_ptr<fog_msgs::srv::Path::Response> response)
 {
   scope_timer tim(print_callback_durations_, "localPathCallback", print_callback_throttle_, print_callback_min_dur_);
-  std::scoped_lock lck(state_mutex_, waypoint_buffer_mutex_, mission_mutex_, mission_upload_mutex_, mission_progress_mutex_);
+  std::scoped_lock lck(state_mutex_, waypoint_buffer_mutex_, mission_mutex_);
 
   // check that we are in a state in which we can add waypoints to the buffer
   std::string reason;
@@ -1078,7 +1019,7 @@ bool ControlInterface::gpsWaypointCallback(const std::shared_ptr<fog_msgs::srv::
                                            std::shared_ptr<fog_msgs::srv::Vec4::Response>      response)
 {
   scope_timer tim(print_callback_durations_, "gpsWaypointCallback", print_callback_throttle_, print_callback_min_dur_);
-  std::scoped_lock lck(state_mutex_, waypoint_buffer_mutex_, mission_mutex_, mission_upload_mutex_, mission_progress_mutex_, coord_transform_mutex_);
+  std::scoped_lock lck(state_mutex_, waypoint_buffer_mutex_, mission_mutex_, coord_transform_mutex_);
 
   // convert the single waypoint to a path containing a single point
   std::vector<std::vector<double>> path {request->goal};
@@ -1104,7 +1045,7 @@ bool ControlInterface::gpsWaypointCallback(const std::shared_ptr<fog_msgs::srv::
 bool ControlInterface::gpsPathCallback(const std::shared_ptr<fog_msgs::srv::Path::Request> request, std::shared_ptr<fog_msgs::srv::Path::Response> response)
 {
   scope_timer tim(print_callback_durations_, "gpsPathCallback", print_callback_throttle_, print_callback_min_dur_);
-  std::scoped_lock lck(state_mutex_, waypoint_buffer_mutex_, mission_mutex_, mission_upload_mutex_, mission_progress_mutex_, coord_transform_mutex_);
+  std::scoped_lock lck(state_mutex_, waypoint_buffer_mutex_, mission_mutex_, coord_transform_mutex_);
 
   // check that we are in a state in which we can add waypoints to the buffer
   std::string reason;
@@ -1437,136 +1378,11 @@ bool ControlInterface::getPx4ParamFloatCallback([[maybe_unused]] const std::shar
 // |                  CommandInterface routines                 |
 // --------------------------------------------------------------
 
-/* missionControlRoutine //{ */
-void ControlInterface::missionControlRoutine()
-{
-  scope_timer tim(print_callback_durations_, "missionControlRoutine", print_callback_throttle_, print_callback_min_dur_);
-  std::scoped_lock lck(state_mutex_);
-
-  // check if the vehicle is in a valid state to execute a mission
-  if (vehicle_state_ != vehicle_state_t::autonomous_flight)
-    return;
-
-  // update the mission (load new waypoints etc.)
-  switch (mission_state_)
-  {
-    case mission_state_t::finished:
-      state_mission_finished(); break;
-    case mission_state_t::uploading:
-      state_mission_uploading(); break;
-    case mission_state_t::in_progress:
-      state_mission_in_progress(); break;
-    default:
-      assert(false);
-      RCLCPP_ERROR(get_logger(), "Invalid mission state, this should never happen!");
-      return;
-  }
-}
-
-// | -------- Implementation of mission control states -------- |
-
-/* ControlInterface::state_mission_finished() //{ */
-void ControlInterface::state_mission_finished()
-{
-  const std::scoped_lock lock(waypoint_buffer_mutex_, mission_mutex_, mission_upload_mutex_, mission_progress_mutex_, coord_transform_mutex_);
-  // create a new mission plan if there are unused points in the buffer
-  if (!waypoint_buffer_.empty())
-  {
-    RCLCPP_INFO(get_logger(), "New waypoints to be visited: %ld", waypoint_buffer_.size());
-    printAndPublishWaypoints(waypoint_buffer_);
-
-    // transform and move the mission waypoints buffer to the mission_upload_waypoints_ buffer with the mavsdk type - we'll attempt to upload the waypoint_upload_buffer_ to pixhawk
-    mission_upload_waypoints_.mission_items.clear();
-    // transform the points
-    for (const auto& pt : waypoint_buffer_)
-      mission_upload_waypoints_.mission_items.push_back(to_mission_item(pt));
-
-    // clear the waypoint buffer
-    waypoint_buffer_.clear();
-
-    // start upload of the new waypoints
-    mission_upload_attempts_ = 0;
-    mission_upload_state_ = mission_upload_state_t::upload_retry; // this will start the asynchronous upload process
-    mission_state_ = mission_state_t::uploading;
-  }
-}
-//}
-
-/* ControlInterface::state_mission_uploading() //{ */
-void ControlInterface::state_mission_uploading()
-{
-  const std::scoped_lock lock(mission_mutex_, mission_upload_mutex_);
-  switch (mission_upload_state_)
-  {
-    // if the mission is being uploaded, just wait for it to either fail or finish
-    case mission_upload_state_t::upload_called:
-      break;
-
-    // if the mission upload failed, either retry, or fail altogether
-    case mission_upload_state_t::upload_retry:
-      if (mission_upload_attempts_ < mission_upload_attempts_threshold_)
-      {
-        mission_upload_attempts_++;
-        startMissionUpload(mission_upload_waypoints_); // this starts the asynchronous upload process
-      }
-      else
-      {
-        mission_progress_size_ = 0;
-        mission_progress_current_waypoint_ = 0;
-        mission_state_ = mission_state_t::finished;
-        RCLCPP_WARN(get_logger(), "Mission upload failed too many times. Scrapping mission.");
-      }
-      break;
-
-    case mission_upload_state_t::start_called:
-      break;
-
-    // if the mission start failed, either retry, or fail altogether
-    case mission_upload_state_t::start_retry:
-      if (mission_upload_attempts_ < mission_upload_attempts_threshold_)
-      {
-        mission_upload_attempts_++;
-        // clear the mission finish flag and start the uploaded mission
-        mission_finished_flag_ = false;
-        startMission(); // this calls the asynchronous mission start
-      }
-      else
-      {
-        mission_progress_size_ = 0;
-        mission_progress_current_waypoint_ = 0;
-        mission_state_ = mission_state_t::finished;
-        RCLCPP_WARN(get_logger(), "Calling mission start failed too many times. Scrapping mission.");
-      }
-      break;
-
-    case mission_upload_state_t::done:
-      mission_state_ = mission_state_t::in_progress;
-      break;
-  }
-}
-//}
-
-/* ControlInterface::state_mission_in_progress() //{ */
-void ControlInterface::state_mission_in_progress()
-{
-  const std::scoped_lock lock(mission_mutex_);
-  // stop if final goal is reached
-  if (mission_finished_flag_) // this flag is set from the missionResultCallback
-  {
-    RCLCPP_INFO(get_logger(), "All waypoints have been visited");
-    mission_progress_size_ = 0;
-    mission_progress_current_waypoint_ = 0;
-    mission_state_ = mission_state_t::finished;
-  }
-}
-//}
-//}
-
 /*   diagnosticsRoutine(); //{ */
 void ControlInterface::diagnosticsRoutine()
 {
   scope_timer tim(print_callback_durations_, "diagnosticsRoutine", print_callback_throttle_, print_callback_min_dur_);
-  std::scoped_lock lock(state_mutex_, mission_mutex_, mission_progress_mutex_, telem_mutex_);
+  std::scoped_lock lock(state_mutex_, mission_mutex_, telem_mutex_);
   // publish some diags
   publishDiagnostics();
 }
@@ -1592,7 +1408,7 @@ void ControlInterface::vehicleStateRoutine()
   updateVehicleState();
   if (prev_state != vehicle_state_)
   {
-    std::scoped_lock lock(mission_mutex_, mission_progress_mutex_, telem_mutex_);
+    std::scoped_lock lock(mission_mutex_, telem_mutex_);
     publishDiagnostics();
   }
 }
@@ -1634,7 +1450,7 @@ void ControlInterface::state_vehicle_not_connected()
   RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 1000, "Vehicle state: MavSDK system not connected.");
   vehicle_state_str_ = "MavSDK system not connected";
 
-  std::scoped_lock lck(action_mutex_, mission_mutex_, param_mutex_, telem_mutex_, mission_upload_mutex_, mission_progress_mutex_);
+  std::scoped_lock lck(action_mutex_, mission_mutex_, param_mutex_, telem_mutex_);
   const bool succ = connectPixHawk();
   // advance to the next state if connection and initialization was OK
   if (succ)
@@ -1709,7 +1525,7 @@ void ControlInterface::state_vehicle_takeoff_ready(const bool takeoff_started)
     return;
   }
 
-  std::scoped_lock lck(telem_mutex_, mission_upload_mutex_, mission_progress_mutex_);
+  std::scoped_lock lck(telem_mutex_);
   const bool armed = telem_->armed();
   const auto health = telem_->health();
   const bool healthy = is_healthy(health);
@@ -1753,7 +1569,7 @@ void ControlInterface::state_vehicle_taking_off()
     return;
   }
 
-  std::scoped_lock lck(telem_mutex_, mission_upload_mutex_, mission_progress_mutex_);
+  std::scoped_lock lck(telem_mutex_);
   const bool armed = telem_->armed();
   const auto land_state = telem_->landed_state();
 
@@ -1798,7 +1614,7 @@ void ControlInterface::state_vehicle_autonomous_flight()
     return;
   }
 
-  std::scoped_lock lck(telem_mutex_, mission_upload_mutex_, mission_progress_mutex_);
+  std::scoped_lock lck(telem_mutex_);
   const bool armed = telem_->armed();
   const auto land_state = telem_->landed_state();
 
@@ -1844,7 +1660,7 @@ void ControlInterface::state_vehicle_manual_flight()
     return;
   }
 
-  std::scoped_lock lck(telem_mutex_, mission_upload_mutex_, mission_progress_mutex_);
+  std::scoped_lock lck(telem_mutex_);
   const bool armed = telem_->armed();
   const auto land_state = telem_->landed_state();
 
@@ -1944,13 +1760,9 @@ bool ControlInterface::connectPixHawk()
     // setup the other mavsdk connections
     RCLCPP_INFO(get_logger(), "Target connected");
     action_  = std::make_shared<mavsdk::Action>(system_);
-    mission_ = std::make_shared<mavsdk::Mission>(system_);
     param_   = std::make_shared<mavsdk::Param>(system_);
     telem_   = std::make_shared<mavsdk::Telemetry>(system_);
-
-    // register some callbacks
-    const mavsdk::Mission::MissionProgressCallback progress_cbk = std::bind(&ControlInterface::missionProgressCallback, this, _1);
-    mission_->subscribe_mission_progress(progress_cbk);
+    mission_mgr_ = std::make_unique<MissionManager>(mission_upload_attempts_threshold_, system_, get_logger(), get_clock());
 
     // set the initialized flag to true so that px4 parameters may be initialized
     system_connected_ = true;
@@ -2103,158 +1915,12 @@ bool ControlInterface::startLanding(std::string& fail_reason_out)
 }
 //}
 
-/* startMission //{ */
-// the following mutexes have to be locked by the calling function:
-// state_mutex_
-// mission_mutex_
-// mission_upload_mutex_
-bool ControlInterface::startMission()
-{
-  mission_upload_state_ = mission_upload_state_t::start_retry;
-
-  if (manual_override_)
-  {
-    RCLCPP_WARN(get_logger(), "Mission start prevented by manual override");
-    return false;
-  }
-
-  mission_upload_start_time_ = get_clock()->now();
-  mission_->start_mission_async([this](mavsdk::Mission::Result result)
-      {
-        // spawn a new thread to avoid blocking in the MavSDK
-        // callback which will eventually cause a deadlock
-        // of the MavSDK processing thread
-        std::thread([this, result]
-        {
-          std::scoped_lock lck(mission_upload_mutex_);
-          const double dur_s = (get_clock()->now() - mission_upload_start_time_).seconds();
-          if (result == mavsdk::Mission::Result::Success)
-          {
-            RCLCPP_INFO(get_logger(), "Mission successfully started after %.2fs.", dur_s);
-            mission_upload_attempts_ = 0;
-            mission_upload_state_ = mission_upload_state_t::done;
-          }
-          else
-          {
-            RCLCPP_ERROR(get_logger(), "Calling mission start rejected after %.2fs: %s", dur_s, to_string(result).c_str());
-            mission_upload_state_ = mission_upload_state_t::start_retry;
-          }
-        }).detach();
-      }
-    );
-
-  RCLCPP_INFO(get_logger(), "Called mission start (attempt %d/%d).", mission_upload_attempts_+1, mission_upload_attempts_threshold_+1);
-  mission_upload_state_ = mission_upload_state_t::start_called;
-  return true;
-}
-//}
-
-/* startMissionUpload //{ */
-// the following mutexes have to be locked by the calling function:
-// state_mutex_
-// mission_mutex_
-// mission_upload_mutex_
-bool ControlInterface::startMissionUpload(const mavsdk::Mission::MissionPlan& mission_plan)
-{
-  mission_upload_state_ = mission_upload_state_t::upload_retry;
-
-  if (mission_plan.mission_items.empty())
-  {
-    RCLCPP_ERROR(get_logger(), "Mission waypoints empty. Nothing to upload");
-    return false;
-  }
-
-  if (manual_override_)
-  {
-    RCLCPP_WARN(get_logger(), "Mission upload prevented by manual override");
-    return false;
-  }
-
-  mission_upload_start_time_ = get_clock()->now();
-  mission_->upload_mission_async(mission_plan, [this](mavsdk::Mission::Result result)
-      {
-        // spawn a new thread to avoid blocking in the MavSDK
-        // callback which will eventually cause a deadlock
-        // of the MavSDK processing thread
-        std::thread([this, result]
-        {
-          std::scoped_lock lck(mission_upload_mutex_);
-          const double dur_s = (get_clock()->now() - mission_upload_start_time_).seconds();
-          if (result == mavsdk::Mission::Result::Success)
-          {
-            RCLCPP_INFO(get_logger(), "Mission upload of %ld waypoints succeeded after %.2fs.", mission_upload_waypoints_.mission_items.size(), dur_s);
-            mission_upload_attempts_ = 0;
-            mission_upload_state_ = mission_upload_state_t::start_retry;
-          }
-          else
-          {
-            RCLCPP_INFO(get_logger(), "Mission waypoints upload failed after %.2fs: %s", dur_s, to_string(result).c_str());
-            mission_upload_state_ = mission_upload_state_t::upload_retry;
-          }
-        }).detach();
-      }
-    );
-
-  RCLCPP_INFO(get_logger(), "Started mission upload (attempt %d/%d).", mission_upload_attempts_+1, mission_upload_attempts_threshold_+1);
-  mission_upload_state_ = mission_upload_state_t::upload_called;
-  return true;
-}
-//}
-
-/* stopMission //{ */
-// the following mutexes have to be locked by the calling function:
-// waypoint_buffer_mutex_
-// mission_mutex_
-// mission_upload_mutex_
-// mission_progress_mutex_
-bool ControlInterface::stopMission(std::string& fail_reason_out)
-{
-  std::stringstream ss;
-
-  // clear and reset stuff
-  waypoint_buffer_.clear();
-  mission_upload_waypoints_.mission_items.clear();
-  mission_progress_size_ = 0;
-  mission_progress_current_waypoint_ = 0;
-  if (mission_state_ == mission_state_t::finished)
-    return true;
-
-  // cancel any current mission upload to pixhawk if applicable
-  if (mission_upload_state_ == mission_upload_state_t::upload_called)
-  {
-    const auto cancel_result = mission_->cancel_mission_upload();
-    if (cancel_result != mavsdk::Mission::Result::Success)
-    {
-      ss << "cannot stop mission upload (" << to_string(cancel_result) << ")";
-      fail_reason_out = ss.str();
-      RCLCPP_ERROR_STREAM(get_logger(), "Failed to stop current mission: " << fail_reason_out);
-      return false;
-    }
-  }
-
-  // clear any currently uploaded mission
-  const auto clear_result = mission_->clear_mission();
-  if (clear_result != mavsdk::Mission::Result::Success)
-  {
-    ss << "cannot clear current mission (" << to_string(clear_result) << ")";
-    fail_reason_out = ss.str();
-    RCLCPP_ERROR_STREAM(get_logger(), "Failed to stop current mission: " << fail_reason_out);
-    return false;
-  }
-
-  mission_state_ = mission_state_t::finished;
-  RCLCPP_INFO(get_logger(), "Current mission stopped");
-  return true;
-}
-//}
-
 // | ---------- Diagnostics and debug helper methods ---------- |
 
 /* publishDiagnostics //{ */
 // the following mutexes have to be locked by the calling function:
 // state_mutex_
 // mission_mutex_
-// mission_progress_mutex_
 // telem_mutex_
 void ControlInterface::publishDiagnostics()
 {
@@ -2267,11 +1933,11 @@ void ControlInterface::publishDiagnostics()
 
   msg.armed = armed;
   msg.vehicle_state = to_msg(vehicle_state_);
-  msg.mission_state = to_msg(mission_state_);
+  msg.mission_state = to_msg(mission_mgr_->state());
 
   msg.mission_id = mission_id_;
-  msg.mission_size = mission_progress_size_;
-  msg.mission_waypoint = mission_progress_current_waypoint_;
+  msg.mission_size = mission_mgr_->mission_size();
+  msg.mission_waypoint = mission_mgr_->mission_waypoint();
 
   msg.gps_origin_set = gps_origin_set_;
   msg.getting_odom = getting_odom_;
@@ -2393,121 +2059,6 @@ local_waypoint_t ControlInterface::to_local_waypoint(const Eigen::Vector4d& in, 
     wp.yaw = in.w();
     return wp;
   }
-}
-//}
-
-/* to_string() function //{ */
-std::string to_string(const mavsdk::Action::Result result)
-{
-  switch (result)
-  {
-    case mavsdk::Action::Result::Unknown:                         return "Unknown result.";
-    case mavsdk::Action::Result::Success:                         return "Request was successful.";
-    case mavsdk::Action::Result::NoSystem:                        return "No system is connected.";
-    case mavsdk::Action::Result::ConnectionError:                 return "Connection error.";
-    case mavsdk::Action::Result::Busy:                            return "Vehicle is busy.";
-    case mavsdk::Action::Result::CommandDenied:                   return "Command refused by vehicle.";
-    case mavsdk::Action::Result::CommandDeniedLandedStateUnknown: return "Command refused because landed state is unknown.";
-    case mavsdk::Action::Result::CommandDeniedNotLanded:          return "Command refused because vehicle not landed.";
-    case mavsdk::Action::Result::Timeout:                         return "Request timed out.";
-    case mavsdk::Action::Result::VtolTransitionSupportUnknown:    return "Hybrid/VTOL transition support is unknown.";
-    case mavsdk::Action::Result::NoVtolTransitionSupport:         return "Vehicle does not support hybrid/VTOL transitions.";
-    case mavsdk::Action::Result::ParameterError:                  return "Error getting or setting parameter.";
-  }
-  return "Invalid result.";
-}
-
-std::string to_string(const mavsdk::Mission::Result result)
-{
-  switch (result)
-  {
-    case mavsdk::Mission::Result::Unknown:                return "Unknown result.";
-    case mavsdk::Mission::Result::Success:                return "Request succeeded.";
-    case mavsdk::Mission::Result::Error:                  return "Error.";
-    case mavsdk::Mission::Result::TooManyMissionItems:    return "Too many mission items in the mission.";
-    case mavsdk::Mission::Result::Busy:                   return "Vehicle is busy.";
-    case mavsdk::Mission::Result::Timeout:                return "Request timed out.";
-    case mavsdk::Mission::Result::InvalidArgument:        return "Invalid argument.";
-    case mavsdk::Mission::Result::Unsupported:            return "Mission downloaded from the system is not supported.";
-    case mavsdk::Mission::Result::NoMissionAvailable:     return "No mission available on the system.";
-    case mavsdk::Mission::Result::UnsupportedMissionCmd:  return "Unsupported mission command.";
-    case mavsdk::Mission::Result::TransferCancelled:      return "Mission transfer (upload or download) has been cancelled.";
-    case mavsdk::Mission::Result::NoSystem:               return "No system connected.";
-  }
-  return "Invalid result.";
-}
-
-std::string to_string(const mavsdk::Param::Result result)
-{
-  switch (result)
-  {
-    case mavsdk::Param::Result::Unknown:          return "Unknown result.";
-    case mavsdk::Param::Result::Success:          return "Request succeeded.";
-    case mavsdk::Param::Result::Timeout:          return "Request timed out.";
-    case mavsdk::Param::Result::ConnectionError:  return "Connection error.";
-    case mavsdk::Param::Result::WrongType:        return "Wrong type.";
-    case mavsdk::Param::Result::ParamNameTooLong: return "Parameter name too long (> 16).";
-    case mavsdk::Param::Result::NoSystem:         return "No system connected.";
-  }
-  return "Invalid result.";
-}
-
-std::string to_string(const mavsdk::ConnectionResult result)
-{
-  switch (result)
-  {
-    case mavsdk::ConnectionResult::Success:               return "Connection succeeded.";
-    case mavsdk::ConnectionResult::Timeout:               return "Connection timed out.";
-    case mavsdk::ConnectionResult::SocketError:           return "Socket error.";
-    case mavsdk::ConnectionResult::BindError:             return "Bind error.";
-    case mavsdk::ConnectionResult::SocketConnectionError: return "Socket connection error.";
-    case mavsdk::ConnectionResult::ConnectionError:       return "Connection error.";
-    case mavsdk::ConnectionResult::NotImplemented:        return "Connection type not implemented.";
-    case mavsdk::ConnectionResult::SystemNotConnected:    return "No system is connected.";
-    case mavsdk::ConnectionResult::SystemBusy:            return "System is busy.";
-    case mavsdk::ConnectionResult::CommandDenied:         return "Command is denied.";
-    case mavsdk::ConnectionResult::DestinationIpUnknown:  return "Connection IP is unknown.";
-    case mavsdk::ConnectionResult::ConnectionsExhausted:  return "Connections exhausted.";
-    case mavsdk::ConnectionResult::ConnectionUrlInvalid:  return "URL invalid.";
-    case mavsdk::ConnectionResult::BaudrateUnknown:       return "Baudrate unknown.";
-  }
-  return "Invalid result.";
-}
-
-std::string to_string(const mavsdk::Telemetry::FlightMode mode)
-{
-  switch (mode)
-  {
-    case mavsdk::Telemetry::FlightMode::Unknown:        return "Mode not known.";
-    case mavsdk::Telemetry::FlightMode::Ready:          return "Armed and ready to take off.";
-    case mavsdk::Telemetry::FlightMode::Takeoff:        return "Taking off.";
-    case mavsdk::Telemetry::FlightMode::Hold:           return "Holding (hovering in place (or circling for fixed-wing vehicles).";
-    case mavsdk::Telemetry::FlightMode::Mission:        return "In mission.";
-    case mavsdk::Telemetry::FlightMode::ReturnToLaunch: return "Returning to launch position (then landing).";
-    case mavsdk::Telemetry::FlightMode::Land:           return "Landing.";
-    case mavsdk::Telemetry::FlightMode::Offboard:       return "In 'offboard' mode.";
-    case mavsdk::Telemetry::FlightMode::FollowMe:       return "In 'follow-me' mode.";
-    case mavsdk::Telemetry::FlightMode::Manual:         return "In 'Manual' mode.";
-    case mavsdk::Telemetry::FlightMode::Altctl:         return "In 'Altitude Control' mode.";
-    case mavsdk::Telemetry::FlightMode::Posctl:         return "In 'Position Control' mode.";
-    case mavsdk::Telemetry::FlightMode::Acro:           return "In 'Acro' mode.";
-    case mavsdk::Telemetry::FlightMode::Stabilized:     return "In 'Stabilize' mode.";
-    case mavsdk::Telemetry::FlightMode::Rattitude:      return "In 'Rattitude' mode.";
-  }
-  return "Invalid flight mode.";
-}
-
-std::string to_string(const mavsdk::Telemetry::LandedState land_state)
-{
-  switch (land_state)
-  {
-    case mavsdk::Telemetry::LandedState::Unknown:   return "Landed state is unknown.";
-    case mavsdk::Telemetry::LandedState::OnGround:  return "The vehicle is on the ground.";
-    case mavsdk::Telemetry::LandedState::InAir:     return "The vehicle is in the air.";
-    case mavsdk::Telemetry::LandedState::TakingOff: return "The vehicle is taking off.";
-    case mavsdk::Telemetry::LandedState::Landing:   return "The vehicle is landing.";
-  }
-  return "Invalid result.";
 }
 //}
 

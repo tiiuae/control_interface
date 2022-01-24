@@ -21,7 +21,7 @@ namespace control_interface
     landing,
   };
   
-  vehicle_state_t to_enum(const fog_msgs::msg::ControlInterfaceVehicleState msg)
+  inline static vehicle_state_t to_enum(const fog_msgs::msg::ControlInterfaceVehicleState msg)
   {
     switch (msg.state)
     {
@@ -36,7 +36,7 @@ namespace control_interface
     }
   }
   
-  fog_msgs::msg::ControlInterfaceVehicleState to_msg(const vehicle_state_t enum_val)
+  inline static fog_msgs::msg::ControlInterfaceVehicleState to_msg(const vehicle_state_t enum_val)
   {
     fog_msgs::msg::ControlInterfaceVehicleState msg;
     switch (enum_val)
@@ -53,7 +53,7 @@ namespace control_interface
     return msg;
   }
 
-  std::string to_string(const vehicle_state_t enum_val)
+  inline static std::string to_string(const vehicle_state_t enum_val)
   {
     switch (enum_val)
     {
@@ -76,11 +76,12 @@ namespace control_interface
   {
     invalid,
     uploading,
+    starting,
     in_progress,
     finished,
   };
   
-  mission_state_t to_enum(const fog_msgs::msg::ControlInterfaceMissionState msg)
+  inline static mission_state_t to_enum(const fog_msgs::msg::ControlInterfaceMissionState msg)
   {
     switch (msg.state)
     {
@@ -91,12 +92,13 @@ namespace control_interface
     }
   }
   
-  fog_msgs::msg::ControlInterfaceMissionState to_msg(const mission_state_t enum_val)
+  inline static fog_msgs::msg::ControlInterfaceMissionState to_msg(const mission_state_t enum_val)
   {
     fog_msgs::msg::ControlInterfaceMissionState msg;
     switch (enum_val)
     {
       case mission_state_t::uploading:   msg.state = fog_msgs::msg::ControlInterfaceMissionState::UPLOADING; break;
+      case mission_state_t::starting:    msg.state = fog_msgs::msg::ControlInterfaceMissionState::STARTING; break;
       case mission_state_t::in_progress: msg.state = fog_msgs::msg::ControlInterfaceMissionState::IN_PROGRESS; break;
       case mission_state_t::finished:    msg.state = fog_msgs::msg::ControlInterfaceMissionState::FINISHED; break;
       default:                           assert(false); msg.state = fog_msgs::msg::ControlInterfaceMissionState::INVALID; break;
@@ -104,7 +106,7 @@ namespace control_interface
     return msg;
   }
 
-  std::string to_string(const mission_state_t enum_val)
+  inline static std::string to_string(const mission_state_t enum_val)
   {
     switch (enum_val)
     {
