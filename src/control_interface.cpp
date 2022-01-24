@@ -50,9 +50,9 @@
 #include <fog_lib/mutex_utils.h>
 #include <fog_lib/params.h>
 
-#include <control_interface/utils.h>
-#include <control_interface/enums.h>
-#include <control_interface/mission_manager.h>
+#include "control_interface/utils.h"
+#include "control_interface/enums.h"
+#include "control_interface/mission_manager.h"
 
 //}
 
@@ -283,11 +283,7 @@ private:
 
   std::atomic_bool manual_override_ = false;
 
-  std::recursive_mutex mission_mutex_;
-  std::unique_ptr<MissionManager> mission_mgr_;
-  bool mission_finished_flag_; // set to true in the missionResultCallback, this flag is cleared in the main missionControlRoutine
-  uint32_t mission_id_ = 0;
-  unsigned mission_last_instance_ = 1;
+  std::unique_ptr<MissionManager> mission_mgr_ = nullptr;
 
   // the mavsdk::Action is used for requesting actions such as takeoff and landing
   std::mutex action_mutex_;
@@ -308,8 +304,6 @@ private:
   mavsdk::Mavsdk                   mavsdk_;
   std::shared_ptr<mavsdk::System>  system_;
 
-  std::mutex                    waypoint_buffer_mutex_;  // guards the following block of variables
-  std::vector<local_waypoint_t> waypoint_buffer_;        // this buffer is used for storing new incoming waypoints (it is moved to the mission_upload_waypoints_ buffer when upload starts)
 
   // use takeoff lat and long to initialize local frame
   std::mutex coord_transform_mutex_;
@@ -366,7 +360,6 @@ private:
 
   // subscriber callbacks
   void controlModeCallback(const px4_msgs::msg::VehicleControlMode::UniquePtr msg);
-  void missionResultCallback(const px4_msgs::msg::MissionResult::UniquePtr msg);
   bool mavsdkLogCallback(const mavsdk::log::Level level, const std::string& message, const std::string& file, const int line);
   void homePositionCallback(const px4_msgs::msg::HomePosition::UniquePtr msg);
   void odometryCallback(const nav_msgs::msg::Odometry::UniquePtr msg);
@@ -419,8 +412,6 @@ private:
   bool connectPixHawk();
   bool startTakeoff(std::string& fail_reason_out);
   bool startLanding(std::string& fail_reason_out);
-  bool startMission();
-  bool stopMission(std::string& fail_reason_out);
 
   void printAndPublishWaypoints(const std::vector<local_waypoint_t>& wps);
 
@@ -446,8 +437,12 @@ private:
   void state_vehicle_landing();
 
   template<typename T>
-  bool addWaypoints(const T& path, const bool is_global, std::string& fail_reason_out);
+  bool startNewMission(const T& path, const uint32_t id, const bool is_global, std::string& fail_reason_out);
+
+  template <typename T>
+  mavsdk::Mission::MissionItem to_mission_item(const T& w_in, const bool is_global);
   mavsdk::Mission::MissionItem to_mission_item(const local_waypoint_t& w_in);
+
   local_waypoint_t to_local_waypoint(const geometry_msgs::msg::PoseStamped& in, const bool is_global);
   local_waypoint_t to_local_waypoint(const mavsdk::Mission::MissionItem& in);
   local_waypoint_t to_local_waypoint(const fog_msgs::srv::WaypointToLocal::Request& in, const bool is_global);
@@ -579,10 +574,6 @@ ControlInterface::ControlInterface(rclcpp::NodeOptions options) : Node("control_
       rclcpp::SystemDefaultsQoS(), std::bind(&ControlInterface::controlModeCallback, this, _1), subopts);
 
   subopts.callback_group = new_cbk_grp();
-  mission_result_subscriber_ = create_subscription<px4_msgs::msg::MissionResult>("~/mission_result_in",
-      rclcpp::SystemDefaultsQoS(), std::bind(&ControlInterface::missionResultCallback, this, _1), subopts);
-
-  subopts.callback_group = new_cbk_grp();
   home_position_subscriber_ = create_subscription<px4_msgs::msg::HomePosition>("~/home_position_in",
       rclcpp::SystemDefaultsQoS(), std::bind(&ControlInterface::homePositionCallback, this, _1), subopts);
 
@@ -655,7 +646,7 @@ ControlInterface::ControlInterface(rclcpp::NodeOptions options) : Node("control_
 void ControlInterface::controlModeCallback(const px4_msgs::msg::VehicleControlMode::UniquePtr msg)
 {
   scope_timer tim(print_callback_durations_, "controlModeCallback", print_callback_throttle_, print_callback_min_dur_);
-  std::scoped_lock lck(telem_mutex_, mission_mutex_, waypoint_buffer_mutex_);
+  std::scoped_lock lck(telem_mutex_);
 
   if (!system_connected_)
     return;
@@ -668,7 +659,7 @@ void ControlInterface::controlModeCallback(const px4_msgs::msg::VehicleControlMo
     RCLCPP_INFO(get_logger(), "Control flag switched to manual. Stopping and clearing mission");
     manual_override_ = true;
     std::string fail_reason;
-    if (!stopMission(fail_reason))
+    if (mission_mgr_ && !mission_mgr_->stop_mission(fail_reason))
       RCLCPP_ERROR_STREAM(get_logger(), "Previous mission cannot be stopped (" << fail_reason << "). Manual landing required");
     return;
   }
@@ -763,22 +754,6 @@ void ControlInterface::homePositionCallback(const px4_msgs::msg::HomePosition::U
 }
 //}
 
-/* missionResultCallback //{ */
-void ControlInterface::missionResultCallback(const px4_msgs::msg::MissionResult::UniquePtr msg)
-{
-  scope_timer tim(print_callback_durations_, "missionResultCallback", print_callback_throttle_, print_callback_min_dur_);
-  std::scoped_lock lck(mission_mutex_);
-
-  // check if a mission is currently in-progress and we got an indication that it is finished
-  if (mission_mgr_->state() == mission_state_t::in_progress && msg->finished && msg->instance_count != mission_last_instance_)
-  {
-    RCLCPP_INFO_STREAM(get_logger(), "Mission finished by callback (PixHawk mission instance " << msg->instance_count << ")");
-    mission_finished_flag_ = true; // set the appropriate flag to signal the state machine to change state
-    mission_last_instance_ = msg->instance_count;
-  }
-}
-//}
-
 /* mavsdkLogCallback() method //{ */
 bool ControlInterface::mavsdkLogCallback(const mavsdk::log::Level level, const std::string& message, const std::string& file, const int line)
 {
@@ -825,7 +800,7 @@ bool ControlInterface::takeoffCallback([[maybe_unused]] const std::shared_ptr<st
                                        std::shared_ptr<std_srvs::srv::Trigger::Response>                       response)
 {
   scope_timer tim(print_callback_durations_, "takeoffCallback", print_callback_throttle_, print_callback_min_dur_);
-  std::scoped_lock lck(state_mutex_, telem_mutex_, action_mutex_, pose_mutex_, waypoint_buffer_mutex_);
+  std::scoped_lock lck(state_mutex_, telem_mutex_, action_mutex_, pose_mutex_);
 
   if (vehicle_state_ != vehicle_state_t::takeoff_ready)
   {
@@ -855,10 +830,10 @@ bool ControlInterface::landCallback([[maybe_unused]] const std::shared_ptr<std_s
                                     std::shared_ptr<std_srvs::srv::Trigger::Response>                       response)
 {
   scope_timer tim(print_callback_durations_, "landCallback", print_callback_throttle_, print_callback_min_dur_);
-  std::scoped_lock lck(state_mutex_, mission_mutex_, waypoint_buffer_mutex_, action_mutex_);
+  std::scoped_lock lck(state_mutex_, action_mutex_);
 
   std::string fail_reason;
-  if (!stopMission(fail_reason))
+  if (mission_mgr_ && !mission_mgr_->stop_mission(fail_reason))
   {
     response->success = false;
     response->message = "Cannot land, failed to stop mission: " + fail_reason;
@@ -935,11 +910,11 @@ bool ControlInterface::armingCallback([[maybe_unused]] const std::shared_ptr<std
 
 // | ----------------- Waypoint/path callbacks ---------------- |
 
-/* addWaypoints() method //{ */
+/* startNewMission() method //{ */
 template<typename T>
-bool ControlInterface::addWaypoints(const T& path, const bool is_global, std::string& fail_reason_out)
+bool ControlInterface::startNewMission(const T& path, const uint32_t id, const bool is_global, std::string& fail_reason_out)
 {
-  scope_timer tim(print_callback_durations_, "addWaypoints", print_callback_throttle_, print_callback_min_dur_);
+  scope_timer tim(print_callback_durations_, "startNewMission", print_callback_throttle_, print_callback_min_dur_);
   // check that we are in a state in which we can add waypoints to the buffer
   if (vehicle_state_ != vehicle_state_t::autonomous_flight)
   {
@@ -947,17 +922,32 @@ bool ControlInterface::addWaypoints(const T& path, const bool is_global, std::st
     return false;
   }
 
+  // this should never happen if we're in the autonomous_flight state
+  if (!mission_mgr_)
+  {
+    fail_reason_out = "Mission planner not initialized!";
+    return false;
+  }
+
   // stop the current mission (if any)
   std::string fail_reason;
-  if (!stopMission(fail_reason))
+  if (!mission_mgr_->stop_mission(fail_reason))
   {
     fail_reason_out = "previous mission cannot be aborted (" + fail_reason + ")";
     return false;
   }
 
-  // finally, add the waypoints to the buffer
+  // transform the path to a MissionPlan for pixhawk
+  mavsdk::Mission::MissionPlan mission_plan;
+  mission_plan.mission_items.reserve(path.size());
   for (const auto& pose : path)
-    waypoint_buffer_.push_back(to_local_waypoint(pose, is_global));
+    mission_plan.mission_items.push_back(to_mission_item(pose, is_global));
+  // finally, let the MissionManager handle the upload & starting of the mission
+  if (!mission_mgr_->new_mission(mission_plan, id, fail_reason))
+  {
+    fail_reason_out = "new mission could not be added (" + fail_reason + ")";
+    return false;
+  }
 
   return true;
 }
@@ -968,14 +958,14 @@ bool ControlInterface::localWaypointCallback(const std::shared_ptr<fog_msgs::srv
                                              std::shared_ptr<fog_msgs::srv::Vec4::Response>      response)
 {
   scope_timer tim(print_callback_durations_, "localWaypointCallback", print_callback_throttle_, print_callback_min_dur_);
-  std::scoped_lock lck(state_mutex_, waypoint_buffer_mutex_, mission_mutex_);
+  std::scoped_lock lck(state_mutex_);
 
   // convert the single waypoint to a path containing a single point
   std::vector<std::vector<double>> path {request->goal};
 
-  // check that we are in a state in which we can add waypoints to the buffer
+  // attempt to start the new mission
   std::string reason;
-  if (!addWaypoints(path, false, reason))
+  if (!startNewMission(path, 0, false, reason))
   {
     response->success = false;
     response->message = "Waypoint not set: " + reason;
@@ -994,11 +984,11 @@ bool ControlInterface::localWaypointCallback(const std::shared_ptr<fog_msgs::srv
 bool ControlInterface::localPathCallback(const std::shared_ptr<fog_msgs::srv::Path::Request> request, std::shared_ptr<fog_msgs::srv::Path::Response> response)
 {
   scope_timer tim(print_callback_durations_, "localPathCallback", print_callback_throttle_, print_callback_min_dur_);
-  std::scoped_lock lck(state_mutex_, waypoint_buffer_mutex_, mission_mutex_);
+  std::scoped_lock lck(state_mutex_);
 
-  // check that we are in a state in which we can add waypoints to the buffer
+  // attempt to start the new mission
   std::string reason;
-  if (!addWaypoints(request->path.poses, false, reason))
+  if (!startNewMission(request->path.poses, request->mission_id, false, reason))
   {
     response->success = false;
     response->message = "Mission #" + std::to_string(request->mission_id) + ": " + std::to_string(request->path.poses.size()) + " new waypoints not set: " + reason;
@@ -1008,7 +998,6 @@ bool ControlInterface::localPathCallback(const std::shared_ptr<fog_msgs::srv::Pa
 
   response->success = true;
   response->message = "Mission #" +  std::to_string(request->mission_id) + ": " + std::to_string(request->path.poses.size()) + " new waypoints set";
-  mission_id_= request->mission_id;
   RCLCPP_INFO_STREAM(get_logger(), response->message);
   return true;
 }
@@ -1019,14 +1008,14 @@ bool ControlInterface::gpsWaypointCallback(const std::shared_ptr<fog_msgs::srv::
                                            std::shared_ptr<fog_msgs::srv::Vec4::Response>      response)
 {
   scope_timer tim(print_callback_durations_, "gpsWaypointCallback", print_callback_throttle_, print_callback_min_dur_);
-  std::scoped_lock lck(state_mutex_, waypoint_buffer_mutex_, mission_mutex_, coord_transform_mutex_);
+  std::scoped_lock lck(state_mutex_, coord_transform_mutex_);
 
   // convert the single waypoint to a path containing a single point
   std::vector<std::vector<double>> path {request->goal};
 
-  // check that we are in a state in which we can add waypoints to the buffer
+  // attempt to start the new mission
   std::string reason;
-  if (!addWaypoints(path, true, reason))
+  if (!startNewMission(path, 0, true, reason))
   {
     response->success = false;
     response->message = "Waypoint not set: " + reason;
@@ -1045,11 +1034,11 @@ bool ControlInterface::gpsWaypointCallback(const std::shared_ptr<fog_msgs::srv::
 bool ControlInterface::gpsPathCallback(const std::shared_ptr<fog_msgs::srv::Path::Request> request, std::shared_ptr<fog_msgs::srv::Path::Response> response)
 {
   scope_timer tim(print_callback_durations_, "gpsPathCallback", print_callback_throttle_, print_callback_min_dur_);
-  std::scoped_lock lck(state_mutex_, waypoint_buffer_mutex_, mission_mutex_, coord_transform_mutex_);
+  std::scoped_lock lck(state_mutex_, coord_transform_mutex_);
 
-  // check that we are in a state in which we can add waypoints to the buffer
+  // attempt to start the new mission
   std::string reason;
-  if (!addWaypoints(request->path.poses, true, reason))
+  if (!startNewMission(request->path.poses, 0, true, reason))
   {
     response->success = false;
     response->message = "Waypoints not set: " + reason;
@@ -1382,7 +1371,7 @@ bool ControlInterface::getPx4ParamFloatCallback([[maybe_unused]] const std::shar
 void ControlInterface::diagnosticsRoutine()
 {
   scope_timer tim(print_callback_durations_, "diagnosticsRoutine", print_callback_throttle_, print_callback_min_dur_);
-  std::scoped_lock lock(state_mutex_, mission_mutex_, telem_mutex_);
+  std::scoped_lock lock(state_mutex_, telem_mutex_);
   // publish some diags
   publishDiagnostics();
 }
@@ -1408,7 +1397,7 @@ void ControlInterface::vehicleStateRoutine()
   updateVehicleState();
   if (prev_state != vehicle_state_)
   {
-    std::scoped_lock lock(mission_mutex_, telem_mutex_);
+    std::scoped_lock lock(telem_mutex_);
     publishDiagnostics();
   }
 }
@@ -1450,14 +1439,14 @@ void ControlInterface::state_vehicle_not_connected()
   RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 1000, "Vehicle state: MavSDK system not connected.");
   vehicle_state_str_ = "MavSDK system not connected";
 
-  std::scoped_lock lck(action_mutex_, mission_mutex_, param_mutex_, telem_mutex_);
+  std::scoped_lock lck(action_mutex_, param_mutex_, telem_mutex_);
   const bool succ = connectPixHawk();
   // advance to the next state if connection and initialization was OK
   if (succ)
   {
     RCLCPP_INFO(get_logger(), "MavSDK system connected, clearing all missions and switching state to not_ready.");
-    std::string reasons;
-    if (!stopMission(reasons))
+    std::string reasons = "Mission planner not initialized!";
+    if (!mission_mgr_->stop_mission(reasons))
       RCLCPP_WARN_STREAM(get_logger(), "Failed to stop mission before transitioning to not_ready (" << reasons << "). Arming may be dangerous!");
     vehicle_state_ = vehicle_state_t::not_ready;
   }
@@ -1547,7 +1536,9 @@ void ControlInterface::state_vehicle_takeoff_ready(const bool takeoff_started)
     add_unhealthy_reasons(health, reasons);
     add_reason_if("not landed (" + to_string(land_state) + ")", land_state != mavsdk::Telemetry::LandedState::OnGround, reasons);
     RCLCPP_INFO_STREAM(get_logger(), "No longer ready for takeoff: " << reasons << ", stopping all missions and switching state to not_ready.");
-    if (!stopMission(reasons))
+
+    reasons = "Mission planner not initialized!";
+    if (!mission_mgr_ || !mission_mgr_->stop_mission(reasons))
       RCLCPP_WARN_STREAM(get_logger(), "Failed to stop mission before transitioning to not_ready (" << reasons << "). Arming may be dangerous!");
     pose_takeoff_samples_.clear(); // clear the takeoff pose samples to estimate a new one
     vehicle_state_ = vehicle_state_t::not_ready;
@@ -1576,8 +1567,8 @@ void ControlInterface::state_vehicle_taking_off()
   if (!armed)
   {
     RCLCPP_INFO(get_logger(), "Takeoff interrupted with disarm. Stopping all missions and switching state to not_ready.");
-    std::string reasons;
-    if (!stopMission(reasons))
+    std::string reasons = "Mission planner not initialized!";
+    if (!mission_mgr_ || !mission_mgr_->stop_mission(reasons))
       RCLCPP_WARN_STREAM(get_logger(), "Failed to stop mission before transitioning to not_ready (" << reasons << "). Arming may be dangerous!");
     pose_takeoff_samples_.clear(); // clear the takeoff pose samples to estimate a new one
     vehicle_state_ = vehicle_state_t::not_ready;
@@ -1632,7 +1623,9 @@ void ControlInterface::state_vehicle_autonomous_flight()
     add_reason_if("not armed", !armed, reasons);
     add_reason_if("not flying (" + to_string(land_state) + ")", land_state != mavsdk::Telemetry::LandedState::InAir, reasons);
     RCLCPP_INFO_STREAM(get_logger(), "Autonomous flight mode ended: " << reasons << ", stopping all missions and switching state to not_ready.");
-    if (!stopMission(reasons))
+
+    reasons = "Mission planner not initialized!";
+    if (!mission_mgr_ || !mission_mgr_->stop_mission(reasons))
       RCLCPP_WARN_STREAM(get_logger(), "Failed to stop mission before transitioning to not_ready (" << reasons << "). Arming may be dangerous!");
     pose_takeoff_samples_.clear(); // clear the takeoff pose samples to estimate a new one
     vehicle_state_ = vehicle_state_t::not_ready;
@@ -1678,7 +1671,9 @@ void ControlInterface::state_vehicle_manual_flight()
     add_reason_if("not armed", !armed, reasons);
     add_reason_if("not flying (" + to_string(land_state) + ")", land_state != mavsdk::Telemetry::LandedState::InAir, reasons);
     RCLCPP_INFO_STREAM(get_logger(), "Manual flight mode ended: " << reasons << ", stopping all missions and switching state to not_ready.");
-    if (!stopMission(reasons))
+
+    reasons = "Mission planner not initialized!";
+    if (!mission_mgr_ || !mission_mgr_->stop_mission(reasons))
       RCLCPP_WARN_STREAM(get_logger(), "Failed to stop mission before transitioning to not_ready (" << reasons << "). Arming may be dangerous!");
     pose_takeoff_samples_.clear(); // clear the takeoff pose samples to estimate a new one
     vehicle_state_ = vehicle_state_t::not_ready;
@@ -1723,8 +1718,8 @@ void ControlInterface::state_vehicle_landing()
   if (manual_override_)
   {
     RCLCPP_INFO(get_logger(), "Manual override detected, switching state to manual_flight.");
-    std::string reasons;
-    if (!stopMission(reasons))
+    std::string reasons = "Mission planner not initialized!";
+    if (!mission_mgr_ || !mission_mgr_->stop_mission(reasons))
       RCLCPP_WARN_STREAM(get_logger(), "Failed to stop mission before transitioning to manual_flight (" << reasons << ")!");
     vehicle_state_ = vehicle_state_t::manual_flight;
   }
@@ -1739,7 +1734,6 @@ void ControlInterface::state_vehicle_landing()
 // the following mutexes have to be locked by the calling function:
 // state_mutex_
 // action_mutex_
-// mission_mutex_
 // param_mutex_
 // telem_mutex_
 bool ControlInterface::connectPixHawk()
@@ -1807,7 +1801,6 @@ bool ControlInterface::connectPixHawk()
 // pose_mutex_
 // action_mutex_
 // telem_mutex_
-// waypoint_buffer_mutex_
 bool ControlInterface::startTakeoff(std::string& fail_reason_out)
 {
   std::stringstream ss;
@@ -1859,29 +1852,38 @@ bool ControlInterface::startTakeoff(std::string& fail_reason_out)
     return false;
   }
 
-  local_waypoint_t current_goal;
+  local_waypoint_t goal;
 
   // averaging desired takeoff position
-  current_goal.x = 0;
-  current_goal.y = 0;
-  current_goal.z = 0;
+  goal.x = 0;
+  goal.y = 0;
+  goal.z = 0;
 
   for (const auto &p : pose_takeoff_samples_)
   {
-    current_goal.x += p.x();
-    current_goal.y += p.y();
-    current_goal.z += p.z();
+    goal.x += p.x();
+    goal.y += p.y();
+    goal.z += p.z();
   }
-  current_goal.x /= pose_takeoff_samples_.size();
-  current_goal.y /= pose_takeoff_samples_.size();
-  current_goal.z /= pose_takeoff_samples_.size();
+  goal.x /= pose_takeoff_samples_.size();
+  goal.y /= pose_takeoff_samples_.size();
+  goal.z /= pose_takeoff_samples_.size();
 
-  current_goal.z   += takeoff_height_;
-  current_goal.yaw = getYaw(pose_ori_);
-  if (current_goal.z > 10.0)
-    RCLCPP_WARN(get_logger(), "Takeoff height is too damn high (%.2f)! Height sensor may be malfunctioning.", current_goal.z);
+  goal.z   += takeoff_height_;
+  goal.yaw = getYaw(pose_ori_);
+  if (goal.z > 10.0)
+    RCLCPP_WARN(get_logger(), "Takeoff height is too damn high (%.2f)! Height sensor may be malfunctioning.", goal.z);
 
-  waypoint_buffer_.push_back(current_goal);
+  // create a new mission plan with one item, the after-takeoff goal
+  mavsdk::Mission::MissionPlan mission_plan;
+  mission_plan.mission_items.push_back(to_mission_item(goal));
+  // finally, let the MissionManager handle the upload & starting of the mission
+  std::string fail_reason = "Mission planner not initialized!";
+  if (!mission_mgr_ || !mission_mgr_->new_mission(mission_plan, 0, fail_reason))
+  {
+    fail_reason_out = "new mission could not be added (" + fail_reason + ")";
+    return false;
+  }
 
   RCLCPP_WARN(get_logger(), "Takeoff action called.");
   return true;
@@ -1920,7 +1922,6 @@ bool ControlInterface::startLanding(std::string& fail_reason_out)
 /* publishDiagnostics //{ */
 // the following mutexes have to be locked by the calling function:
 // state_mutex_
-// mission_mutex_
 // telem_mutex_
 void ControlInterface::publishDiagnostics()
 {
@@ -1933,11 +1934,11 @@ void ControlInterface::publishDiagnostics()
 
   msg.armed = armed;
   msg.vehicle_state = to_msg(vehicle_state_);
-  msg.mission_state = to_msg(mission_mgr_->state());
+  msg.mission_state = to_msg(mission_mgr_ ? mission_mgr_->state() : mission_state_t::finished);
 
-  msg.mission_id = mission_id_;
-  msg.mission_size = mission_mgr_->mission_size();
-  msg.mission_waypoint = mission_mgr_->mission_waypoint();
+  msg.mission_id = mission_mgr_ ? mission_mgr_->mission_id() : 0;
+  msg.mission_size = mission_mgr_ ? mission_mgr_->mission_size() : 0;
+  msg.mission_waypoint = mission_mgr_ ? mission_mgr_->mission_waypoint() : 0;
 
   msg.gps_origin_set = gps_origin_set_;
   msg.getting_odom = getting_odom_;
@@ -1975,6 +1976,13 @@ void ControlInterface::printAndPublishWaypoints(const std::vector<local_waypoint
 // | --------------------- Utility methods -------------------- |
 
 /* to_mission_item //{ */
+template <typename T>
+mavsdk::Mission::MissionItem ControlInterface::to_mission_item(const T& w_in, const bool is_global)
+{
+  const local_waypoint_t w = to_local_waypoint(w_in, is_global);
+  return to_mission_item(w);
+}
+
 mavsdk::Mission::MissionItem ControlInterface::to_mission_item(const local_waypoint_t& w_in)
 {
   local_waypoint_t w = w_in;

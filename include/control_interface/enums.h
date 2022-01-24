@@ -7,6 +7,8 @@
 
 namespace control_interface
 {
+#define ERR_MSG "Inconsistent message received, please rebuild the package that crashed!"
+
   /* vehicle_state_t enumeration type //{ */
   
   enum struct vehicle_state_t
@@ -21,7 +23,7 @@ namespace control_interface
     landing,
   };
   
-  inline static vehicle_state_t to_enum(const fog_msgs::msg::ControlInterfaceVehicleState msg)
+  static inline vehicle_state_t to_enum(const fog_msgs::msg::ControlInterfaceVehicleState msg)
   {
     switch (msg.state)
     {
@@ -32,11 +34,11 @@ namespace control_interface
       case fog_msgs::msg::ControlInterfaceVehicleState::AUTONOMOUS_FLIGHT:   return vehicle_state_t::autonomous_flight;
       case fog_msgs::msg::ControlInterfaceVehicleState::MANUAL_FLIGHT:       return vehicle_state_t::manual_flight;
       case fog_msgs::msg::ControlInterfaceVehicleState::LANDING:             return vehicle_state_t::landing;
-      default:                                                          assert(false); return vehicle_state_t::invalid;
+      default:                                                               assert(false && ERR_MSG); return vehicle_state_t::invalid;
     }
   }
   
-  inline static fog_msgs::msg::ControlInterfaceVehicleState to_msg(const vehicle_state_t enum_val)
+  static inline fog_msgs::msg::ControlInterfaceVehicleState to_msg(const vehicle_state_t enum_val)
   {
     fog_msgs::msg::ControlInterfaceVehicleState msg;
     switch (enum_val)
@@ -48,12 +50,12 @@ namespace control_interface
       case vehicle_state_t::autonomous_flight:   msg.state = fog_msgs::msg::ControlInterfaceVehicleState::AUTONOMOUS_FLIGHT; break;
       case vehicle_state_t::manual_flight:       msg.state = fog_msgs::msg::ControlInterfaceVehicleState::MANUAL_FLIGHT; break;
       case vehicle_state_t::landing:             msg.state = fog_msgs::msg::ControlInterfaceVehicleState::LANDING; break;
-      default:                                   assert(false); msg.state = fog_msgs::msg::ControlInterfaceVehicleState::INVALID; break;
+      default:                                   assert(false && ERR_MSG); msg.state = fog_msgs::msg::ControlInterfaceVehicleState::INVALID; break;
     }
     return msg;
   }
 
-  inline static std::string to_string(const vehicle_state_t enum_val)
+  static inline std::string to_string(const vehicle_state_t enum_val)
   {
     switch (enum_val)
     {
@@ -64,7 +66,7 @@ namespace control_interface
       case vehicle_state_t::autonomous_flight:   return "autonomous_flight";
       case vehicle_state_t::manual_flight:       return "manual_flight";
       case vehicle_state_t::landing:             return "landing";
-      default:                                   assert(false); return "invalid";
+      default:                                   assert(false && ERR_MSG); return "invalid";
     }
   }
   
@@ -81,18 +83,19 @@ namespace control_interface
     finished,
   };
   
-  inline static mission_state_t to_enum(const fog_msgs::msg::ControlInterfaceMissionState msg)
+  static inline mission_state_t to_enum(const fog_msgs::msg::ControlInterfaceMissionState msg)
   {
     switch (msg.state)
     {
-      case fog_msgs::msg::ControlInterfaceMissionState::UPLOADING:   return mission_state_t::uploading;
-      case fog_msgs::msg::ControlInterfaceMissionState::IN_PROGRESS: return mission_state_t::in_progress;
-      case fog_msgs::msg::ControlInterfaceMissionState::FINISHED:    return mission_state_t::finished;
-      default:                                                  assert(false); return mission_state_t::invalid;
+      case fog_msgs::msg::ControlInterfaceMissionState::UPLOADING:    return mission_state_t::uploading;
+      case fog_msgs::msg::ControlInterfaceMissionState::STARTING:     return mission_state_t::starting;
+      case fog_msgs::msg::ControlInterfaceMissionState::IN_PROGRESS:  return mission_state_t::in_progress;
+      case fog_msgs::msg::ControlInterfaceMissionState::FINISHED:     return mission_state_t::finished;
+      default:                                                        assert(false && ERR_MSG); return mission_state_t::invalid;
     }
   }
   
-  inline static fog_msgs::msg::ControlInterfaceMissionState to_msg(const mission_state_t enum_val)
+  static inline fog_msgs::msg::ControlInterfaceMissionState to_msg(const mission_state_t enum_val)
   {
     fog_msgs::msg::ControlInterfaceMissionState msg;
     switch (enum_val)
@@ -101,19 +104,20 @@ namespace control_interface
       case mission_state_t::starting:    msg.state = fog_msgs::msg::ControlInterfaceMissionState::STARTING; break;
       case mission_state_t::in_progress: msg.state = fog_msgs::msg::ControlInterfaceMissionState::IN_PROGRESS; break;
       case mission_state_t::finished:    msg.state = fog_msgs::msg::ControlInterfaceMissionState::FINISHED; break;
-      default:                           assert(false); msg.state = fog_msgs::msg::ControlInterfaceMissionState::INVALID; break;
+      default:                           assert(false && ERR_MSG); msg.state = fog_msgs::msg::ControlInterfaceMissionState::INVALID; break;
     }
     return msg;
   }
 
-  inline static std::string to_string(const mission_state_t enum_val)
+  static inline std::string to_string(const mission_state_t enum_val)
   {
     switch (enum_val)
     {
       case mission_state_t::uploading:    return "uploading";
+      case mission_state_t::starting:     return "starting";
       case mission_state_t::in_progress:  return "in_progress";
       case mission_state_t::finished:     return "finished";
-      default:                            assert(false); return "invalid";
+      default:                            assert(false && ERR_MSG); return "invalid";
     }
   }
   

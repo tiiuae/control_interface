@@ -43,9 +43,9 @@ include_directories(
 ## --------------------------------------------------------------
 
 add_library(control_interface SHARED
-  src/control_interface.cpp
-  src/mission_manager.cpp
   src/utils.cpp
+  src/mission_manager.cpp
+  src/control_interface.cpp
   )
 
 target_compile_definitions(control_interface
