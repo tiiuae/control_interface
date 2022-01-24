@@ -502,6 +502,11 @@ void ControlInterface::missionResultCallback(const px4_msgs::msg::MissionResult:
   }
 
   unsigned instance_count = msg->instance_count;
+  if (msg->seq_reached != -1){
+  RCLCPP_INFO(this->get_logger(), "[%s]:[%s][%s] Instance: %d - Local %d - Sequence: [%d - %d - %d]", 
+  this->get_name(), msg->finished ? "Finished" : "Ongoing", mission_finished_ ? "Finished" : "Ongoing",
+   msg->instance_count, last_mission_instance_, msg->seq_reached, msg->seq_current, msg->seq_total);
+  }
 
   if (msg->finished && instance_count != last_mission_instance_) {
     mission_finished_      = true;
