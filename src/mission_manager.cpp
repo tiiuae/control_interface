@@ -16,7 +16,7 @@ MissionManager::MissionManager(const unsigned max_attempts, std::shared_ptr<mavs
   : mission_(std::make_unique<mavsdk::Mission>(system)), max_attempts_(max_attempts), logger_(logger), clock_(clock)
 {
     // register some callbacks
-    const mavsdk::Mission::MissionProgressCallback progress_cbk = std::bind(&MissionManager::progressCallback, this, std::placeholders::_1);
+    const mavsdk::Mission::MissionProgressCallback progress_cbk = std::bind(&MissionManager::progress_callback, this, std::placeholders::_1);
     mission_->subscribe_mission_progress(progress_cbk);
 }
 //}
@@ -24,7 +24,7 @@ MissionManager::MissionManager(const unsigned max_attempts, std::shared_ptr<mavs
 /* new_mission() method //{ */
 bool MissionManager::new_mission(const mavsdk::Mission::MissionPlan& mission_plan, const uint32_t id, std::string& fail_reason_out)
 {
-  std::scoped_lock lck(mutex_);
+  std::scoped_lock lck(mutex);
   std::stringstream ss;
 
   if (state_ != state_t::finished)
@@ -44,14 +44,14 @@ bool MissionManager::new_mission(const mavsdk::Mission::MissionPlan& mission_pla
   }
 
   mission_id_ = id;
-  return startMissionUpload(mission_plan);
+  return start_mission_upload(mission_plan);
 }
 //}
 
 /* stop_mission() method //{ */
 bool MissionManager::stop_mission(std::string& fail_reason_out)
 {
-  std::scoped_lock lck(mutex_);
+  std::scoped_lock lck(mutex);
   std::stringstream ss;
 
   const auto orig_state = state_;
@@ -92,34 +92,29 @@ bool MissionManager::stop_mission(std::string& fail_reason_out)
 /* getters //{ */
 mission_state_t MissionManager::state()
 {
-  return fog_lib::get_mutexed(mutex_, state_);
+  return fog_lib::get_mutexed(mutex, state_);
 }
 
 uint32_t MissionManager::mission_id()
 {
-  return fog_lib::get_mutexed(mutex_, mission_id_);
+  return fog_lib::get_mutexed(mutex, mission_id_);
 }
 
 int32_t MissionManager::mission_size()
 {
-  return fog_lib::get_mutexed(mutex_, plan_size_);
+  return fog_lib::get_mutexed(mutex, plan_size_);
 }
 
 int32_t MissionManager::mission_waypoint()
 {
-  return fog_lib::get_mutexed(mutex_, current_waypoint_);
-}
-
-std::recursive_mutex& MissionManager::mutex()
-{
-  return mutex_;
+  return fog_lib::get_mutexed(mutex, current_waypoint_);
 }
 //}
 
 // | --------------- private methods definitions -------------- |
 
 /* startMissionUpload //{ */
-bool MissionManager::startMissionUpload(const mavsdk::Mission::MissionPlan& mission_plan)
+bool MissionManager::start_mission_upload(const mavsdk::Mission::MissionPlan& mission_plan)
 {
   attempt_start_time_ = clock_->now();
   mission_->upload_mission_async(mission_plan, [this, mission_plan](mavsdk::Mission::Result result)
@@ -129,14 +124,14 @@ bool MissionManager::startMissionUpload(const mavsdk::Mission::MissionPlan& miss
         // of the MavSDK processing thread
         std::thread([this, result, mission_plan]
         {
-          std::scoped_lock lck(mutex_);
+          std::scoped_lock lck(mutex);
           const double dur_s = (clock_->now() - attempt_start_time_).seconds();
           // if mission upload succeeded, all is good and well in the world
           if (result == mavsdk::Mission::Result::Success)
           {
             RCLCPP_INFO_STREAM(logger_, "Mission #" << mission_id_ << " upload of " << mission_plan.mission_items.size() << " waypoints succeeded after " << dur_s << "s.");
             attempts_ = 0;
-            startMission();
+            start_mission();
           }
           // otherwise, check if we should retry or give up
           else
@@ -148,7 +143,7 @@ bool MissionManager::startMissionUpload(const mavsdk::Mission::MissionPlan& miss
               if (state_ == state_t::uploading)
               {
                 attempts_++;
-                startMissionUpload(mission_plan);
+                start_mission_upload(mission_plan);
               }
             }
             else
@@ -168,7 +163,7 @@ bool MissionManager::startMissionUpload(const mavsdk::Mission::MissionPlan& miss
 //}
 
 /* startMission //{ */
-bool MissionManager::startMission()
+bool MissionManager::start_mission()
 {
   plan_size_ = 0;
   current_waypoint_ = 0;
@@ -180,7 +175,7 @@ bool MissionManager::startMission()
         // of the MavSDK processing thread
         std::thread([this, result]
         {
-          std::scoped_lock lck(mutex_);
+          std::scoped_lock lck(mutex);
           const double dur_s = (clock_->now() - attempt_start_time_).seconds();
           // if mission start succeeded, all is good and well in the world
           if (result == mavsdk::Mission::Result::Success)
@@ -199,7 +194,7 @@ bool MissionManager::startMission()
               if (state_ == state_t::starting)
               {
                 attempts_++;
-                startMission();
+                start_mission();
               }
             }
             else
@@ -219,14 +214,14 @@ bool MissionManager::startMission()
 //}
 
 /* progressCallback //{ */
-void MissionManager::progressCallback(const mavsdk::Mission::MissionProgress& progress)
+void MissionManager::progress_callback(const mavsdk::Mission::MissionProgress& progress)
 {
   // spawn a new thread to avoid blocking in the MavSDK
   // callback which will eventually cause a deadlock
   // of the MavSDK processing thread
   std::thread([this, &progress]
   {
-    std::scoped_lock lck(mutex_);
+    std::scoped_lock lck(mutex);
 
     // if no mission is in progress, don't print or update anything to avoid spamming garbage
     if (state_ != state_t::in_progress)

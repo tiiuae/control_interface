@@ -34,11 +34,11 @@ namespace control_interface
     uint32_t mission_id();
     int32_t mission_size();
     int32_t mission_waypoint();
-    std::recursive_mutex& mutex();
+
+    std::recursive_mutex mutex;
 
   private:
     using state_t = mission_state_t;
-    std::recursive_mutex mutex_;
 
     // state of the current mission
     state_t state_ = state_t::finished;
@@ -48,9 +48,9 @@ namespace control_interface
     std::unique_ptr<mavsdk::Mission> mission_;
 
     // current number of retry attempts (uploads and mission starts)
-    unsigned attempts_;
+    unsigned attempts_ = 0;
     // maximal number of retry attempts (parameter)
-    unsigned max_attempts_ = 5;
+    unsigned max_attempts_;
     // time of the last retry attempt
     rclcpp::Time attempt_start_time_;
 
@@ -63,11 +63,10 @@ namespace control_interface
     int32_t plan_size_ = 0;
     int32_t current_waypoint_ = 0;
 
-    bool startMissionUpload(const mavsdk::Mission::MissionPlan& mission_plan);
-    bool startMission();
+    bool start_mission_upload(const mavsdk::Mission::MissionPlan& mission_plan);
+    bool start_mission();
 
-    void progressCallback(const mavsdk::Mission::MissionProgress& progress);
-    
+    void progress_callback(const mavsdk::Mission::MissionProgress& progress);
   };
 
 }
