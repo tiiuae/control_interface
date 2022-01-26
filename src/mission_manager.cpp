@@ -235,12 +235,6 @@ void MissionManager::progressCallback(const mavsdk::Mission::MissionProgress& pr
     plan_size_ = progress.total;
     current_waypoint_ = progress.current;
 
-    if (plan_size_ == current_waypoint_)
-    {
-      RCLCPP_INFO_STREAM(logger_, "Mission #" << mission_id_ << " finished.");
-      state_ = state_t::finished;
-    }
-
     const float percent = progress.total == 0 ? 100 : progress.current/float(progress.total)*100.0f;
     if (progress.current == -1)
       RCLCPP_INFO(logger_, "Current mission #%u cancelled (waypoint %d/%d).", mission_id_, progress.current, progress.total);
@@ -248,6 +242,12 @@ void MissionManager::progressCallback(const mavsdk::Mission::MissionProgress& pr
       RCLCPP_INFO(logger_, "Current mission #%u is empty (waypoint %d/%d).", mission_id_, progress.current, progress.total);
     else
       RCLCPP_INFO(logger_, "Current mission #%u waypoint: %d/%d (%.1f%%).", mission_id_, progress.current, progress.total, percent);
+
+    if (plan_size_ == current_waypoint_)
+    {
+      RCLCPP_INFO_STREAM(logger_, "Mission #" << mission_id_ << " finished.");
+      state_ = state_t::finished;
+    }
   }).detach();
 }
 //}

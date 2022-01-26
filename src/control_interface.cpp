@@ -47,8 +47,10 @@
 #include <tf2_geometry_msgs/tf2_geometry_msgs.h>  // This has to be here otherwise you will get cryptic linker error about missing function 'getTimestamp'
 #include <unordered_map>
 
-#include <fog_lib/mutex_utils.h>
 #include <fog_lib/params.h>
+#include <fog_lib/mutex_utils.h>
+#include <fog_lib/misc.h>
+#include <fog_lib/geometry/misc.h>
 
 #include "control_interface/utils.h"
 #include "control_interface/enums.h"
@@ -57,6 +59,8 @@
 //}
 
 using namespace std::placeholders;
+using namespace fog_lib;
+using namespace fog_lib::geometry;
 
 namespace control_interface
 {
@@ -66,7 +70,7 @@ struct local_waypoint_t
   double x;
   double y;
   double z;
-  double yaw;
+  double heading;
 };
 
 struct gps_waypoint_t
@@ -74,38 +78,8 @@ struct gps_waypoint_t
   double latitude;
   double longitude;
   double altitude;
-  double yaw;
+  double heading;
 };
-
-/* getYaw //{ */
-// TODO: Is this really what we want? Or do we want heading (angle from the x-axis in the XY plane) since that's what's published in the debugs?
-double getYaw(const tf2::Quaternion &q) {
-  double roll, pitch, yaw;
-  tf2::Matrix3x3(q).getRPY(roll, pitch, yaw);
-  return yaw;
-}
-
-double getYaw(const geometry_msgs::msg::Quaternion &q) {
-  tf2::Quaternion tq;
-  tq.setX(q.x);
-  tq.setY(q.y);
-  tq.setZ(q.z);
-  tq.setW(q.w);
-  double roll, pitch, yaw;
-  tf2::Matrix3x3(tq).getRPY(roll, pitch, yaw);
-  return yaw;
-}
-//}
-
-/* angle conversions //{ */
-double radToDeg(const double &angle_rad) {
-  return angle_rad * 180.0 / M_PI;
-}
-
-double degToRad(const double &angle_deg) {
-  return angle_deg * M_PI / 180.0;
-}
-//}
 
 /* coordinate system conversions //{ */
 
@@ -130,7 +104,7 @@ local_waypoint_t globalToLocal(const std::shared_ptr<mavsdk::geometry::Coordinat
   wl.x   = local.east_m;
   wl.y   = local.north_m;
   wl.z   = wg.altitude;
-  wl.yaw = wg.yaw;
+  wl.heading = wg.heading;
   return wl;
 }
 
@@ -162,7 +136,7 @@ gps_waypoint_t localToGlobal(const std::shared_ptr<mavsdk::geometry::CoordinateT
   wg.latitude   = global.latitude_deg;
   wg.longitude  = global.longitude_deg;
   wg.altitude   = wl.z;
-  wg.yaw        = wl.yaw;
+  wg.heading        = wl.heading;
   return wg;
 }
 
@@ -178,18 +152,7 @@ std::vector<gps_waypoint_t> localToGlobal(const std::shared_ptr<mavsdk::geometry
 
 //}
 
-/* add_reason_if helper string function //{ */
-
-void add_reason_if(const std::string& reason, const bool condition, std::string& to_str)
-{
-  if (condition)
-  {
-    if (to_str.empty())
-      to_str = reason;
-    else
-      to_str = to_str + ", " + reason;
-  }
-}
+/* add_unhealthy_reasons helper string function //{ */
 
 void add_unhealthy_reasons(const mavsdk::Telemetry::Health& health, std::string& to_str)
 {
@@ -325,7 +288,7 @@ private:
   rclcpp::Duration print_callback_min_dur_ = rclcpp::Duration::from_seconds(0.020);
   int    mavsdk_logging_print_level_        = 1;
   std::string mavsdk_logging_filename_      = {};
-  double yaw_offset_correction_             = M_PI / 2;
+  double heading_offset_correction_         = M_PI / 2;
   double takeoff_height_                    = 2.5;
   double control_update_rate_               = 10.0;
   double diagnostics_publish_rate_          = 1.0;
@@ -497,7 +460,7 @@ ControlInterface::ControlInterface(rclcpp::NodeOptions options) : Node("control_
 
   loaded_successfully &= parse_param("mavsdk.logging_print_level", mavsdk_logging_print_level_, *this);
   loaded_successfully &= parse_param("mavsdk.logging_filename", mavsdk_logging_filename_, *this);
-  loaded_successfully &= parse_param("mavsdk.yaw_offset_correction", yaw_offset_correction_, *this);
+  loaded_successfully &= parse_param("mavsdk.heading_offset_correction", heading_offset_correction_, *this);
   loaded_successfully &= parse_param("mavsdk.mission_upload_attempts_threshold", mission_upload_attempts_threshold_, *this);
 
   if (!loaded_successfully)
@@ -665,7 +628,7 @@ void ControlInterface::controlModeCallback(const px4_msgs::msg::VehicleControlMo
 
   if (manual_override_ && !msg->flag_control_manual_enabled)
   {
-    const vehicle_state_t state = fog_lib::get_mutexed(state_mutex_, vehicle_state_);
+    const vehicle_state_t state = get_mutexed(state_mutex_, vehicle_state_);
     const bool on_ground_disarmed = !msg->flag_armed && state == vehicle_state_t::not_ready;
     const bool taking_off = state == vehicle_state_t::taking_off;
     if (on_ground_disarmed)
@@ -712,8 +675,8 @@ void ControlInterface::odometryCallback(const nav_msgs::msg::Odometry::UniquePtr
   {
     // convert from NED (north-east-down) coordinates to ENU (east-north-up)
     const Eigen::Vector3d enu_cmd_pos(msg->y, msg->x, -msg->z);
-    const double yaw_corrected = -msg->yaw - yaw_offset_correction_;
-    const Eigen::Quaterniond ori(Eigen::AngleAxisd(yaw_corrected, Eigen::Vector3d::UnitZ()));
+    const double heading_corrected = -msg->yaw - heading_offset_correction_;
+    const Eigen::Quaterniond ori(Eigen::AngleAxisd(heading_corrected, Eigen::Vector3d::UnitZ()));
 
     geometry_msgs::msg::PoseStamped::UniquePtr msg_out = std::make_unique<geometry_msgs::msg::PoseStamped>();
     msg_out->header.stamp = get_clock()->now();
@@ -742,7 +705,7 @@ void ControlInterface::homePositionCallback(const px4_msgs::msg::HomePosition::U
   const auto new_tf = std::make_shared<mavsdk::geometry::CoordinateTransformation>(mavsdk::geometry::CoordinateTransformation(tf));
   const Eigen::Vector3d new_home_offset(msg->y, msg->x, -msg->z);
 
-  fog_lib::set_mutexed(coord_transform_mutex_, 
+  set_mutexed(coord_transform_mutex_, 
       std::make_tuple(new_tf, new_home_offset),
       std::forward_as_tuple(coord_transform_, home_position_offset_)
     );
@@ -801,7 +764,7 @@ bool ControlInterface::takeoffCallback([[maybe_unused]] const std::shared_ptr<st
 {
   scope_timer tim(print_callback_durations_, "takeoffCallback", print_callback_throttle_, print_callback_min_dur_);
 
-  const auto state = fog_lib::get_mutexed(state_mutex_, vehicle_state_);
+  const auto state = get_mutexed(state_mutex_, vehicle_state_);
   if (state != vehicle_state_t::takeoff_ready)
   {
     response->success = false;
@@ -914,7 +877,7 @@ bool ControlInterface::startNewMission(const T& path, const uint32_t id, const b
 {
   scope_timer tim(print_callback_durations_, "startNewMission", print_callback_throttle_, print_callback_min_dur_);
 
-  const auto state = fog_lib::get_mutexed(state_mutex_, vehicle_state_);
+  const auto state = get_mutexed(state_mutex_, vehicle_state_);
   // check that we are in a state in which we can add waypoints to the buffer
   if (state != vehicle_state_t::autonomous_flight)
   {
@@ -964,7 +927,7 @@ bool ControlInterface::localWaypointCallback(const std::shared_ptr<fog_msgs::srv
   scope_timer tim(print_callback_durations_, "localWaypointCallback", print_callback_throttle_, print_callback_min_dur_);
   if (request->goal.size() != 4)
   {
-    response->message = "The waypoint must have 4 coordinates (x, y, z, yaw)! Ignoring request.";
+    response->message = "The waypoint must have 4 coordinates (x, y, z, heading)! Ignoring request.";
     response->success = false;
     RCLCPP_ERROR_STREAM(get_logger(), response->message);
     return true;
@@ -1019,7 +982,7 @@ bool ControlInterface::gpsWaypointCallback(const std::shared_ptr<fog_msgs::srv::
   scope_timer tim(print_callback_durations_, "gpsWaypointCallback", print_callback_throttle_, print_callback_min_dur_);
   if (request->goal.size() != 4)
   {
-    response->message = "The waypoint must have 4 coordinates (x, y, z, yaw)! Ignoring request.";
+    response->message = "The waypoint must have 4 coordinates (x, y, z, heading)! Ignoring request.";
     response->success = false;
     RCLCPP_ERROR_STREAM(get_logger(), response->message);
     return true;
@@ -1093,7 +1056,7 @@ bool ControlInterface::waypointToLocalCallback(const std::shared_ptr<fog_msgs::s
   response->local_x = local.x;
   response->local_y = local.y;
   response->local_z = local.z;
-  response->yaw = local.yaw;
+  response->heading = local.heading;
 
   std::stringstream ss;
   ss << "Transformed GPS [" << request->latitude_deg << ", " << request->longitude_deg << ", " << request->relative_altitude_m << "] into local: ["
@@ -1818,7 +1781,7 @@ bool ControlInterface::connectPixHawk()
 bool ControlInterface::startTakeoff(std::string& fail_reason_out)
 {
   std::stringstream ss;
-  const auto takeoff_poses = fog_lib::get_mutexed(pose_mutex_, pose_takeoff_samples_);
+  const auto takeoff_poses = get_mutexed(pose_mutex_, pose_takeoff_samples_);
 
   std::scoped_lock lck(action_mutex_, telem_mutex_);
 
@@ -1888,7 +1851,7 @@ bool ControlInterface::startTakeoff(std::string& fail_reason_out)
   goal.z /= takeoff_poses.size();
 
   goal.z   += takeoff_height_;
-  goal.yaw = getYaw(pose_ori_);
+  goal.heading = quat2heading(pose_ori_);
   if (goal.z > 10.0)
     RCLCPP_WARN(get_logger(), "Takeoff height is too damn high (%.2f)! Height sensor may be malfunctioning.", goal.z);
 
@@ -1973,12 +1936,12 @@ void ControlInterface::printAndPublishWaypoints(const std::vector<local_waypoint
 
   for (const auto &w : wps)
   {
-    RCLCPP_INFO(get_logger(), "\t[%.2f, %.2f, %.2f, %.2f]", w.x, w.y, w.z, w.yaw);
+    RCLCPP_INFO(get_logger(), "\t[%.2f, %.2f, %.2f, %.2f]", w.x, w.y, w.z, w.heading);
     geometry_msgs::msg::Pose p;
     p.position.x = w.x;
     p.position.y = w.y;
     p.position.z = w.z;
-    const Eigen::Quaterniond q(Eigen::AngleAxisd(w.yaw, Eigen::Vector3d::UnitZ()));
+    const Eigen::Quaterniond q(Eigen::AngleAxisd(w.heading, Eigen::Vector3d::UnitZ()));
     p.orientation.w = q.w();
     p.orientation.x = q.x();
     p.orientation.y = q.y();
@@ -2007,20 +1970,20 @@ mavsdk::Mission::MissionItem ControlInterface::to_mission_item(const local_waypo
   w.y -= home_position_offset_.y();
   w.z -= home_position_offset_.z();
 
-  const auto tf = fog_lib::get_mutexed(coord_transform_mutex_, coord_transform_);
+  const auto tf = get_mutexed(coord_transform_mutex_, coord_transform_);
   mavsdk::Mission::MissionItem item;
   gps_waypoint_t global = localToGlobal(tf, w);
   item.latitude_deg = global.latitude;
   item.longitude_deg = global.longitude;
-  item.relative_altitude_m = global.altitude;
-  item.yaw_deg = -radToDeg(global.yaw + yaw_offset_correction_);
+  item.relative_altitude_m = (float)global.altitude;
+  item.yaw_deg = float(-radians(global.heading + heading_offset_correction_).convert<degrees>().value());
   item.speed_m_s = float(target_velocity_);  // NAN = use default values. This does NOT limit vehicle max speed
 
   item.is_fly_through          = true;
   item.gimbal_pitch_deg        = 0.0f;
   item.gimbal_yaw_deg          = 0.0f;
   item.camera_action           = mavsdk::Mission::MissionItem::CameraAction::None;
-  item.loiter_time_s           = waypoint_loiter_time_;
+  item.loiter_time_s           = (float)waypoint_loiter_time_;
   item.camera_photo_interval_s = 0.0f;
   item.acceptance_radius_m     = waypoint_acceptance_radius_;
 
@@ -2031,7 +1994,7 @@ mavsdk::Mission::MissionItem ControlInterface::to_mission_item(const local_waypo
 /* to_local_waypoint //{ */
 local_waypoint_t ControlInterface::to_local_waypoint(const geometry_msgs::msg::PoseStamped& in, const bool is_global)
 {
-  return to_local_waypoint(Eigen::Vector4d{in.pose.position.x, in.pose.position.y, in.pose.position.z, getYaw(in.pose.orientation)}, is_global);
+  return to_local_waypoint(Eigen::Vector4d{in.pose.position.x, in.pose.position.y, in.pose.position.z, quat2heading(in.pose.orientation)}, is_global);
 }
 
 local_waypoint_t ControlInterface::to_local_waypoint(const mavsdk::Mission::MissionItem& in)
@@ -2040,9 +2003,9 @@ local_waypoint_t ControlInterface::to_local_waypoint(const mavsdk::Mission::Miss
   global.latitude = in.latitude_deg;
   global.longitude = in.longitude_deg;
   global.altitude = in.relative_altitude_m;
-  global.yaw = degToRad(-in.yaw_deg) - yaw_offset_correction_;
+  global.heading = degrees(-in.yaw_deg).convert<radians>().value() - heading_offset_correction_;
 
-  const auto tf = fog_lib::get_mutexed(coord_transform_mutex_, coord_transform_);
+  const auto tf = get_mutexed(coord_transform_mutex_, coord_transform_);
   local_waypoint_t w = globalToLocal(tf, global);
   // apply home offset correction
   w.x += home_position_offset_.x();
@@ -2054,7 +2017,7 @@ local_waypoint_t ControlInterface::to_local_waypoint(const mavsdk::Mission::Miss
 
 local_waypoint_t ControlInterface::to_local_waypoint(const fog_msgs::srv::WaypointToLocal::Request& in, const bool is_global)
 {
-  const Eigen::Vector4d as_vec {in.latitude_deg, in.longitude_deg, in.relative_altitude_m, in.yaw};
+  const Eigen::Vector4d as_vec {in.latitude_deg, in.longitude_deg, in.relative_altitude_m, in.heading};
   return to_local_waypoint(as_vec, is_global);
 }
 
@@ -2069,12 +2032,12 @@ local_waypoint_t ControlInterface::to_local_waypoint(const Eigen::Vector4d& in, 
 {
   if (is_global)
   {
-    const auto tf = fog_lib::get_mutexed(coord_transform_mutex_, coord_transform_);
+    const auto tf = get_mutexed(coord_transform_mutex_, coord_transform_);
     gps_waypoint_t wp;
     wp.latitude  = in.x();
     wp.longitude = in.y();
     wp.altitude  = in.z();
-    wp.yaw       = in.w();
+    wp.heading       = in.w();
     return globalToLocal(tf, wp);
   }
   else
@@ -2083,7 +2046,7 @@ local_waypoint_t ControlInterface::to_local_waypoint(const Eigen::Vector4d& in, 
     wp.x   = in.x();
     wp.y   = in.y();
     wp.z   = in.z();
-    wp.yaw = in.w();
+    wp.heading = in.w();
     return wp;
   }
 }
