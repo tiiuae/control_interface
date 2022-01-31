@@ -162,8 +162,11 @@ private:
   bool motion_started_       = false;
   bool landed_               = true;
 
+  bool manual_override_      = false;
+
   bool     mission_finished_      = true;
   unsigned last_mission_instance_ = 1;
+  unsigned last_mission_remaining_seq_ = 0;
 
   std::string uav_name_         = "";
   std::string world_frame_      = "";
@@ -205,6 +208,9 @@ private:
   bool   reset_octomap_before_takeoff_ = true;
   double waypoint_acceptance_radius_   = 0.3;
   double target_velocity_              = 1.0;
+  double mission_timeout_duration_     = 5.0;
+
+  rclcpp::Time     last_mission_result_time_;
 
   // publishers
   rclcpp::Publisher<px4_msgs::msg::VehicleCommand>::SharedPtr   vehicle_command_publisher_;
@@ -304,6 +310,7 @@ ControlInterface::ControlInterface(rclcpp::NodeOptions options) : Node("control_
   parse_param("waypoint_loiter_time", waypoint_loiter_time_);
   parse_param("reset_octomap_before_takeoff", reset_octomap_before_takeoff_);
   parse_param("waypoint_acceptance_radius", waypoint_acceptance_radius_);
+  parse_param("mission_timeout_duration", mission_timeout_duration_);
   parse_param("target_velocity", target_velocity_);
   parse_param("control_update_rate", control_update_rate_);
 
@@ -469,7 +476,17 @@ void ControlInterface::controlModeCallback(const px4_msgs::msg::VehicleControlMo
   }
 
   getting_control_mode_ = true;
-
+  if (!manual_override_ && msg->flag_control_manual_enabled)
+  {
+    RCLCPP_INFO(get_logger(), "Control flag switched to manual. Stopping and clearing mission");
+    manual_override_ = true;
+    if (!stopPreviousMission()) {
+      RCLCPP_ERROR(this->get_logger(), "[%s]: Previous mission cannot be stopped. Manual landing required", this->get_name());
+    }
+  } else  if (manual_override_ && !msg->flag_control_manual_enabled){
+    RCLCPP_INFO(get_logger(), "Control flag switched to auto. The drone might not have been landed. Awaiting new missions..");
+    manual_override_ = false;
+  }
   if (armed_ != msg->flag_armed) {
     armed_ = msg->flag_armed;
     if (armed_) {
@@ -478,6 +495,7 @@ void ControlInterface::controlModeCallback(const px4_msgs::msg::VehicleControlMo
       takeoff_requested_ = false;
       start_mission_     = false;
       motion_started_    = false;
+      manual_override_   = false;
       RCLCPP_WARN(this->get_logger(), "[%s]: Vehicle disarmed", this->get_name());
     }
   }
@@ -516,7 +534,9 @@ void ControlInterface::missionResultCallback(const px4_msgs::msg::MissionResult:
   if (!msg->finished && instance_count != last_mission_instance_ && seq_remaining <= 1) {
     mission_finished_      = true;
     last_mission_instance_ = msg->instance_count;
-  }
+  }  
+  last_mission_result_time_ = this->get_clock()->now();
+  last_mission_remaining_seq_ = seq_remaining;
 }
 //}
 
@@ -1008,6 +1028,21 @@ void ControlInterface::controlRoutine(void) {
         if (mission_finished_) {
           RCLCPP_INFO(this->get_logger(), "[%s]: All waypoints have been visited", this->get_name());
           motion_started_ = false;
+        } else {
+          // If mission is not yet marked as completed from PX4, set misison_finished to True
+          // It won't pause the mission on the PX4, but new received waypoints will pause it
+          // Therefore, it can continue to next waypoints or land.
+          double time_since_last_result = this->get_clock()->now().seconds() - last_mission_result_time_.seconds();
+          if (time_since_last_result > mission_timeout_duration_ && last_mission_remaining_seq_ < 10){
+            RCLCPP_WARN(this->get_logger(), "[%s]: Mission timed out! Checking mission status with MavSDK", this->get_name());
+            const auto result = mission_->is_mission_finished(); // std::pair<mavsdk::Mission::Result, bool>
+            if (result.second) {
+              RCLCPP_INFO(this->get_logger(), "[%s]: Mission finished", this->get_name());
+              mission_finished_ = true;
+            } else {
+              RCLCPP_WARN(this->get_logger(), "[%s]: Mission finish status symbol %d", this->get_name(), int(result.first));
+            }
+          }
         }
       }
       //}
@@ -1047,7 +1082,7 @@ void ControlInterface::publishDiagnostics() {
   msg.getting_odom           = getting_pixhawk_odom_;
   msg.getting_control_mode   = getting_control_mode_;
   msg.getting_land_sensor    = getting_landed_info_;
-  msg.manual_control         = false;
+  msg.manual_control         = manual_override_;
   diagnostics_publisher_->publish(msg);
 }
 //}
