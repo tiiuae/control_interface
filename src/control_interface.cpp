@@ -359,6 +359,7 @@ private:
   mavsdk::Mission::MissionItem to_mission_item(const T& w_in, const bool is_global);
   mavsdk::Mission::MissionItem to_mission_item(const local_waypoint_t& w_in);
 
+  local_waypoint_t to_local_waypoint(const local_waypoint_t& in, [[maybe_unused]] const bool is_global);
   local_waypoint_t to_local_waypoint(const geometry_msgs::msg::PoseStamped& in, const bool is_global);
   local_waypoint_t to_local_waypoint(const mavsdk::Mission::MissionItem& in);
   local_waypoint_t to_local_waypoint(const fog_msgs::srv::WaypointToLocal::Request& in, const bool is_global);
@@ -624,16 +625,16 @@ void ControlInterface::odometryCallback(const nav_msgs::msg::Odometry::UniquePtr
   switch (state)
   {
     // ignore these states
-    vehicle_state_t::invalid:
-    vehicle_state_t::taking_off:
-    vehicle_state_t::autonomous_flight:
-    vehicle_state_t::manual_flight:
-    vehicle_state_t::landing:
+    case vehicle_state_t::invalid:
+    case vehicle_state_t::taking_off:
+    case vehicle_state_t::autonomous_flight:
+    case vehicle_state_t::manual_flight:
+    case vehicle_state_t::landing:
                       return;
     // add the position sample in these states
-    vehicle_state_t::not_connected:
-    vehicle_state_t::not_ready:
-    vehicle_state_t::takeoff_ready:
+    case vehicle_state_t::not_connected:
+    case vehicle_state_t::not_ready:
+    case vehicle_state_t::takeoff_ready:
                       break;
   }
 
@@ -1700,7 +1701,12 @@ void ControlInterface::state_vehicle_landing()
 // pose_mutex_
 bool ControlInterface::gotoAfterTakeoff(std::string& fail_reason_out)
 {
-  const auto takeoff_poses = get_mutexed(pose_mutex_, );
+  if (!mission_mgr_)
+  {
+    fail_reason_out = "mission planner not initialized!";
+    return false;
+  }
+
   local_waypoint_t goal;
 
   // average the desired takeoff position
@@ -1722,9 +1728,12 @@ bool ControlInterface::gotoAfterTakeoff(std::string& fail_reason_out)
   if (goal.z > 10.0)
     RCLCPP_WARN(get_logger(), "Takeoff height is too damn high (%.2f)! Height sensor may be malfunctioning.", goal.z);
 
-  const std::vector<local_waypoint_t> path = {goal};
-  std::string fail_reason = "mission planner not initialized!";
-  return startNewMission(path, 0, false, fail_reason_out);
+  // transform the path to a MissionPlan for pixhawk
+  mavsdk::Mission::MissionPlan mission_plan;
+  mission_plan.mission_items.push_back(to_mission_item(goal));
+
+  // finally, let the MissionManager handle the upload & starting of the new mission
+  return mission_mgr_->new_mission(mission_plan, 0, fail_reason_out);
 }
 //}
 
@@ -2001,6 +2010,11 @@ local_waypoint_t ControlInterface::to_local_waypoint(const mavsdk::Mission::Miss
   w.z += home_position_offset_.z();
 
   return w;
+}
+
+local_waypoint_t ControlInterface::to_local_waypoint(const local_waypoint_t& in, [[maybe_unused]] const bool is_global)
+{
+  return in;
 }
 
 local_waypoint_t ControlInterface::to_local_waypoint(const fog_msgs::srv::WaypointToLocal::Request& in, const bool is_global)
