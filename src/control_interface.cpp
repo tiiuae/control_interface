@@ -350,6 +350,8 @@ private:
   void state_vehicle_manual_flight(const bool landing_started);
   void state_vehicle_landing();
 
+  bool gotoAfterTakeoff(std::string& fail_reason_out);
+
   template<typename T>
   bool startNewMission(const T& path, const uint32_t id, const bool is_global, std::string& fail_reason_out);
 
@@ -602,10 +604,12 @@ void ControlInterface::controlModeCallback(const px4_msgs::msg::VehicleControlMo
 void ControlInterface::odometryCallback(const nav_msgs::msg::Odometry::UniquePtr msg)
 {
   scope_timer tim(print_callback_durations_, "odometryCallback", get_logger(), print_callback_throttle_, print_callback_min_dur_);
-  std::scoped_lock lck(pose_mutex_);
 
+  const vehicle_state_t state = get_mutexed(state_mutex_, vehicle_state_);
   getting_odom_ = true;
   RCLCPP_INFO_ONCE(get_logger(), "Getting odometry");
+
+  std::scoped_lock lck(pose_mutex_);
 
   // update the current position and orientation of the vehicle
   pose_pos_.x() = msg->pose.pose.position.x;
@@ -615,6 +619,23 @@ void ControlInterface::odometryCallback(const nav_msgs::msg::Odometry::UniquePtr
   pose_ori_.setY(msg->pose.pose.orientation.y);
   pose_ori_.setZ(msg->pose.pose.orientation.z);
   pose_ori_.setW(msg->pose.pose.orientation.w);
+
+  // check if the vehicle is landed and therefore should average its position for takeoff
+  switch (state)
+  {
+    // ignore these states
+    vehicle_state_t::invalid:
+    vehicle_state_t::taking_off:
+    vehicle_state_t::autonomous_flight:
+    vehicle_state_t::manual_flight:
+    vehicle_state_t::landing:
+                      return;
+    // add the position sample in these states
+    vehicle_state_t::not_connected:
+    vehicle_state_t::not_ready:
+    vehicle_state_t::takeoff_ready:
+                      break;
+  }
 
   // add the current position to the pose samples for takeoff position estimation
   pose_takeoff_samples_.push_back(pose_pos_);
@@ -796,7 +817,7 @@ bool ControlInterface::armingCallback([[maybe_unused]] const std::shared_ptr<std
     }
     else
     {
-      response->message = "Vehicle armed";
+      response->message = "Vehicle arming";
       response->success = true;
       RCLCPP_WARN(get_logger(), "%s", response->message.c_str());
       return true;
@@ -814,7 +835,7 @@ bool ControlInterface::armingCallback([[maybe_unused]] const std::shared_ptr<std
     }
     else
     {
-      response->message = "Vehicle disarmed";
+      response->message = "Vehicle disarming";
       response->success = true;
       RCLCPP_WARN(get_logger(), "%s", response->message.c_str());
       return true;
@@ -826,6 +847,7 @@ bool ControlInterface::armingCallback([[maybe_unused]] const std::shared_ptr<std
 // | ----------------- Waypoint/path callbacks ---------------- |
 
 /* startNewMission() method //{ */
+// helper function to start a new mission immediately
 template<typename T>
 bool ControlInterface::startNewMission(const T& path, const uint32_t id, const bool is_global, std::string& fail_reason_out)
 {
@@ -1311,7 +1333,7 @@ void ControlInterface::diagnosticsRoutine()
 void ControlInterface::vehicleStateRoutine()
 {
   scope_timer tim(print_callback_durations_, "vehicleStateRoutine", get_logger(), print_callback_throttle_, print_callback_min_dur_);
-  std::scoped_lock lck(state_mutex_, telem_mutex_);
+  std::scoped_lock lck(state_mutex_, telem_mutex_, pose_mutex_);
 
   const auto prev_state = vehicle_state_;
   update_vehicle_state();
@@ -1326,6 +1348,7 @@ void ControlInterface::vehicleStateRoutine()
 // the following mutexes have to be locked by the calling function:
 // state_mutex_
 // telem_mutex_
+// pose_mutex_
 void ControlInterface::update_vehicle_state(const bool takeoff_started, const bool landing_started)
 {
   // process the vehicle's state
@@ -1383,6 +1406,7 @@ void ControlInterface::state_vehicle_not_connected()
 // the following mutexes have to be locked by the calling function:
 // state_mutex_
 // telem_mutex_
+// pose_mutex_
 void ControlInterface::state_vehicle_not_ready()
 {
   RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 1000, "Vehicle state: not ready for takeoff.");
@@ -1430,6 +1454,7 @@ void ControlInterface::state_vehicle_not_ready()
 // the following mutexes have to be locked by the calling function:
 // state_mutex_
 // telem_mutex_
+// pose_mutex_
 void ControlInterface::state_vehicle_takeoff_ready(const bool takeoff_started)
 {
   RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 1000, "Vehicle state: ready for takeoff.");
@@ -1478,6 +1503,7 @@ void ControlInterface::state_vehicle_takeoff_ready(const bool takeoff_started)
 // the following mutexes have to be locked by the calling function:
 // state_mutex_
 // telem_mutex_
+// pose_mutex_
 void ControlInterface::state_vehicle_taking_off()
 {
   RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 1000, "Vehicle state: taking off.");
@@ -1514,6 +1540,9 @@ void ControlInterface::state_vehicle_taking_off()
     else
     {
       RCLCPP_INFO(get_logger(), "Takeoff complete. Switching state to autonomous_flight.");
+      std::string reasons;
+      if (!gotoAfterTakeoff(reasons))
+        RCLCPP_WARN_STREAM(get_logger(), "Failed to send the vehicle to the after-takeoff position (" << reasons << ")!");
       vehicle_state_ = vehicle_state_t::autonomous_flight;
     }
     return;
@@ -1525,6 +1554,7 @@ void ControlInterface::state_vehicle_taking_off()
 // the following mutexes have to be locked by the calling function:
 // state_mutex_
 // telem_mutex_
+// pose_mutex_
 void ControlInterface::state_vehicle_autonomous_flight(const bool landing_started)
 {
   RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 1000, "Vehicle state: flying autonomously.");
@@ -1575,6 +1605,7 @@ void ControlInterface::state_vehicle_autonomous_flight(const bool landing_starte
 // the following mutexes have to be locked by the calling function:
 // state_mutex_
 // telem_mutex_
+// pose_mutex_
 void ControlInterface::state_vehicle_manual_flight(const bool landing_started)
 {
   RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 1000, "Vehicle state: flying manually.");
@@ -1620,6 +1651,7 @@ void ControlInterface::state_vehicle_manual_flight(const bool landing_started)
 // the following mutexes have to be locked by the calling function:
 // state_mutex_
 // telem_mutex_
+// pose_mutex_
 void ControlInterface::state_vehicle_landing()
 {
   RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 1000, "Vehicle state: landing.");
@@ -1659,6 +1691,40 @@ void ControlInterface::state_vehicle_landing()
       RCLCPP_WARN_STREAM(get_logger(), "Failed to stop mission before transitioning to manual_flight (" << reasons << ")!");
     vehicle_state_ = vehicle_state_t::manual_flight;
   }
+}
+//}
+
+/* gotoAfterTakeoff method //{ */
+// helper method to send the vehicle to the after-takeoff position
+// the following mutexes have to be locked by the calling function:
+// pose_mutex_
+bool ControlInterface::gotoAfterTakeoff(std::string& fail_reason_out)
+{
+  const auto takeoff_poses = get_mutexed(pose_mutex_, );
+  local_waypoint_t goal;
+
+  // average the desired takeoff position
+  goal.x = 0;
+  goal.y = 0;
+  goal.z = 0;
+  for (const auto &p : pose_takeoff_samples_)
+  {
+    goal.x += p.x();
+    goal.y += p.y();
+    goal.z += p.z();
+  }
+  goal.x /= pose_takeoff_samples_.size();
+  goal.y /= pose_takeoff_samples_.size();
+  goal.z /= pose_takeoff_samples_.size();
+
+  goal.z += takeoff_height_;
+  goal.heading = quat2heading(pose_ori_);
+  if (goal.z > 10.0)
+    RCLCPP_WARN(get_logger(), "Takeoff height is too damn high (%.2f)! Height sensor may be malfunctioning.", goal.z);
+
+  const std::vector<local_waypoint_t> path = {goal};
+  std::string fail_reason = "mission planner not initialized!";
+  return startNewMission(path, 0, false, fail_reason_out);
 }
 //}
 
@@ -1785,39 +1851,6 @@ bool ControlInterface::startTakeoff(std::string& fail_reason_out)
     ss << "takeoff rejected by PixHawk (" << to_string(takeoff_result) << ")";
     fail_reason_out = ss.str();
     RCLCPP_ERROR_STREAM(get_logger(), "Not taking off: " << fail_reason_out);
-    return false;
-  }
-
-  local_waypoint_t goal;
-
-  // averaging desired takeoff position
-  goal.x = 0;
-  goal.y = 0;
-  goal.z = 0;
-
-  for (const auto &p : takeoff_poses)
-  {
-    goal.x += p.x();
-    goal.y += p.y();
-    goal.z += p.z();
-  }
-  goal.x /= takeoff_poses.size();
-  goal.y /= takeoff_poses.size();
-  goal.z /= takeoff_poses.size();
-
-  goal.z   += takeoff_height_;
-  goal.heading = quat2heading(pose_ori_);
-  if (goal.z > 10.0)
-    RCLCPP_WARN(get_logger(), "Takeoff height is too damn high (%.2f)! Height sensor may be malfunctioning.", goal.z);
-
-  // create a new mission plan with one item, the after-takeoff goal
-  mavsdk::Mission::MissionPlan mission_plan;
-  mission_plan.mission_items.push_back(to_mission_item(goal));
-  // finally, let the MissionManager handle the upload & starting of the mission
-  std::string fail_reason = "mission planner not initialized!";
-  if (!mission_mgr_ || !mission_mgr_->new_mission(mission_plan, 0, fail_reason))
-  {
-    fail_reason_out = "new mission could not be added (" + fail_reason + ")";
     return false;
   }
 
