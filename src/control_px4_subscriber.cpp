@@ -25,8 +25,8 @@ namespace control_interface
 class MissionResultRelayer : public rclcpp::Node
 {
 public:
-  MissionResultRelayer()
-  : Node("mission_result_relayer")
+  MissionResultRelayer(rclcpp::NodeOptions options)
+  : Node("mission_result_relayer", options)
   {
     mission_result_subscriber_ = this->create_subscription<px4_msgs::msg::MissionResult>(
       "~/mission_result_in", rclcpp::SystemDefaultsQoS(), 
@@ -44,7 +44,7 @@ private:
         this->get_name(), msg->finished ? "Finished" : "Ongoing", msg->instance_count,
         msg->seq_reached, msg->seq_current, msg->seq_total);
     }
-    mission_result_publisher_->publish(msg);
+    mission_result_publisher_->publish(*msg);
   }
   rclcpp::Subscription<px4_msgs::msg::MissionResult>::SharedPtr mission_result_subscriber_;
   rclcpp::Publisher<px4_msgs::msg::MissionResult>::SharedPtr mission_result_publisher_;
