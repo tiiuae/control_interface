@@ -218,7 +218,6 @@ private:
   mavsdk::Mavsdk                   mavsdk_;
   std::shared_ptr<mavsdk::System>  system_;
 
-
   // use takeoff lat and long to initialize local frame
   std::mutex coord_transform_mutex_;
   std::shared_ptr<mavsdk::geometry::CoordinateTransformation> coord_transform_;
@@ -341,10 +340,18 @@ private:
   void state_mission_uploading();
   void state_mission_in_progress();
 
-  void update_vehicle_state(const bool takeoff_started = false, const bool landing_started = false);
+  // used to enable immediate state changes from callbacks
+  enum class state_action_t
+  {
+    none,
+    takeoff_started,
+    landing_started,
+  };
+  void update_vehicle_state(const state_action_t state_action = state_action_t::none);
   void state_vehicle_not_connected();
   void state_vehicle_not_ready();
-  void state_vehicle_takeoff_ready(bool takeoff_started);
+  void state_vehicle_arming_ready();
+  void state_vehicle_takeoff_ready(const bool takeoff_started);
   void state_vehicle_taking_off();
   void state_vehicle_autonomous_flight(const bool landing_started);
   void state_vehicle_manual_flight(const bool landing_started);
@@ -583,7 +590,7 @@ void ControlInterface::controlModeCallback(const px4_msgs::msg::VehicleControlMo
   if (manual_override_ && !msg->flag_control_manual_enabled)
   {
     const vehicle_state_t state = get_mutexed(state_mutex_, vehicle_state_);
-    const bool on_ground_disarmed = !msg->flag_armed && state == vehicle_state_t::not_ready;
+    const bool on_ground_disarmed = !msg->flag_armed && (state == vehicle_state_t::not_ready || state == vehicle_state_t::arming_ready);
     const bool taking_off = state == vehicle_state_t::taking_off;
     if (on_ground_disarmed)
     {
@@ -634,6 +641,7 @@ void ControlInterface::odometryCallback(const nav_msgs::msg::Odometry::UniquePtr
     // add the position sample in these states
     case vehicle_state_t::not_connected:
     case vehicle_state_t::not_ready:
+    case vehicle_state_t::arming_ready:
     case vehicle_state_t::takeoff_ready:
                       break;
   }
@@ -757,7 +765,7 @@ bool ControlInterface::takeoffCallback([[maybe_unused]] const std::shared_ptr<st
   response->success = true;
   response->message = "Taking off";
   std::scoped_lock lck(state_mutex_, telem_mutex_);
-  update_vehicle_state(true); // update the vehicle state now as it should change
+  update_vehicle_state(state_action_t::takeoff_started); // update the vehicle state now as it should change
   return true;
 }
 //}
@@ -786,7 +794,7 @@ bool ControlInterface::landCallback([[maybe_unused]] const std::shared_ptr<std_s
   response->success = true;
   response->message = "Landing";
   std::scoped_lock lck(state_mutex_, telem_mutex_);
-  update_vehicle_state(false, true);
+  update_vehicle_state(state_action_t::landing_started);
   return true;
 }
 //}
@@ -805,22 +813,50 @@ bool ControlInterface::armingCallback([[maybe_unused]] const std::shared_ptr<std
     return true;
   }
 
-  std::scoped_lock lck(action_mutex_);
+  // check that the state is correct and the vehicle is prepared to be armed
+  const vehicle_state_t state = get_mutexed(state_mutex_, vehicle_state_);
+  if (state != vehicle_state_t::arming_ready)
+  {
+    response->success = false;
+    response->message = "Arming rejected, not ready for arming (" + vehicle_state_str_ + ")";
+    RCLCPP_ERROR(get_logger(), "%s", response->message.c_str());
+    return true;
+  }
+
+  std::scoped_lock lck(telem_mutex_, action_mutex_);
   if (request->data)
   {
     const auto result = action_->arm();
-    if (result != mavsdk::Action::Result::Success)
+    if (result == mavsdk::Action::Result::Success)
     {
-      response->message = "Arming failed: " + to_string(result);
+      // wait for up to 3s and check every 10ms if the vehicle is already armed or not
+      const rclcpp::Time start = get_clock()->now();
+      do
+      {
+        if (telem_->armed())
+        {
+          response->message = "Vehicle armed.";
+          response->success = true;
+          RCLCPP_WARN(get_logger(), "%s", response->message.c_str());
+          update_vehicle_state();
+          return true;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+      }
+      while (get_clock()->now() - start < rclcpp::Duration(3, 0));
+
+      // if we got here, then the arming failed
+      response->message = "Arming called, but not armed after 3s.";
       response->success = false;
-      RCLCPP_ERROR(get_logger(), "%s", response->message.c_str());
+      RCLCPP_WARN(get_logger(), "%s", response->message.c_str());
+      update_vehicle_state();
       return true;
     }
     else
     {
-      response->message = "Vehicle arming";
-      response->success = true;
-      RCLCPP_WARN(get_logger(), "%s", response->message.c_str());
+      response->message = "Arming failed: " + to_string(result);
+      response->success = false;
+      RCLCPP_ERROR(get_logger(), "%s", response->message.c_str());
       return true;
     }
   }
@@ -1350,8 +1386,10 @@ void ControlInterface::vehicleStateRoutine()
 // state_mutex_
 // telem_mutex_
 // pose_mutex_
-void ControlInterface::update_vehicle_state(const bool takeoff_started, const bool landing_started)
+void ControlInterface::update_vehicle_state(const state_action_t state_action)
 {
+  const bool takeoff_started = state_action == state_action_t::takeoff_started;
+  const bool landing_started = state_action == state_action_t::landing_started;
   // process the vehicle's state
   switch (vehicle_state_)
   {
@@ -1359,6 +1397,8 @@ void ControlInterface::update_vehicle_state(const bool takeoff_started, const bo
       state_vehicle_not_connected(); break;
     case vehicle_state_t::not_ready:
       state_vehicle_not_ready(); break;
+    case vehicle_state_t::arming_ready:
+      state_vehicle_arming_ready(); break;
     case vehicle_state_t::takeoff_ready:
       state_vehicle_takeoff_ready(takeoff_started); break;
     case vehicle_state_t::taking_off:
@@ -1410,8 +1450,53 @@ void ControlInterface::state_vehicle_not_connected()
 // pose_mutex_
 void ControlInterface::state_vehicle_not_ready()
 {
-  RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 1000, "Vehicle state: not ready for takeoff.");
-  vehicle_state_str_ = "not ready for takeoff";
+  RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 1000, "Vehicle state: not ready for arming.");
+  vehicle_state_str_ = "not ready for arming";
+
+  if (!system_connected_)
+  {
+    RCLCPP_INFO(get_logger(), "MavSDK system disconnected, switching state to not_connected.");
+    vehicle_state_ = vehicle_state_t::not_connected;
+    return;
+  }
+
+  const auto health = telem_->health();
+  const bool healthy = is_healthy(health);
+  const auto land_state = telem_->landed_state();
+
+  // advance to the next state if all conditions are met
+  if (gps_origin_set_
+   && pose_takeoff_samples_.size() >= (size_t)takeoff_position_samples_
+   && healthy
+   && land_state == mavsdk::Telemetry::LandedState::OnGround)
+  {
+    RCLCPP_INFO(get_logger(), "Vehicle is now ready for arming! Switching state to arming_ready.");
+    vehicle_state_ = vehicle_state_t::arming_ready;
+  }
+  // otherwise tell the user what we're waiting for
+  else
+  {
+    const std::string gps_reason = "insufficient GPS samples (" + std::to_string(pose_takeoff_samples_.size()) + "/" + std::to_string(takeoff_position_samples_) + ")";
+    std::string reasons;
+    add_unhealthy_reasons(health, reasons);
+    add_reason_if("GPS origin not set", !gps_origin_set_, reasons);
+    add_reason_if(gps_reason, pose_takeoff_samples_.size() < (size_t)takeoff_position_samples_, reasons);
+    add_reason_if("not landed (" + to_string(land_state) + ")", land_state != mavsdk::Telemetry::LandedState::OnGround, reasons);
+    vehicle_state_str_ += ", " + reasons;
+    RCLCPP_WARN_STREAM_THROTTLE(get_logger(), *get_clock(), 1000, "Not ready for arming: " << reasons);
+  }
+}
+//}
+
+/* state_vehicle_arming_ready() method //{ */
+// the following mutexes have to be locked by the calling function:
+// state_mutex_
+// telem_mutex_
+// pose_mutex_
+void ControlInterface::state_vehicle_arming_ready()
+{
+  RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 1000, "Vehicle state: ready for arming.");
+  vehicle_state_str_ = "ready for arming";
 
   if (!system_connected_)
   {
@@ -1426,27 +1511,29 @@ void ControlInterface::state_vehicle_not_ready()
   const auto land_state = telem_->landed_state();
 
   // advance to the next state if all conditions are met
-  if (gps_origin_set_
-   && pose_takeoff_samples_.size() >= (size_t)takeoff_position_samples_
-   && armed
-   && healthy
+  if (healthy
    && land_state == mavsdk::Telemetry::LandedState::OnGround)
   {
-    RCLCPP_INFO(get_logger(), "Vehicle is now ready for takeoff! Switching state to takeoff_ready.");
-    vehicle_state_ = vehicle_state_t::takeoff_ready;
+    if (armed)
+    {
+      RCLCPP_INFO(get_logger(), "Vehicle is now ready for takeoff! Switching state to takeoff_ready.");
+      vehicle_state_ = vehicle_state_t::takeoff_ready;
+    }
   }
   // otherwise tell the user what we're waiting for
   else
   {
-    const std::string gps_reason = "insufficient GPS samples (" + std::to_string(pose_takeoff_samples_.size()) + "/" + std::to_string(takeoff_position_samples_) + ")";
     std::string reasons;
-    add_reason_if("not armed", !armed, reasons);
     add_unhealthy_reasons(health, reasons);
-    add_reason_if("GPS origin not set", !gps_origin_set_, reasons);
-    add_reason_if(gps_reason, pose_takeoff_samples_.size() < (size_t)takeoff_position_samples_, reasons);
     add_reason_if("not landed (" + to_string(land_state) + ")", land_state != mavsdk::Telemetry::LandedState::OnGround, reasons);
-    vehicle_state_str_ += ", " + reasons;
-    RCLCPP_WARN_STREAM_THROTTLE(get_logger(), *get_clock(), 1000, "Not ready for takeoff: " << reasons);
+    RCLCPP_INFO_STREAM(get_logger(), "No longer ready for arming: " << reasons << ", stopping all missions and switching state to not_ready.");
+
+    reasons = "mission planner not initialized!";
+    if (!mission_mgr_ || !mission_mgr_->stop_mission(reasons))
+      RCLCPP_WARN_STREAM(get_logger(), "Failed to stop mission before transitioning to not_ready (" << reasons << "). Arming may be dangerous!");
+    pose_takeoff_samples_.clear(); // clear the takeoff pose samples to estimate a new one
+    vehicle_state_ = vehicle_state_t::not_ready;
+    return;
   }
 }
 //}

@@ -16,6 +16,7 @@ namespace control_interface
     invalid,
     not_connected,
     not_ready,
+    arming_ready,
     takeoff_ready,
     taking_off,
     autonomous_flight,
@@ -29,6 +30,7 @@ namespace control_interface
     {
       case fog_msgs::msg::ControlInterfaceVehicleState::NOT_CONNECTED:       return vehicle_state_t::not_connected;
       case fog_msgs::msg::ControlInterfaceVehicleState::NOT_READY:           return vehicle_state_t::not_ready;
+      case fog_msgs::msg::ControlInterfaceVehicleState::ARMING_READY:        return vehicle_state_t::arming_ready;
       case fog_msgs::msg::ControlInterfaceVehicleState::TAKEOFF_READY:       return vehicle_state_t::takeoff_ready;
       case fog_msgs::msg::ControlInterfaceVehicleState::TAKING_OFF:          return vehicle_state_t::taking_off;
       case fog_msgs::msg::ControlInterfaceVehicleState::AUTONOMOUS_FLIGHT:   return vehicle_state_t::autonomous_flight;
@@ -45,6 +47,7 @@ namespace control_interface
     {
       case vehicle_state_t::not_connected:       msg.state = fog_msgs::msg::ControlInterfaceVehicleState::NOT_CONNECTED; break;
       case vehicle_state_t::not_ready:           msg.state = fog_msgs::msg::ControlInterfaceVehicleState::NOT_READY; break;
+      case vehicle_state_t::arming_ready:        msg.state = fog_msgs::msg::ControlInterfaceVehicleState::ARMING_READY; break;
       case vehicle_state_t::takeoff_ready:       msg.state = fog_msgs::msg::ControlInterfaceVehicleState::TAKEOFF_READY; break;
       case vehicle_state_t::taking_off:          msg.state = fog_msgs::msg::ControlInterfaceVehicleState::TAKING_OFF; break;
       case vehicle_state_t::autonomous_flight:   msg.state = fog_msgs::msg::ControlInterfaceVehicleState::AUTONOMOUS_FLIGHT; break;
@@ -61,6 +64,7 @@ namespace control_interface
     {
       case vehicle_state_t::not_connected:       return "not_connected";
       case vehicle_state_t::not_ready:           return "not_ready";
+      case vehicle_state_t::arming_ready:        return "arming_ready";
       case vehicle_state_t::takeoff_ready:       return "takeoff_ready";
       case vehicle_state_t::taking_off:          return "taking_off";
       case vehicle_state_t::autonomous_flight:   return "autonomous_flight";
