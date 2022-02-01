@@ -65,6 +65,19 @@ def generate_launch_description():
                     ("~/path_to_local_in", "~/path_to_local"),
                 ],
             ),
+            ComposableNode(
+                package=pkg_name,
+                plugin='control_interface::MissionResultRelayer',
+                namespace=namespace,
+                name='mission_result_relayer',
+                parameters=[
+                    {"use_sim_time": launch.substitutions.LaunchConfiguration("use_sim_time")},
+                ],
+                remappings=[
+                    ("~/mission_result_in", "/" + DRONE_DEVICE_ID + "/fmu/mission_result/out"),
+                    ("~/mission_result_out", "~/mission_result_relayed"),
+                ],
+            ),
         ],
         output='screen',
         prefix=dbg_sub,

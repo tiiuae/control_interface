@@ -61,12 +61,28 @@ target_link_libraries(control_interface
 
 rclcpp_components_register_nodes(control_interface PLUGIN "${PROJECT_NAME}::ControlInterface" EXECUTABLE control_interface)
 
+add_library(mission_result_relayer SHARED
+  src/control_px4_subscriber.cpp
+  )
+
+target_compile_definitions(mission_result_relayer
+  PRIVATE "${PROJECT_NAME}_BUILDING_DLL")
+
+ament_target_dependencies(mission_result_relayer
+  rclcpp
+  rclcpp_components
+  std_msgs
+  px4_msgs
+  )
+
+rclcpp_components_register_nodes(mission_result_relayer PLUGIN "${PROJECT_NAME}::MissionResultRelayer" EXECUTABLE mission_result_relayer)
+
 ## --------------------------------------------------------------
 ## |                           install                          |
 ## --------------------------------------------------------------
 
 install(TARGETS
-  control_interface
+  control_interface mission_result_relayer
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib
   RUNTIME DESTINATION bin
