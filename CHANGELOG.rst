@@ -2,6 +2,70 @@
 Changelog for package control_interface
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
+Forthcoming
+-----------
+* added an arming_ready state. Now, after the arm service is complete, takeoff can be called immediately
+* the after-takeoff mission is now sent when transitioning from taking_off to autonomous_flight state
+* manual takeoff during landing should no longer spam
+* moved common functions to fog_lib, renamed yaw to heading for consistency
+* refactorng mission-related stuff to MissionManager
+* refactoring of mission-related stuff to a separate class MissionManager, WIP
+* mission start retries added, no longer checking health mid-flight
+* switch back from manual now checks the vehicle_state\_ instead of pixhawk's landed_state, minor refactoring
+* add ID to navigation requests, send confirmation back in diagnostics
+* nicer printing of waypoints
+* fixed include folder export
+* moved state enums to an include to allow easy including from navigation, minor fixes
+* Merge branch 'matous' of github.com:fly4future/control_interface into matous
+* added fog_lib dependency
+* takeoff waypoint height is relative to averaged takeoff position, added a more detailed print if not healthy
+* now publishes cmd_odom from pixhawk as PoseStamped, resetting mission progress counters, other minor stuff
+* working version, refactoring, fixes
+* updated the diagnostics message, started rewriting cmd_pose\_ to be more correct (but it's not working 100%)
+* renamed desired_pose to cmd_pose for consistency
+* fixed deadlock in landing
+* improved reporting of current mission status, added some prints
+* mission upload is only cancelled if a mission is being uploaded, other minor fixes
+* removed pause_mission in stopMission that may be causing pixhawk to switch from manual
+* added some prints in case mission cannot be stopped
+* fixed a potential rare deadlock in mavsdk callback thread
+* only callback durations over a certain threshold will be printed
+* stopping mission before transitioning to the not_ready state to prevent buffering of missions in pixhawk that will be executed right after arming, which is dangerous
+* fixed mission aborting, other minor QoL improvemetns
+* added an extra check before taking off that the vehicle is not armed and printing of callback timings
+* improved state update after takeoff to work also with instant takeoff, minor changes with takeoff/landing prints
+* manual/automat fixes for real drone
+* added throttle to an annoying output
+* fixes in manual override after during takeoff
+* now prints number of GPS samples received/required, changed GPS position buffer to circular_buffer
+* mavsdk logging to file can be disabled by setting filename to empty
+* throttled some output, added mavlink logging
+* added more verbose output for failures, diags are published in separate thread, waiting for octomap reset, other minor fixes and updates
+* minor fixes with mission cancelling and other little things
+* Merge branch 'devel' into matous
+* reverted -Og to -O3
+* refactored to use vehicle states instead of a multitude of flags
+* mission progress deadlock hotfix
+* fixed callback group
+* takeoff hotfix
+* wip implementing vehicle state
+* working. Mission state is now published. Changed some mutexes to recursive to avoid deadlocks because of how callbacks are called.
+* fixed callback groups
+* changed callback groups to multiple single-threaded ones
+* refactoring waypoint callbacks
+* wip cleanup and refactoring to squash bugs due to parallelization
+* Update build scripts
+* Update topic names for rebased PX4
+* Add containerized build workflow
+* Fix deps_ws directory in packaging script
+* Update galactic support to github  workflows
+* New build scripts with container build
+* cherry-pick mavsdk init separation from branch galactic
+* fixes of warnings found using ros2 galactic (`#17 <https://github.com/tiiuae/control_interface/issues/17>`_)
+  Co-authored-by: Vojtech Spurny <vojtech.spurny@fel.cvut.cz>
+* New build scripts
+
+
 0.0.8 (2021-11-30)
 -----------
 * remove unnecessary service client
