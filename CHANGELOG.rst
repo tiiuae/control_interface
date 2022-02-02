@@ -2,7 +2,7 @@
 Changelog for package control_interface
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-Forthcoming
+0.1.0 (2022-02-02)
 -----------
 * added an arming_ready state. Now, after the arm service is complete, takeoff can be called immediately
 * the after-takeoff mission is now sent when transitioning from taking_off to autonomous_flight state
@@ -64,7 +64,6 @@ Forthcoming
 * fixes of warnings found using ros2 galactic (`#17 <https://github.com/tiiuae/control_interface/issues/17>`_)
   Co-authored-by: Vojtech Spurny <vojtech.spurny@fel.cvut.cz>
 * New build scripts
-
 
 0.0.8 (2021-11-30)
 -----------
