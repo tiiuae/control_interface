@@ -2001,7 +2001,7 @@ void ControlInterface::publishDiagnostics()
 
   msg.mission_progress.size = mission_mgr_ ? mission_mgr_->mission_size() : 0;
   msg.mission_progress.current_waypoint = mission_mgr_ ? mission_mgr_->mission_waypoint() : 0;
-  msg.mission_id = mission_mgr_ ? mission_mgr_->mission_id() : 0;
+  msg.mission_progress.mission_id = mission_mgr_ ? mission_mgr_->mission_id() : 0;
 
   msg.gps_origin_set = gps_origin_set_;
   msg.getting_odom = getting_odom_;
