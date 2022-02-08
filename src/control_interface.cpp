@@ -3,15 +3,6 @@
 #include <connection_result.h>
 #include <eigen3/Eigen/Dense>
 #include <eigen3/Eigen/src/Geometry/Quaternion.h>
-#include <fog_msgs/msg/control_interface_diagnostics.hpp>
-#include <fog_msgs/srv/path.hpp>
-#include <fog_msgs/srv/path_to_local.hpp>
-#include <fog_msgs/srv/get_px4_param_int.hpp>
-#include <fog_msgs/srv/get_px4_param_float.hpp>
-#include <fog_msgs/srv/set_px4_param_int.hpp>
-#include <fog_msgs/srv/set_px4_param_float.hpp>
-#include <fog_msgs/srv/vec4.hpp>
-#include <fog_msgs/srv/waypoint_to_local.hpp>
 #include <geometry_msgs/msg/pose_array.hpp>
 #include <geometry_msgs/msg/transform_stamped.hpp>
 #include <mavsdk/geometry.h>
@@ -38,6 +29,7 @@
 #include <rclcpp/qos.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <rclcpp/time.hpp>
+#include "rclcpp_action/rclcpp_action.hpp"
 #include <std_msgs/msg/color_rgba.hpp>
 #include <std_srvs/srv/empty.hpp>
 #include <std_srvs/srv/set_bool.hpp>
@@ -46,6 +38,17 @@
 #include <tf2/LinearMath/Quaternion.h>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.h>  // This has to be here otherwise you will get cryptic linker error about missing function 'getTimestamp'
 #include <unordered_map>
+
+#include <fog_msgs/msg/control_interface_diagnostics.hpp>
+#include <fog_msgs/srv/path.hpp>
+#include <fog_msgs/srv/path_to_local.hpp>
+#include <fog_msgs/srv/get_px4_param_int.hpp>
+#include <fog_msgs/srv/get_px4_param_float.hpp>
+#include <fog_msgs/srv/set_px4_param_int.hpp>
+#include <fog_msgs/srv/set_px4_param_float.hpp>
+#include <fog_msgs/srv/vec4.hpp>
+#include <fog_msgs/srv/waypoint_to_local.hpp>
+#include <fog_msgs/action/control_interface_action.hpp>
 
 #include <fog_lib/params.h>
 #include <fog_lib/mutex_utils.h>
@@ -182,7 +185,10 @@ bool is_healthy(const mavsdk::Telemetry::Health& health)
 /* class ControlInterface //{ */
 class ControlInterface : public rclcpp::Node
 {
-public:
+public:  
+  using ControlInterfaceAction = fog_msgs::action::ControlInterfaceAction;
+  using GoalHandleControlInterfaceAction = rclcpp_action::ServerGoalHandle<ControlInterfaceAction>;
+  
   ControlInterface(rclcpp::NodeOptions options);
 
 private:
@@ -251,6 +257,10 @@ private:
   int    takeoff_position_samples_          = 20;
   int    mission_upload_attempts_threshold_ = 5;
 
+  // action server
+  rclcpp_action::Server<ControlInterfaceAction>::SharedPtr action_server_;
+  std::shared_ptr<GoalHandleControlInterfaceAction> action_server_goal_handle_;
+
   // publishers
   rclcpp::Publisher<geometry_msgs::msg::PoseArray>::SharedPtr               waypoint_publisher_;
   rclcpp::Publisher<fog_msgs::msg::ControlInterfaceDiagnostics>::SharedPtr  diagnostics_publisher_;
@@ -270,6 +280,11 @@ private:
   rclcpp::CallbackGroup::SharedPtr new_cbk_grp();
 
   OnSetParametersCallbackHandle::SharedPtr parameters_callback_handle_;
+
+  // action server methods
+  rclcpp_action::GoalResponse actionServerHandleGoal(const rclcpp_action::GoalUUID& uuid, std::shared_ptr<const ControlInterfaceAction::Goal> goal);
+  rclcpp_action::CancelResponse actionServerHandleCancel(const std::shared_ptr<GoalHandleControlInterfaceAction> goal_handle);
+  void actionServerHandleAccepted(const std::shared_ptr<GoalHandleControlInterfaceAction> goal_handle);
 
   // subscriber callbacks
   void controlModeCallback(const px4_msgs::msg::VehicleControlMode::UniquePtr msg);
@@ -556,6 +571,16 @@ ControlInterface::ControlInterface(rclcpp::NodeOptions options) : Node("control_
   diagnostics_timer_ = create_wall_timer(std::chrono::duration<double>(1.0 / diagnostics_publish_rate_),
       std::bind(&ControlInterface::diagnosticsRoutine, this), new_cbk_grp());
 
+  action_server_ = rclcpp_action::create_server<ControlInterfaceAction>(
+      get_node_base_interface(),
+      get_node_clock_interface(),
+      get_node_logging_interface(),
+      get_node_waitables_interface(),
+      "control_interface",
+      std::bind(&ControlInterface::actionServerHandleGoal, this, _1, _2),
+      std::bind(&ControlInterface::actionServerHandleCancel, this, _1),
+      std::bind(&ControlInterface::actionServerHandleAccepted, this, _1));
+
   RCLCPP_INFO(get_logger(), "ControlInterface constructor complete.");
 }
 //}
@@ -734,6 +759,40 @@ bool ControlInterface::mavsdkLogCallback(const mavsdk::log::Level level, const s
     mavsdk_logging_file_ << " (" << file << ":" << line << "): " << message << std::endl;
   // return true so that MavSDK doesn't print out anything
   return true;
+}
+//}
+
+/* actionServerHandleGoal //{ */
+// note: to accept or reject goals sent to the server
+// callback must be non-blocking
+rclcpp_action::GoalResponse ControlInterface::actionServerHandleGoal(
+    const rclcpp_action::GoalUUID & uuid,
+    std::shared_ptr<const ControlInterfaceAction::Goal> goal)
+{
+  RCLCPP_INFO(this->get_logger(), "Received path request with %d wayponts", int(goal->path.poses.size()));
+  (void)uuid;
+  return rclcpp_action::GoalResponse::ACCEPT_AND_EXECUTE;
+}
+//}
+
+/* actionServerHandleCancel //{ */
+// note: to accept or reject requests to cancel a goal
+// callback must be non-blocking
+rclcpp_action::CancelResponse ControlInterface::actionServerHandleCancel(
+    const std::shared_ptr<GoalHandleControlInterfaceAction> goal_handle)
+{
+  RCLCPP_INFO(this->get_logger(), "Received request to cancel goal");
+  (void)goal_handle;
+  return rclcpp_action::CancelResponse::ACCEPT;
+}
+//}
+
+/* actionServerHandleAccepted //{ */
+// note: to receive a goal handle after a goal has been accepted
+// callback must be non-blocking
+void ControlInterface::actionServerHandleAccepted(const std::shared_ptr<GoalHandleControlInterfaceAction> goal_handle)
+{
+  action_server_goal_handle_= goal_handle;
 }
 //}
 

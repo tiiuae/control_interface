@@ -29,6 +29,7 @@ find_package(geometry_msgs REQUIRED)
 find_package(visualization_msgs REQUIRED)
 find_package(tf2 REQUIRED)
 find_package(tf2_ros REQUIRED)
+find_package(rclcpp_action REQUIRED)
 find_package(MAVSDK 0.42.0 EXACT REQUIRED)
 find_package(Threads REQUIRED)
 
@@ -64,6 +65,7 @@ ament_target_dependencies(control_interface
   visualization_msgs
   tf2
   tf2_ros
+  rclcpp_action
   MAVSDK
   Threads
   fog_lib
@@ -91,10 +93,6 @@ install(DIRECTORY launch
 
 install(DIRECTORY config 
   DESTINATION share/${PROJECT_NAME}
-)
-
-install(DIRECTORY scripts
-  DESTINATION lib/${PROJECT_NAME}
 )
 
 install(
