@@ -16,6 +16,8 @@ from geometry_msgs.msg import Point
 from geometry_msgs.msg import PoseStamped
 from geometry_msgs.msg import Quaternion
 
+from action_msgs.msg import GoalStatus
+
 WAYPOINTS_LOCAL=[
     [0,0,3,1],
     [-5,4,2,2],
@@ -62,6 +64,9 @@ class ControlInterfaceActionClient(Node):
         self._action_client = ActionClient(self, ControlInterfaceAction, "/" + DRONE_DEVICE_ID + "/control_interface")
 
     def send_goal(self):
+        print('Waiting for action server')
+        self._action_client.wait_for_server()
+
         path = NavPath()
         path.header.stamp = rclpy.clock.Clock().now().to_msg()
         path.header.frame_id = "world"
@@ -81,22 +86,45 @@ class ControlInterfaceActionClient(Node):
 
         goal_msg = ControlInterfaceAction.Goal()
         goal_msg.path = path
-        print('Waiting for action server')
-        self._action_client.wait_for_server()
-        print('Action server detected')
+        
+        print('Sending goal request...')
 
-        print('Calling action server')
-        return self._action_client.send_goal_async(goal_msg)
+        self._send_goal_future = self._action_client.send_goal_async(
+            goal_msg,
+            feedback_callback=self.feedback_callback)
 
+        self._send_goal_future.add_done_callback(self.goal_response_callback)
+
+    def goal_response_callback(self, future):
+        goal_handle = future.result()
+        if not goal_handle.accepted:
+            self.get_logger().info('Goal rejected :(')
+            return
+
+        self.get_logger().info('Goal accepted :)')
+
+        self._get_result_future = goal_handle.get_result_async()
+        self._get_result_future.add_done_callback(self.get_result_callback)
+
+    def get_result_callback(self, future):
+        result = future.result().result
+        status = future.result().status
+        if status == GoalStatus.STATUS_SUCCEEDED:
+            self.get_logger().info('Goal succeeded! Result: {0}'.format(result.message))
+        else:
+            self.get_logger().info('Goal failed with status: {0}'.format(status))
+        # Shutdown after receiving a result
+        rclpy.shutdown()
+
+    def feedback_callback(self, feedback_msg):
+        feedback = feedback_msg.feedback
+        self.get_logger().info('Received feedback: {0}'.format(feedback))
 
 def main(args=None):
     rclpy.init(args=args)
-
     action_client = ControlInterfaceActionClient()
-
     future = action_client.send_goal()
-
-    rclpy.spin_until_future_complete(action_client, future)
+    rclpy.spin(action_client)
 
 
 if __name__ == '__main__':
