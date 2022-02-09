@@ -85,17 +85,8 @@ struct gps_waypoint_t
 /* coordinate system conversions //{ */
 
 /* globalToLocal //{ */
-std::pair<double, double> globalToLocal(const std::shared_ptr<mavsdk::geometry::CoordinateTransformation> &coord_transform, const double &latitude_deg,
-                                        const double &longitude_deg) {
-  mavsdk::geometry::CoordinateTransformation::GlobalCoordinate global;
-  global.latitude_deg  = latitude_deg;
-  global.longitude_deg = longitude_deg;
-  auto local           = coord_transform->local_from_global(global);
-
-  return {local.east_m, local.north_m};
-}
-
-local_waypoint_t globalToLocal(const std::shared_ptr<mavsdk::geometry::CoordinateTransformation> &coord_transform, const gps_waypoint_t &wg) {
+local_waypoint_t globalToLocal(const std::shared_ptr<mavsdk::geometry::CoordinateTransformation>& coord_transform, const gps_waypoint_t& wg, const vec3_t& offset)
+{
   local_waypoint_t                                             wl;
   mavsdk::geometry::CoordinateTransformation::GlobalCoordinate global;
   global.latitude_deg  = wg.latitude;
@@ -106,15 +97,20 @@ local_waypoint_t globalToLocal(const std::shared_ptr<mavsdk::geometry::Coordinat
   wl.y   = local.north_m;
   wl.z   = wg.altitude;
   wl.heading = wg.heading;
+
+  // apply home offset correction
+  wl.x += offset.x();
+  wl.y += offset.y();
+  wl.z += offset.z();
   return wl;
 }
 
 std::vector<local_waypoint_t> globalToLocal(const std::shared_ptr<mavsdk::geometry::CoordinateTransformation> &coord_transform,
-                                            const std::vector<gps_waypoint_t> &                                wgs) {
+                                            const std::vector<gps_waypoint_t>& wgs, const vec3_t& offset)
+{
   std::vector<local_waypoint_t> wls;
-  for (const auto &wg : wgs) {
-    wls.push_back(globalToLocal(coord_transform, wg));
-  }
+  for (const auto &wg : wgs)
+    wls.push_back(globalToLocal(coord_transform, wg, offset));
   return wls;
 }
 //}
@@ -1076,7 +1072,7 @@ bool ControlInterface::waypointToLocalCallback(const std::shared_ptr<fog_msgs::s
      << response->local_x << ", " << response->local_y << ", " << response->local_z << "]";
   response->message = ss.str();
   response->success = true;
-  RCLCPP_INFO(get_logger(), "%s", response->message.c_str());
+  RCLCPP_INFO_STREAM(get_logger(), response->message);
   return true;
 }
 //}
@@ -2089,12 +2085,8 @@ local_waypoint_t ControlInterface::to_local_waypoint(const mavsdk::Mission::Miss
   global.altitude = in.relative_altitude_m;
   global.heading = degrees(-in.yaw_deg).convert<radians>().value() - heading_offset_correction_;
 
-  const auto tf = get_mutexed(coord_transform_mutex_, coord_transform_);
-  local_waypoint_t w = globalToLocal(tf, global);
-  // apply home offset correction
-  w.x += home_position_offset_.x();
-  w.y += home_position_offset_.y();
-  w.z += home_position_offset_.z();
+  const auto [tf, offset] = get_mutexed(coord_transform_mutex_, coord_transform_, home_position_offset_);
+  local_waypoint_t w = globalToLocal(tf, global, offset);
 
   return w;
 }
@@ -2121,20 +2113,20 @@ local_waypoint_t ControlInterface::to_local_waypoint(const Eigen::Vector4d& in, 
 {
   if (is_global)
   {
-    const auto tf = get_mutexed(coord_transform_mutex_, coord_transform_);
+    const auto [tf, offset] = get_mutexed(coord_transform_mutex_, coord_transform_, home_position_offset_);
     gps_waypoint_t wp;
-    wp.latitude  = in.x();
+    wp.latitude = in.x();
     wp.longitude = in.y();
-    wp.altitude  = in.z();
-    wp.heading       = in.w();
-    return globalToLocal(tf, wp);
+    wp.altitude = in.z();
+    wp.heading = in.w();
+    return globalToLocal(tf, wp, offset);
   }
   else
   {
     local_waypoint_t wp;
-    wp.x   = in.x();
-    wp.y   = in.y();
-    wp.z   = in.z();
+    wp.x = in.x();
+    wp.y = in.y();
+    wp.z = in.z();
     wp.heading = in.w();
     return wp;
   }

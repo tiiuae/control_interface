@@ -67,7 +67,7 @@ bool MissionManager::stop_mission(std::string& fail_reason_out)
     const auto cancel_result = mission_->cancel_mission_upload();
     if (cancel_result != mavsdk::Mission::Result::Success)
     {
-      ss << "cannot stop mission #" << mission_id_ << " upload (" << to_string(cancel_result) << ")";
+      ss << "cannot stop mission upload (" << to_string(cancel_result) << ")";
       fail_reason_out = ss.str();
       RCLCPP_ERROR_STREAM(logger_, "Failed to stop current mission: " << fail_reason_out);
       return false;
@@ -78,13 +78,13 @@ bool MissionManager::stop_mission(std::string& fail_reason_out)
   const auto clear_result = mission_->clear_mission();
   if (clear_result != mavsdk::Mission::Result::Success)
   {
-    ss << "cannot clear current mission #" << mission_id_ << " (" << to_string(clear_result) << ")";
+    ss << "cannot clear current mission (" << to_string(clear_result) << ")";
     fail_reason_out = ss.str();
     RCLCPP_ERROR_STREAM(logger_, "Failed to stop current mission: " << fail_reason_out);
     return false;
   }
 
-  RCLCPP_INFO_STREAM(logger_, "Current mission #" << mission_id_ << " stopped");
+  RCLCPP_INFO_STREAM(logger_, "Last mission stopped");
   return true;
 }
 //}
@@ -232,7 +232,7 @@ void MissionManager::progress_callback(const mavsdk::Mission::MissionProgress& p
 
     const float percent = progress.total == 0 ? 100 : progress.current/float(progress.total)*100.0f;
     if (progress.current == -1)
-      RCLCPP_INFO(logger_, "Current mission #%u cancelled (waypoint %d/%d).", mission_id_, progress.current, progress.total);
+      RCLCPP_INFO(logger_, "Last mission cancelled (waypoint %d/%d).", progress.current, progress.total);
     else if (progress.total == 0)
       RCLCPP_INFO(logger_, "Current mission #%u is empty (waypoint %d/%d).", mission_id_, progress.current, progress.total);
     else
