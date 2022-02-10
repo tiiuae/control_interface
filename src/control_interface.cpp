@@ -346,11 +346,6 @@ private:
   rclcpp::TimerBase::SharedPtr diagnostics_timer_;
   void diagnosticsRoutine();
 
-  // helper state methods
-  void state_mission_finished();
-  void state_mission_uploading();
-  void state_mission_in_progress();
-
   // used to enable immediate state changes from callbacks
   enum class state_action_t
   {
@@ -730,7 +725,7 @@ bool ControlInterface::mavsdkLogCallback(const mavsdk::log::Level level, const s
       if (mavsdk_logging_file_.is_open())
         mavsdk_logging_file_ << "Debug";
       if (mavsdk_logging_print_level_ <= 0)
-        RCLCPP_DEBUG_STREAM(get_logger(), "MavSDK: " << message);
+        RCLCPP_INFO_STREAM(get_logger(), "MavSDK: " << message);
       break;
     case mavsdk::log::Level::Info:
       if (mavsdk_logging_file_.is_open())
