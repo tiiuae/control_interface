@@ -376,7 +376,7 @@ private:
   local_waypoint_t to_local_waypoint(const geometry_msgs::msg::PoseStamped& in, const bool is_global);
   local_waypoint_t to_local_waypoint(const mavsdk::Mission::MissionItem& in);
   local_waypoint_t to_local_waypoint(const fog_msgs::srv::WaypointToLocal::Request& in, const bool is_global);
-  local_waypoint_t to_local_waypoint(const std::vector<double>& in, const bool is_global);
+  local_waypoint_t to_local_waypoint(const std::array<double, 4>& in, const bool is_global);
   local_waypoint_t to_local_waypoint(const Eigen::Vector4d& in, const bool is_global);
 };
 //}
@@ -988,16 +988,9 @@ bool ControlInterface::localWaypointCallback(const std::shared_ptr<fog_msgs::srv
                                              std::shared_ptr<fog_msgs::srv::Vec4::Response>      response)
 {
   scope_timer tim(print_callback_durations_, "localWaypointCallback", get_logger(), print_callback_throttle_, print_callback_min_dur_);
-  if (request->goal.size() != 4)
-  {
-    response->message = "The waypoint must have 4 coordinates (x, y, z, heading)! Ignoring request.";
-    response->success = false;
-    RCLCPP_ERROR_STREAM(get_logger(), response->message);
-    return true;
-  }
 
   // convert the single waypoint to a path containing a single point
-  std::vector<std::vector<double>> path {request->goal};
+  std::vector<std::array<double, 4>> path {request->goal};
 
   // attempt to start the new mission
   std::string reason;
@@ -1043,16 +1036,9 @@ bool ControlInterface::gpsWaypointCallback(const std::shared_ptr<fog_msgs::srv::
                                            std::shared_ptr<fog_msgs::srv::Vec4::Response>      response)
 {
   scope_timer tim(print_callback_durations_, "gpsWaypointCallback", get_logger(), print_callback_throttle_, print_callback_min_dur_);
-  if (request->goal.size() != 4)
-  {
-    response->message = "The waypoint must have 4 coordinates (x, y, z, heading)! Ignoring request.";
-    response->success = false;
-    RCLCPP_ERROR_STREAM(get_logger(), response->message);
-    return true;
-  }
 
   // convert the single waypoint to a path containing a single point
-  std::vector<std::vector<double>> path {request->goal};
+  std::vector<std::array<double, 4>> path {request->goal};
 
   // attempt to start the new mission
   std::string reason;
@@ -2156,9 +2142,8 @@ local_waypoint_t ControlInterface::to_local_waypoint(const fog_msgs::srv::Waypoi
   return to_local_waypoint(as_vec, is_global);
 }
 
-local_waypoint_t ControlInterface::to_local_waypoint(const std::vector<double>& in, const bool is_global)
+local_waypoint_t ControlInterface::to_local_waypoint(const std::array<double, 4>& in, const bool is_global)
 {
-  assert(in.size() == 4);
   const Eigen::Vector4d as_vec {in.at(0), in.at(1), in.at(2), in.at(3)};
   return to_local_waypoint(as_vec, is_global);
 }
