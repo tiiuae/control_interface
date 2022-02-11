@@ -23,7 +23,7 @@ namespace control_interface
   {
   public:
     MissionManager();
-    MissionManager(const unsigned max_attempts, std::shared_ptr<mavsdk::System> system, const rclcpp::Logger& logger, rclcpp::Clock::SharedPtr clock);
+    MissionManager(const unsigned max_upload_attempts, const double start_attempts_interval, std::shared_ptr<mavsdk::System> system, const rclcpp::Logger& logger, rclcpp::Clock::SharedPtr clock);
 
     // doesn't block (the uploading & starting of the mission is asynchronous)
     bool new_mission(const mavsdk::Mission::MissionPlan& mission_plan, const uint32_t id, std::string& fail_reason_out);
@@ -50,9 +50,13 @@ namespace control_interface
     // current number of retry attempts (uploads and mission starts)
     unsigned attempts_ = 0;
     // maximal number of retry attempts (parameter)
-    unsigned max_attempts_;
+    unsigned max_upload_attempts_;
+    // interval in which the start of the mission is retried (parameter)
+    double start_attempts_interval_;
     // time of the last retry attempt
     rclcpp::Time attempt_start_time_;
+    // time of the first mission start attempt
+    rclcpp::Time first_mission_start_attempt_time_;
 
     // for printing
     rclcpp::Logger logger_;

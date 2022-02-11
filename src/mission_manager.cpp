@@ -12,8 +12,8 @@ using namespace control_interface;
 // | --------------- public methods definitions --------------- |
 
 /* constructor //{ */
-MissionManager::MissionManager(const unsigned max_attempts, std::shared_ptr<mavsdk::System> system, const rclcpp::Logger& logger, rclcpp::Clock::SharedPtr clock)
-  : mission_(std::make_unique<mavsdk::Mission>(system)), max_attempts_(max_attempts), logger_(logger), clock_(clock)
+MissionManager::MissionManager(const unsigned max_upload_attempts, const double start_attempts_interval, std::shared_ptr<mavsdk::System> system, const rclcpp::Logger& logger, rclcpp::Clock::SharedPtr clock)
+  : mission_(std::make_unique<mavsdk::Mission>(system)), max_upload_attempts_(max_upload_attempts), start_attempts_interval_(start_attempts_interval), logger_(logger), clock_(clock)
 {
     // register some callbacks
     const mavsdk::Mission::MissionProgressCallback progress_cbk = std::bind(&MissionManager::progress_callback, this, std::placeholders::_1);
@@ -58,6 +58,7 @@ bool MissionManager::stop_mission(std::string& fail_reason_out)
   // reset stuff
   plan_size_ = 0;
   current_waypoint_ = 0;
+  attempts_ = 0;
   // set the state to finished to avoid any reupload attempts etc.
   state_ = state_t::finished;
 
@@ -137,7 +138,7 @@ bool MissionManager::start_mission_upload(const mavsdk::Mission::MissionPlan& mi
           else
           {
             RCLCPP_INFO(logger_, "Mission #%u waypoints upload failed after %.2fs: %s", mission_id_, dur_s, to_string(result).c_str());
-            if (attempts_ < max_attempts_)
+            if (attempts_ < max_upload_attempts_)
             {
               // check if the state is still uploading - if not, the upload was probably cancelled in the meantime
               if (state_ == state_t::uploading)
@@ -149,6 +150,7 @@ bool MissionManager::start_mission_upload(const mavsdk::Mission::MissionPlan& mi
             else
             {
               state_ = state_t::finished;
+              attempts_ = 0;
               RCLCPP_WARN_STREAM(logger_, "Mission #" << mission_id_ << " upload failed too many times. Scrapping mission.");
             }
           }
@@ -157,7 +159,7 @@ bool MissionManager::start_mission_upload(const mavsdk::Mission::MissionPlan& mi
     );
 
   state_ = state_t::uploading;
-  RCLCPP_INFO(logger_, "Started mission #%u upload (attempt %d/%d).", mission_id_, attempts_+1, max_attempts_+1);
+  RCLCPP_INFO(logger_, "Started mission #%u upload (attempt %d/%d).", mission_id_, attempts_+1, max_upload_attempts_+1);
   return true;
 }
 //}
@@ -168,6 +170,9 @@ bool MissionManager::start_mission()
   plan_size_ = 0;
   current_waypoint_ = 0;
   attempt_start_time_ = clock_->now();
+  if (attempts_ == 0)
+    first_mission_start_attempt_time_ = attempt_start_time_;
+
   mission_->start_mission_async([this](mavsdk::Mission::Result result)
       {
         // spawn a new thread to avoid blocking in the MavSDK
@@ -177,6 +182,7 @@ bool MissionManager::start_mission()
         {
           std::scoped_lock lck(mutex);
           const double dur_s = (clock_->now() - attempt_start_time_).seconds();
+          const double since_first_start_dur_s = (clock_->now() - first_mission_start_attempt_time_).seconds();
           // if mission start succeeded, all is good and well in the world
           if (result == mavsdk::Mission::Result::Success)
           {
@@ -188,7 +194,7 @@ bool MissionManager::start_mission()
           else
           {
             RCLCPP_ERROR(logger_, "Calling mission #%u start rejected after %.2fs: %s", mission_id_, dur_s, to_string(result).c_str());
-            if (attempts_ < max_attempts_)
+            if (since_first_start_dur_s < start_attempts_interval_)
             {
               // check if the state is still starting - if not, the mission was probably cancelled in the meantime
               if (state_ == state_t::starting)
@@ -200,7 +206,8 @@ bool MissionManager::start_mission()
             else
             {
               state_ = state_t::finished;
-              RCLCPP_WARN_STREAM(logger_, "Calling mission #" << mission_id_ << " start failed too many times. Scrapping mission.");
+              attempts_ = 0;
+              RCLCPP_WARN_STREAM(logger_, "Calling mission #" << mission_id_ << " start failed in given "<< start_attempts_interval_ << " interval. Scrapping mission.");
             }
           }
         }).detach();
@@ -208,7 +215,7 @@ bool MissionManager::start_mission()
     );
 
   state_ = state_t::starting;
-  RCLCPP_INFO(logger_, "Called mission #%u start (attempt %d/%d).", mission_id_, attempts_+1, max_attempts_+1);
+  RCLCPP_INFO(logger_, "Called mission #%u start (attempt %d).", mission_id_, attempts_+1);
   return true;
 }
 //}
