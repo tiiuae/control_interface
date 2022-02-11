@@ -44,6 +44,7 @@ bool MissionManager::new_mission(const mavsdk::Mission::MissionPlan& mission_pla
   }
 
   mission_id_ = id;
+  attempts_ = 0;
   return start_mission_upload(mission_plan);
 }
 //}
@@ -187,7 +188,6 @@ bool MissionManager::start_mission()
           if (result == mavsdk::Mission::Result::Success)
           {
             RCLCPP_INFO(logger_, "Mission #%u successfully started after %.2fs.", mission_id_, dur_s);
-            attempts_ = 0;
             state_ = state_t::in_progress;
           }
           // otherwise, check if we should retry or give up
