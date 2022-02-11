@@ -251,8 +251,8 @@ private:
   float  altitude_acceptance_radius_        = 0.2f;
   double target_velocity_                   = 1.0;
   int    takeoff_position_samples_          = 20;
-  int    mission_upload_attempts_threshold_ = 5;
-  double mission_start_attempts_interval_   = 0.3;
+  int    mission_max_upload_attempts_       = 5;
+  rclcpp::Duration mission_starting_timeout_ = rclcpp::Duration::from_seconds(0.3);
 
   // action server
   rclcpp_action::Server<ControlInterfaceAction>::SharedPtr action_server_;
@@ -429,8 +429,8 @@ ControlInterface::ControlInterface(rclcpp::NodeOptions options) : Node("control_
   loaded_successfully &= parse_param("mavsdk.logging_print_level", mavsdk_logging_print_level_, *this);
   loaded_successfully &= parse_param("mavsdk.logging_filename", mavsdk_logging_filename_, *this);
   loaded_successfully &= parse_param("mavsdk.heading_offset_correction", heading_offset_correction_, *this);
-  loaded_successfully &= parse_param("mavsdk.mission_upload_attempts_threshold", mission_upload_attempts_threshold_, *this);
-  loaded_successfully &= parse_param("mavsdk.mission_start_attempts_interval", mission_start_attempts_interval_, *this);
+  loaded_successfully &= parse_param("mavsdk.mission_max_upload_attempts", mission_max_upload_attempts_, *this);
+  loaded_successfully &= parse_param("mavsdk.mission_starting_timeout", mission_starting_timeout_, *this);
 
   if (!loaded_successfully)
   {
@@ -1892,7 +1892,7 @@ bool ControlInterface::connectPixHawk()
     action_  = std::make_shared<mavsdk::Action>(system_);
     param_   = std::make_shared<mavsdk::Param>(system_);
     telem_   = std::make_shared<mavsdk::Telemetry>(system_);
-    mission_mgr_ = std::make_unique<MissionManager>(mission_upload_attempts_threshold_, mission_start_attempts_interval_, system_, get_logger(), get_clock());
+    mission_mgr_ = std::make_unique<MissionManager>(mission_max_upload_attempts_, mission_starting_timeout_, system_, get_logger(), get_clock());
 
     // set the initialized flag to true so that px4 parameters may be initialized
     system_connected_ = true;

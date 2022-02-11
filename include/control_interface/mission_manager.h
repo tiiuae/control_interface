@@ -23,7 +23,7 @@ namespace control_interface
   {
   public:
     MissionManager();
-    MissionManager(const unsigned max_upload_attempts, const double start_attempts_interval, std::shared_ptr<mavsdk::System> system, const rclcpp::Logger& logger, rclcpp::Clock::SharedPtr clock);
+    MissionManager(const unsigned max_upload_attempts, const rclcpp::Duration& starting_timeout, std::shared_ptr<mavsdk::System> system, const rclcpp::Logger& logger, rclcpp::Clock::SharedPtr clock);
 
     // doesn't block (the uploading & starting of the mission is asynchronous)
     bool new_mission(const mavsdk::Mission::MissionPlan& mission_plan, const uint32_t id, std::string& fail_reason_out);
@@ -47,16 +47,21 @@ namespace control_interface
     // the MavSDK mission interface
     std::unique_ptr<mavsdk::Mission> mission_;
 
-    // current number of retry attempts (uploads and mission starts)
-    unsigned attempts_ = 0;
-    // maximal number of retry attempts (parameter)
+    // | ------------- mission upload retry variables ------------- |
+    // maximal number of upload retry attempts (parameter)
     unsigned max_upload_attempts_;
-    // interval in which the start of the mission is retried (parameter)
-    double start_attempts_interval_;
+    // current number of upload retry attempts
+    unsigned upload_attempts_ = 0;
     // time of the last retry attempt
-    rclcpp::Time attempt_start_time_;
-    // time of the first mission start attempt
-    rclcpp::Time first_mission_start_attempt_time_;
+    rclcpp::Time last_upload_attempt_time_;
+
+    // | -------------- mission start retry variables ------------- |
+    // mission start retries will timeout after this duration (parameter)
+    rclcpp::Duration starting_timeout_;
+    // time of the first mission start attempt of the current mission
+    rclcpp::Time first_starting_attempt_time_;
+    // only used to keep track of the number of retries for printing
+    unsigned starting_attempts_ = 0;
 
     // for printing
     rclcpp::Logger logger_;
@@ -67,7 +72,15 @@ namespace control_interface
     int32_t plan_size_ = 0;
     int32_t current_waypoint_ = 0;
 
+    // Mission upload will be retried up to a certain number of attempts.
+    // This is because mission upload can take a non-negligible time (tens of ms)
+    // and may fail a few times before being successful.
     bool start_mission_upload(const mavsdk::Mission::MissionPlan& mission_plan);
+    // Mission start will be retried repeatedly until a certain timeout duration
+    // elapses. This is because mission start can be declined by PixHawk if it is
+    // busy (processing the uploaded mission?). Typically, PixHawk is only busy
+    // for a short time, but the mission starting is fast, so repeating it only
+    // a certain number of times could fail before PixHawk is no longer busy.
     bool start_mission();
 
     void progress_callback(const mavsdk::Mission::MissionProgress& progress);
