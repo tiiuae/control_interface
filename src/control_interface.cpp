@@ -1448,7 +1448,7 @@ void ControlInterface::update_vehicle_state(const state_action_t state_action)
     case vehicle_state_t::landing:
       state_vehicle_landing(); break;
     default:
-      assert(false);
+      assert(false && "Invalid state, this should never happen!");
       RCLCPP_ERROR(get_logger(), "Invalid vehicle state, this should never happen!");
       return;
   }
