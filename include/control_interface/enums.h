@@ -1,5 +1,4 @@
-#ifndef ENUMS_H
-#define ENUMS_H
+#pragma once
 
 #include <cassert>
 #include <fog_msgs/msg/control_interface_vehicle_state.hpp>
@@ -127,5 +126,3 @@ namespace control_interface
   
   //}
 }
-
-#endif // ENUMS_H
