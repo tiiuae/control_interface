@@ -575,7 +575,10 @@ ControlInterface::ControlInterface(rclcpp::NodeOptions options) : Node("control_
       "control_interface",
       std::bind(&ControlInterface::actionServerHandleGoal, this, _1, _2),
       std::bind(&ControlInterface::actionServerHandleCancel, this, _1),
-      std::bind(&ControlInterface::actionServerHandleAccepted, this, _1));
+      std::bind(&ControlInterface::actionServerHandleAccepted, this, _1),
+      rcl_action_server_get_default_options(),
+      new_cbk_grp()
+      );
 
   RCLCPP_INFO(get_logger(), "ControlInterface constructor complete.");
 }
