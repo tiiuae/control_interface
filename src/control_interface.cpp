@@ -256,7 +256,8 @@ private:
 
   // action server
   rclcpp_action::Server<ControlInterfaceAction>::SharedPtr action_server_;
-  std::shared_ptr<GoalHandleControlInterfaceAction> action_server_goal_handle_;
+  std::shared_ptr<GoalHandleControlInterfaceAction>        action_server_goal_handle_ = nullptr;
+  std::recursive_mutex                                     action_server_mutex_;
 
   // publishers
   rclcpp::Publisher<geometry_msgs::msg::PoseArray>::SharedPtr               waypoint_publisher_;
@@ -332,7 +333,7 @@ private:
   // parameter callback
   rcl_interfaces::msg::SetParametersResult parametersCallback(const std::vector<rclcpp::Parameter> &parameters);
 
-  void publishDiagnostics();
+  void publishDiagnosticsAndFeedback();
 
   bool connectPixHawk();
   bool startTakeoff(std::string& fail_reason_out);
@@ -365,6 +366,8 @@ private:
   void state_vehicle_landing();
 
   bool gotoAfterTakeoff(std::string& fail_reason_out);
+
+  void onMissionStateUpdate(void);
 
   template<typename T>
   bool startNewMission(const T& path, const uint32_t id, const bool is_global, std::string& fail_reason_out);
@@ -762,8 +765,39 @@ rclcpp_action::GoalResponse ControlInterface::actionServerHandleGoal(
     const rclcpp_action::GoalUUID & uuid,
     std::shared_ptr<const ControlInterfaceAction::Goal> goal)
 {
-  RCLCPP_INFO(this->get_logger(), "Received path request with %d wayponts", int(goal->path.poses.size()));
   (void)uuid;
+  std::scoped_lock lock(action_server_mutex_);
+
+  const auto state = get_mutexed(state_mutex_, vehicle_state_);
+
+  RCLCPP_INFO(this->get_logger(), "ActionServer: Received goal request with %d wayponts", int(goal->path.poses.size()));
+
+  // check that we are in a state in which we can add waypoints to the buffer
+  if (state != vehicle_state_t::autonomous_flight)
+  {
+    RCLCPP_ERROR(this->get_logger(), "Goal rejected: Drone is not flying, current state is: %s", vehicle_state_str_.c_str());
+    return rclcpp_action::GoalResponse::REJECT;
+  }
+
+  // this should never happen if we're in the autonomous_flight state
+  if (!mission_mgr_)
+  {
+    RCLCPP_ERROR(this->get_logger(), "Goal rejected: Mission planner not initialized!");
+    return rclcpp_action::GoalResponse::REJECT;
+  }
+
+
+  if (action_server_goal_handle_)
+  {
+    if(action_server_goal_handle_->is_active())
+    {
+      RCLCPP_WARN(this->get_logger(), "Previous goal is not terminated yet. Calling previous goal ABORTING.");
+      auto result = std::make_shared<ControlInterfaceAction::Result>();
+      result->message = "Goal ABORTED: New goal received";
+      action_server_goal_handle_->abort(result);
+    }
+  }
+
   return rclcpp_action::GoalResponse::ACCEPT_AND_EXECUTE;
 }
 //}
@@ -774,9 +808,22 @@ rclcpp_action::GoalResponse ControlInterface::actionServerHandleGoal(
 rclcpp_action::CancelResponse ControlInterface::actionServerHandleCancel(
     const std::shared_ptr<GoalHandleControlInterfaceAction> goal_handle)
 {
-  RCLCPP_INFO(this->get_logger(), "Received request to cancel goal");
-  (void)goal_handle;
-  return rclcpp_action::CancelResponse::ACCEPT;
+  std::scoped_lock lock(action_server_mutex_);
+
+  RCLCPP_INFO(this->get_logger(), "ActionServer: Received request to cancel goal");
+
+  // check if we received cancel of the goal that we are currently executing
+  if (action_server_goal_handle_)
+  {
+    if (action_server_goal_handle_->get_goal_id() == goal_handle->get_goal_id() )
+    {
+      return rclcpp_action::CancelResponse::ACCEPT;
+    } 
+  }
+
+  RCLCPP_WARN(this->get_logger(), "The target action is not active. CANCEL rejected.");
+  return rclcpp_action::CancelResponse::REJECT;
+ 
 }
 //}
 
@@ -785,6 +832,21 @@ rclcpp_action::CancelResponse ControlInterface::actionServerHandleCancel(
 // callback must be non-blocking
 void ControlInterface::actionServerHandleAccepted(const std::shared_ptr<GoalHandleControlInterfaceAction> goal_handle)
 {
+
+  std::scoped_lock lock(action_server_mutex_);
+
+  // attempt to start the new mission
+  std::string reason;
+  if (!startNewMission(goal_handle->get_goal()->path.poses, 5, false, reason))
+  {
+    auto result = std::make_shared<ControlInterfaceAction::Result>();
+    result->message = "Goal ABORTED: " + std::to_string(goal_handle->get_goal()->path.poses.size()) + " new waypoints not set: " + reason;
+    goal_handle->abort(result);
+    RCLCPP_ERROR_STREAM(get_logger(), result->message);
+    return;
+  }
+
+  RCLCPP_INFO_STREAM(get_logger(), "ActionServer: " + std::to_string(goal_handle->get_goal()->path.poses.size()) + " new waypoints set");
   action_server_goal_handle_= goal_handle;
 }
 //}
@@ -1397,10 +1459,10 @@ bool ControlInterface::getPx4ParamFloatCallback([[maybe_unused]] const std::shar
 void ControlInterface::diagnosticsRoutine()
 {
   scope_timer tim(print_callback_durations_, "diagnosticsRoutine", get_logger(), print_callback_throttle_, print_callback_min_dur_);
-  std::scoped_lock lock(state_mutex_, telem_mutex_);
+  std::scoped_lock lock(state_mutex_, telem_mutex_, action_server_mutex_);
 
   // publish some diags
-  publishDiagnostics();
+  publishDiagnosticsAndFeedback();
 }
 //}
 
@@ -1408,12 +1470,12 @@ void ControlInterface::diagnosticsRoutine()
 void ControlInterface::vehicleStateRoutine()
 {
   scope_timer tim(print_callback_durations_, "vehicleStateRoutine", get_logger(), print_callback_throttle_, print_callback_min_dur_);
-  std::scoped_lock lck(state_mutex_, telem_mutex_, pose_mutex_);
+  std::scoped_lock lck(state_mutex_, telem_mutex_, pose_mutex_, action_server_mutex_);
 
   const auto prev_state = vehicle_state_;
   update_vehicle_state();
   if (prev_state != vehicle_state_)
-    publishDiagnostics();
+    publishDiagnosticsAndFeedback();
 }
 //}
 
@@ -1893,6 +1955,8 @@ bool ControlInterface::connectPixHawk()
     param_   = std::make_shared<mavsdk::Param>(system_);
     telem_   = std::make_shared<mavsdk::Telemetry>(system_);
     mission_mgr_ = std::make_unique<MissionManager>(mission_max_upload_attempts_, mission_starting_timeout_, system_, get_logger(), get_clock());
+    std::function<void()> f_state_update_function = std::bind(&ControlInterface::onMissionStateUpdate, this);
+    mission_mgr_->set_state_update_function(f_state_update_function);
 
     // set the initialized flag to true so that px4 parameters may be initialized
     system_connected_ = true;
@@ -2018,13 +2082,36 @@ bool ControlInterface::startLanding(std::string& fail_reason_out)
 }
 //}
 
+/* onMissionStateUpdate //{ */
+void ControlInterface::onMissionStateUpdate()
+{
+  std::scoped_lock lock(state_mutex_, telem_mutex_, action_server_mutex_);
+  
+  if (action_server_goal_handle_)
+  {
+    if (action_server_goal_handle_->is_active())
+    {
+      if (mission_mgr_->state() == mission_state_t::finished){
+        auto result = std::make_shared<ControlInterfaceAction::Result>();
+        result->message = "Mission finished";
+        action_server_goal_handle_->succeed(result);
+      }
+    }
+  }
+
+  // publish some diags
+  publishDiagnosticsAndFeedback();
+}
+//}
+
 // | ---------- Diagnostics and debug helper methods ---------- |
 
-/* publishDiagnostics //{ */
+/* publishDiagnosticsAndFeedback //{ */
 // the following mutexes have to be locked by the calling function:
 // state_mutex_
 // telem_mutex_
-void ControlInterface::publishDiagnostics()
+// action_server_mutex_
+void ControlInterface::publishDiagnosticsAndFeedback()
 {
   const bool armed = telem_ != nullptr && telem_->armed();
 
@@ -2046,6 +2133,17 @@ void ControlInterface::publishDiagnostics()
   msg.getting_control_mode = getting_control_mode_;
 
   diagnostics_publisher_->publish(msg);
+
+  if (action_server_goal_handle_)
+  {
+    if (action_server_goal_handle_->is_active())
+    {
+      auto feedback = std::make_shared<ControlInterfaceAction::Feedback>();
+      feedback->mission_progress = msg.mission_progress;
+      feedback->mission_state = msg.mission_state;
+      action_server_goal_handle_->publish_feedback(feedback);
+    }
+  }
 }
 //}
 

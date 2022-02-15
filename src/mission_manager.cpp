@@ -60,7 +60,7 @@ bool MissionManager::stop_mission(std::string& fail_reason_out)
   plan_size_ = 0;
   current_waypoint_ = 0;
   // set the state to finished to avoid any reupload attempts etc.
-  state_ = state_t::finished;
+  update_state(state_t::finished);
 
   // cancel any current mission upload to pixhawk if applicable
   if (orig_state == state_t::uploading)
@@ -114,7 +114,7 @@ int32_t MissionManager::mission_waypoint()
 
 // | --------------- private methods definitions -------------- |
 
-/* startMissionUpload //{ */
+/* start_mission_upload //{ */
 bool MissionManager::start_mission_upload(const mavsdk::Mission::MissionPlan& mission_plan)
 {
   last_upload_attempt_time_ = clock_->now();
@@ -150,7 +150,8 @@ bool MissionManager::start_mission_upload(const mavsdk::Mission::MissionPlan& mi
             }
             else
             {
-              state_ = state_t::finished;
+              update_state(state_t::finished);
+
               RCLCPP_WARN_STREAM(logger_, "Mission #" << mission_id_ << " upload failed too many times. Scrapping mission.");
             }
           }
@@ -158,13 +159,13 @@ bool MissionManager::start_mission_upload(const mavsdk::Mission::MissionPlan& mi
       }
     );
 
-  state_ = state_t::uploading;
+  update_state(state_t::uploading);
   RCLCPP_INFO(logger_, "Started mission #%u upload (attempt %d/%d).", mission_id_, upload_attempts_+1, max_upload_attempts_+1);
   return true;
 }
 //}
 
-/* startMission //{ */
+/* start_mission //{ */
 bool MissionManager::start_mission()
 {
   plan_size_ = 0;
@@ -183,7 +184,7 @@ bool MissionManager::start_mission()
           if (result == mavsdk::Mission::Result::Success)
           {
             RCLCPP_INFO(logger_, "Mission #%u successfully started after %.2fs.", mission_id_, starting_dur.seconds());
-            state_ = state_t::in_progress;
+            update_state(state_t::in_progress);
           }
           // otherwise, check if we should retry or give up
           else
@@ -202,7 +203,7 @@ bool MissionManager::start_mission()
             }
             else
             {
-              state_ = state_t::finished;
+              update_state(state_t::finished);
               RCLCPP_ERROR_STREAM(logger_, "Calling mission #" << mission_id_ << " start timed out (took " << starting_dur.seconds() << "s/" << starting_timeout_.seconds() << "s). Scrapping mission.");
             }
           }
@@ -210,13 +211,13 @@ bool MissionManager::start_mission()
       }
     );
 
-  state_ = state_t::starting;
+  update_state(state_t::starting);
   RCLCPP_INFO_STREAM(logger_, "Called mission #" << mission_id_ << " start (attempt " << starting_attempts_+1 << ").");
   return true;
 }
 //}
 
-/* progressCallback //{ */
+/* progress_callback //{ */
 void MissionManager::progress_callback(const mavsdk::Mission::MissionProgress& progress)
 {
   // spawn a new thread to avoid blocking in the MavSDK
@@ -244,8 +245,29 @@ void MissionManager::progress_callback(const mavsdk::Mission::MissionProgress& p
     if (plan_size_ == current_waypoint_)
     {
       RCLCPP_INFO_STREAM(logger_, "Mission #" << mission_id_ << " finished.");
-      state_ = state_t::finished;
+      update_state(state_t::finished);
     }
   }).detach();
+}
+//}
+
+/* set_state_update_function //{ */
+void MissionManager::set_state_update_function(StateUpdateFunction& func){
+  state_update_callback_function_ = func;
+}
+//}
+
+/* update_state //{ */
+void MissionManager::update_state(const state_t new_state){
+  std::scoped_lock lck(mutex);
+  if (state_ != new_state)
+  {
+    /* RCLCPP_INFO_STREAM(logger_, "new mission state: " << to_string(new_state)); */
+    state_ = new_state;
+    if (state_update_callback_function_)
+    {
+      state_update_callback_function_();
+    }
+  }
 }
 //}

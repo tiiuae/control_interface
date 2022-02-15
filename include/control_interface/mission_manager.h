@@ -23,7 +23,8 @@ namespace control_interface
   {
   public:
     MissionManager();
-    MissionManager(const unsigned max_upload_attempts, const rclcpp::Duration& starting_timeout, std::shared_ptr<mavsdk::System> system, const rclcpp::Logger& logger, rclcpp::Clock::SharedPtr clock);
+    MissionManager(const unsigned max_upload_attempts, const rclcpp::Duration& starting_timeout, 
+                   std::shared_ptr<mavsdk::System> system, const rclcpp::Logger& logger, rclcpp::Clock::SharedPtr clock);
 
     // doesn't block (the uploading & starting of the mission is asynchronous)
     bool new_mission(const mavsdk::Mission::MissionPlan& mission_plan, const uint32_t id, std::string& fail_reason_out);
@@ -37,8 +38,14 @@ namespace control_interface
 
     std::recursive_mutex mutex;
 
+    // This function is called on update of mission state
+    using StateUpdateFunction = std::function<void()>;
+    void set_state_update_function(StateUpdateFunction& func);
+
   private:
     using state_t = mission_state_t;
+
+    StateUpdateFunction state_update_callback_function_{nullptr};
 
     // state of the current mission
     state_t state_ = state_t::finished;
@@ -84,6 +91,8 @@ namespace control_interface
     bool start_mission();
 
     void progress_callback(const mavsdk::Mission::MissionProgress& progress);
+
+    void update_state(const state_t new_state);
   };
 
 }
