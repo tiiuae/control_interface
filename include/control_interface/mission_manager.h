@@ -39,13 +39,13 @@ namespace control_interface
     std::recursive_mutex mutex;
 
     // This function is called on update of mission state
-    using StateUpdateFunction = std::function<void()>;
-    void set_state_update_function(StateUpdateFunction& func);
+    using state_update_cbk_t = std::function<void()>;
+    void subscribe_state_update(const state_update_cbk_t& func);
 
   private:
     using state_t = mission_state_t;
 
-    StateUpdateFunction state_update_callback_function_{nullptr};
+    state_update_cbk_t state_update_cbk_ = nullptr;
 
     // state of the current mission
     state_t state_ = state_t::finished;

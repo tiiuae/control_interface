@@ -150,17 +150,16 @@ bool MissionManager::start_mission_upload(const mavsdk::Mission::MissionPlan& mi
             }
             else
             {
-              update_state(state_t::finished);
-
               RCLCPP_WARN_STREAM(logger_, "Mission #" << mission_id_ << " upload failed too many times. Scrapping mission.");
+              update_state(state_t::finished);
             }
           }
         }).detach();
       }
     );
 
-  update_state(state_t::uploading);
   RCLCPP_INFO(logger_, "Started mission #%u upload (attempt %d/%d).", mission_id_, upload_attempts_+1, max_upload_attempts_+1);
+  update_state(state_t::uploading);
   return true;
 }
 //}
@@ -203,16 +202,16 @@ bool MissionManager::start_mission()
             }
             else
             {
-              update_state(state_t::finished);
               RCLCPP_ERROR_STREAM(logger_, "Calling mission #" << mission_id_ << " start timed out (took " << starting_dur.seconds() << "s/" << starting_timeout_.seconds() << "s). Scrapping mission.");
+              update_state(state_t::finished);
             }
           }
         }).detach();
       }
     );
 
-  update_state(state_t::starting);
   RCLCPP_INFO_STREAM(logger_, "Called mission #" << mission_id_ << " start (attempt " << starting_attempts_+1 << ").");
+  update_state(state_t::starting);
   return true;
 }
 //}
@@ -252,22 +251,21 @@ void MissionManager::progress_callback(const mavsdk::Mission::MissionProgress& p
 //}
 
 /* set_state_update_function //{ */
-void MissionManager::set_state_update_function(StateUpdateFunction& func){
-  state_update_callback_function_ = func;
+void MissionManager::subscribe_state_update(const state_update_cbk_t& func)
+{
+  state_update_cbk_ = func;
 }
 //}
 
 /* update_state //{ */
-void MissionManager::update_state(const state_t new_state){
-  std::scoped_lock lck(mutex);
+void MissionManager::update_state(const state_t new_state)
+{
   if (state_ != new_state)
   {
     /* RCLCPP_INFO_STREAM(logger_, "new mission state: " << to_string(new_state)); */
     state_ = new_state;
-    if (state_update_callback_function_)
-    {
-      state_update_callback_function_();
-    }
+    if (state_update_cbk_)
+      state_update_cbk_();
   }
 }
 //}
