@@ -24,19 +24,20 @@ namespace control_interface
   public:
     MissionManager();
     MissionManager(const unsigned max_upload_attempts, const rclcpp::Duration& starting_timeout, 
-                   std::shared_ptr<mavsdk::System> system, const rclcpp::Logger& logger, rclcpp::Clock::SharedPtr clock);
+                   std::shared_ptr<mavsdk::System> system, const rclcpp::Logger& logger, rclcpp::Clock::SharedPtr clock,
+                   std::recursive_mutex& mutex);
 
     // doesn't block (the uploading & starting of the mission is asynchronous)
     bool new_mission(const mavsdk::Mission::MissionPlan& mission_plan, const uint32_t id, std::string& fail_reason_out);
     // blocks until either the mission is stopped or it fails
     bool stop_mission(std::string& fail_reason_out);
+    // calls stop_mission() in a new thread to avoid blocking and then calls callback with the result and reason
+    void stop_mission_async(const std::function<void(bool, const std::string&)> callback);
     // some getters
     mission_state_t state();
     uint32_t mission_id();
     int32_t mission_size();
     int32_t mission_waypoint();
-
-    std::recursive_mutex mutex;
 
     // This function is called on update of mission state
     using state_update_cbk_t = std::function<void()>;
@@ -44,6 +45,8 @@ namespace control_interface
 
   private:
     using state_t = mission_state_t;
+
+    std::recursive_mutex& mutex_;
 
     state_update_cbk_t state_update_cbk_ = nullptr;
 

@@ -199,6 +199,7 @@ private:
 
   std::atomic_bool manual_override_ = false;
 
+  std::recursive_mutex mission_mgr_mutex_;
   std::unique_ptr<MissionManager> mission_mgr_ = nullptr;
 
   // the mavsdk::Action is used for requesting actions such as takeoff and landing
@@ -606,6 +607,8 @@ void ControlInterface::controlModeCallback(const px4_msgs::msg::VehicleControlMo
   {
     RCLCPP_INFO(get_logger(), "Control flag switched to manual. Stopping and clearing mission");
     manual_override_ = true;
+
+    std::scoped_lock lck(mission_mgr_mutex_);
     std::string fail_reason = "mission planner not initialized";
     if (!mission_mgr_ || !mission_mgr_->stop_mission(fail_reason))
       RCLCPP_ERROR_STREAM(get_logger(), "Previous mission cannot be stopped (" << fail_reason << "). Manual landing required");
@@ -771,7 +774,7 @@ rclcpp_action::GoalResponse ControlInterface::actionServerHandleGoal(
 {
   // get_mutexed should come first to avoid deadlocks (it unlocks its mutex on return)
   const auto state = get_mutexed(state_mutex_, vehicle_state_);
-  std::scoped_lock lock(action_server_mutex_);
+  std::scoped_lock lock(action_server_mutex_, mission_mgr_mutex_);
 
   RCLCPP_INFO_STREAM(this->get_logger(), "ActionServer: Received goal request " << rclcpp_action::to_string(uuid) << " with " << goal->path.poses.size() << " waypoints.");
 
@@ -809,7 +812,7 @@ rclcpp_action::GoalResponse ControlInterface::actionServerHandleGoal(
 // callback must be non-blocking
 rclcpp_action::CancelResponse ControlInterface::actionServerHandleCancel(const std::shared_ptr<GoalHandleControlInterfaceAction> goal_handle)
 {
-  std::scoped_lock lock(action_server_mutex_);
+  std::scoped_lock lock(action_server_mutex_, mission_mgr_mutex_);
 
   RCLCPP_INFO_STREAM(this->get_logger(), "ActionServer: Received request to cancel goal " << rclcpp_action::to_string(goal_handle->get_goal_id()));
 
@@ -827,6 +830,17 @@ rclcpp_action::CancelResponse ControlInterface::actionServerHandleCancel(const s
   } 
 
   RCLCPP_WARN_STREAM(this->get_logger(), "CANCEL of goal " << rclcpp_action::to_string(goal_handle->get_goal_id()) << "accepted.");
+  // stop the mission asynchronously to avoid blocking
+  mission_mgr_->stop_mission_async([this, &goal_handle](const bool success, const std::string& reason)
+      {
+        std::scoped_lock lock(action_server_mutex_);
+        fog_msgs::action::ControlInterfaceAction::Result::SharedPtr result = std::make_shared<fog_msgs::action::ControlInterfaceAction::Result>();
+        if (success)
+          result->message = "Goal " + rclcpp_action::to_string(goal_handle->get_goal_id()) + " cancelled.";
+        else
+          result->message = "Failed to cancel goal: " + reason;
+        goal_handle->canceled(result);
+      });
   return rclcpp_action::CancelResponse::ACCEPT;
 }
 //}
@@ -892,6 +906,7 @@ bool ControlInterface::landCallback([[maybe_unused]] const std::shared_ptr<std_s
                                     std::shared_ptr<std_srvs::srv::Trigger::Response>                       response)
 {
   scope_timer tim(print_callback_durations_, "landCallback", get_logger(), print_callback_throttle_, print_callback_min_dur_);
+  std::scoped_lock lck(state_mutex_, telem_mutex_, action_mutex_, mission_mgr_mutex_);
 
   std::string fail_reason;
   if (mission_mgr_ && !mission_mgr_->stop_mission(fail_reason))
@@ -910,7 +925,6 @@ bool ControlInterface::landCallback([[maybe_unused]] const std::shared_ptr<std_s
 
   response->success = true;
   response->message = "Landing";
-  std::scoped_lock lck(state_mutex_, telem_mutex_);
   update_vehicle_state(state_action_t::landing_started);
   return true;
 }
@@ -1015,6 +1029,8 @@ bool ControlInterface::startNewMission(const T& path, const uint32_t id, const b
     return false;
   }
 
+  // ensure that nobody uploads a new mission while after the current one is cancelled and before the new one is started
+  std::scoped_lock lck(mission_mgr_mutex_);
   // this should never happen if we're in the autonomous_flight state
   if (!mission_mgr_)
   {
@@ -1027,9 +1043,6 @@ bool ControlInterface::startNewMission(const T& path, const uint32_t id, const b
   mission_plan.mission_items.reserve(path.size());
   for (const auto& pose : path)
     mission_plan.mission_items.push_back(to_mission_item(pose, is_global));
-
-  // ensure that nobody uploads a new mission while after the current one is cancelled and before the new one is started
-  std::scoped_lock lck(mission_mgr_->mutex);
 
   // stop the current mission (if any)
   std::string fail_reason;
@@ -1462,7 +1475,7 @@ bool ControlInterface::getPx4ParamFloatCallback([[maybe_unused]] const std::shar
 void ControlInterface::diagnosticsRoutine()
 {
   scope_timer tim(print_callback_durations_, "diagnosticsRoutine", get_logger(), print_callback_throttle_, print_callback_min_dur_);
-  std::scoped_lock lock(state_mutex_, telem_mutex_, action_server_mutex_);
+  std::scoped_lock lock(state_mutex_, telem_mutex_, action_server_mutex_, mission_mgr_mutex_);
 
   // publish some diags
   publishDiagnosticsAndFeedback();
@@ -1473,7 +1486,7 @@ void ControlInterface::diagnosticsRoutine()
 void ControlInterface::vehicleStateRoutine()
 {
   scope_timer tim(print_callback_durations_, "vehicleStateRoutine", get_logger(), print_callback_throttle_, print_callback_min_dur_);
-  std::scoped_lock lck(state_mutex_, telem_mutex_, pose_mutex_, action_server_mutex_);
+  std::scoped_lock lck(state_mutex_, telem_mutex_, pose_mutex_, action_server_mutex_, mission_mgr_mutex_);
 
   const auto prev_state = vehicle_state_;
   update_vehicle_state();
@@ -1489,6 +1502,7 @@ void ControlInterface::vehicleStateRoutine()
 // state_mutex_
 // telem_mutex_
 // pose_mutex_
+// mission_mgr_mutex_
 void ControlInterface::update_vehicle_state(const state_action_t state_action)
 {
   const bool takeoff_started = state_action == state_action_t::takeoff_started;
@@ -1524,6 +1538,7 @@ void ControlInterface::update_vehicle_state(const state_action_t state_action)
 // the following mutexes have to be locked by the calling function:
 // state_mutex_
 // telem_mutex_
+// mission_mgr_mutex_
 void ControlInterface::state_vehicle_not_connected()
 {
   RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 1000, "Vehicle state: MavSDK system not connected.");
@@ -1596,6 +1611,7 @@ void ControlInterface::state_vehicle_not_ready()
 // state_mutex_
 // telem_mutex_
 // pose_mutex_
+// mission_mgr_mutex_
 void ControlInterface::state_vehicle_arming_ready()
 {
   RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 1000, "Vehicle state: ready for arming.");
@@ -1646,6 +1662,7 @@ void ControlInterface::state_vehicle_arming_ready()
 // state_mutex_
 // telem_mutex_
 // pose_mutex_
+// mission_mgr_mutex_
 void ControlInterface::state_vehicle_takeoff_ready(const bool takeoff_started)
 {
   RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 1000, "Vehicle state: ready for takeoff.");
@@ -1695,6 +1712,7 @@ void ControlInterface::state_vehicle_takeoff_ready(const bool takeoff_started)
 // state_mutex_
 // telem_mutex_
 // pose_mutex_
+// mission_mgr_mutex_
 void ControlInterface::state_vehicle_taking_off()
 {
   RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 1000, "Vehicle state: taking off.");
@@ -1746,6 +1764,7 @@ void ControlInterface::state_vehicle_taking_off()
 // state_mutex_
 // telem_mutex_
 // pose_mutex_
+// mission_mgr_mutex_
 void ControlInterface::state_vehicle_autonomous_flight(const bool landing_started)
 {
   RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 1000, "Vehicle state: flying autonomously.");
@@ -1797,6 +1816,7 @@ void ControlInterface::state_vehicle_autonomous_flight(const bool landing_starte
 // state_mutex_
 // telem_mutex_
 // pose_mutex_
+// mission_mgr_mutex_
 void ControlInterface::state_vehicle_manual_flight(const bool landing_started)
 {
   RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 1000, "Vehicle state: flying manually.");
@@ -1843,6 +1863,7 @@ void ControlInterface::state_vehicle_manual_flight(const bool landing_started)
 // state_mutex_
 // telem_mutex_
 // pose_mutex_
+// mission_mgr_mutex_
 void ControlInterface::state_vehicle_landing()
 {
   RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 1000, "Vehicle state: landing.");
@@ -1889,6 +1910,7 @@ void ControlInterface::state_vehicle_landing()
 // helper method to send the vehicle to the after-takeoff position
 // the following mutexes have to be locked by the calling function:
 // pose_mutex_
+// mission_mgr_mutex_
 bool ControlInterface::gotoAfterTakeoff(std::string& fail_reason_out)
 {
   if (!mission_mgr_)
@@ -1937,6 +1959,7 @@ bool ControlInterface::gotoAfterTakeoff(std::string& fail_reason_out)
 // action_mutex_
 // param_mutex_
 // telem_mutex_
+// mission_mgr_mutex_
 bool ControlInterface::connectPixHawk()
 {
   if (!system_connected_)
@@ -1957,7 +1980,7 @@ bool ControlInterface::connectPixHawk()
     action_  = std::make_shared<mavsdk::Action>(system_);
     param_   = std::make_shared<mavsdk::Param>(system_);
     telem_   = std::make_shared<mavsdk::Telemetry>(system_);
-    mission_mgr_ = std::make_unique<MissionManager>(mission_max_upload_attempts_, mission_starting_timeout_, system_, get_logger(), get_clock());
+    mission_mgr_ = std::make_unique<MissionManager>(mission_max_upload_attempts_, mission_starting_timeout_, system_, get_logger(), get_clock(), mission_mgr_mutex_);
     MissionManager::state_update_cbk_t state_update_cbk = std::bind(&ControlInterface::missionStateUpdateCallback, this);
     mission_mgr_->subscribe_state_update(state_update_cbk);
 
@@ -2061,9 +2084,10 @@ bool ControlInterface::startTakeoff(std::string& fail_reason_out)
 //}
 
 /* startLanding //{ */
+// the following mutexes have to be locked by the calling function:
+// action_mutex_
 bool ControlInterface::startLanding(std::string& fail_reason_out)
 {
-  std::scoped_lock lck(action_mutex_);
   /* // asynchronous variant prepared for when we implement action server */
   /* action_->land_async([this](const mavsdk::Action::Result res) */
   /*     { */
@@ -2088,7 +2112,7 @@ bool ControlInterface::startLanding(std::string& fail_reason_out)
 /* missionStateUpdateCallback //{ */
 void ControlInterface::missionStateUpdateCallback()
 {
-  std::scoped_lock lock(state_mutex_, telem_mutex_, action_server_mutex_);
+  std::scoped_lock lock(state_mutex_, telem_mutex_, action_server_mutex_, mission_mgr_mutex_);
   
   if (action_server_goal_handle_ && action_server_goal_handle_->is_active() && mission_mgr_->state() == mission_state_t::finished)
   {
@@ -2109,6 +2133,7 @@ void ControlInterface::missionStateUpdateCallback()
 // state_mutex_
 // telem_mutex_
 // action_server_mutex_
+// mission_mgr_mutex_
 void ControlInterface::publishDiagnosticsAndFeedback()
 {
   const bool armed = telem_ != nullptr && telem_->armed();

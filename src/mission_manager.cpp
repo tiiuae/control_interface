@@ -12,8 +12,8 @@ using namespace control_interface;
 // | --------------- public methods definitions --------------- |
 
 /* constructor //{ */
-MissionManager::MissionManager(const unsigned max_upload_attempts, const rclcpp::Duration& starting_timeout, std::shared_ptr<mavsdk::System> system, const rclcpp::Logger& logger, rclcpp::Clock::SharedPtr clock)
-  : mission_(std::make_unique<mavsdk::Mission>(system)), max_upload_attempts_(max_upload_attempts), starting_timeout_(starting_timeout), logger_(logger), clock_(clock)
+MissionManager::MissionManager(const unsigned max_upload_attempts, const rclcpp::Duration& starting_timeout, std::shared_ptr<mavsdk::System> system, const rclcpp::Logger& logger, rclcpp::Clock::SharedPtr clock, std::recursive_mutex& mutex)
+  : mutex_(mutex), mission_(std::make_unique<mavsdk::Mission>(system)), max_upload_attempts_(max_upload_attempts), starting_timeout_(starting_timeout), logger_(logger), clock_(clock)
 {
     // register some callbacks
     const mavsdk::Mission::MissionProgressCallback progress_cbk = std::bind(&MissionManager::progress_callback, this, std::placeholders::_1);
@@ -24,7 +24,7 @@ MissionManager::MissionManager(const unsigned max_upload_attempts, const rclcpp:
 /* new_mission() method //{ */
 bool MissionManager::new_mission(const mavsdk::Mission::MissionPlan& mission_plan, const uint32_t id, std::string& fail_reason_out)
 {
-  std::scoped_lock lck(mutex);
+  std::scoped_lock lck(mutex_);
   std::stringstream ss;
 
   if (state_ != state_t::finished)
@@ -52,7 +52,7 @@ bool MissionManager::new_mission(const mavsdk::Mission::MissionPlan& mission_pla
 /* stop_mission() method //{ */
 bool MissionManager::stop_mission(std::string& fail_reason_out)
 {
-  std::scoped_lock lck(mutex);
+  std::scoped_lock lck(mutex_);
   std::stringstream ss;
 
   const auto orig_state = state_;
@@ -90,25 +90,37 @@ bool MissionManager::stop_mission(std::string& fail_reason_out)
 }
 //}
 
+/* stop_mission_async() method //{ */
+void MissionManager::stop_mission_async(const std::function<void(bool, const std::string&)> callback)
+{
+  std::thread([this, &callback]
+      {
+        std::string reason;
+        const bool succ = stop_mission(reason);
+        callback(succ, reason);
+      }).detach();
+}
+//}
+
 /* getters //{ */
 mission_state_t MissionManager::state()
 {
-  return fog_lib::get_mutexed(mutex, state_);
+  return fog_lib::get_mutexed(mutex_, state_);
 }
 
 uint32_t MissionManager::mission_id()
 {
-  return fog_lib::get_mutexed(mutex, mission_id_);
+  return fog_lib::get_mutexed(mutex_, mission_id_);
 }
 
 int32_t MissionManager::mission_size()
 {
-  return fog_lib::get_mutexed(mutex, plan_size_);
+  return fog_lib::get_mutexed(mutex_, plan_size_);
 }
 
 int32_t MissionManager::mission_waypoint()
 {
-  return fog_lib::get_mutexed(mutex, current_waypoint_);
+  return fog_lib::get_mutexed(mutex_, current_waypoint_);
 }
 //}
 
@@ -125,7 +137,7 @@ bool MissionManager::start_mission_upload(const mavsdk::Mission::MissionPlan& mi
         // of the MavSDK processing thread
         std::thread([this, result, mission_plan]
         {
-          std::scoped_lock lck(mutex);
+          std::scoped_lock lck(mutex_);
           const double dur_s = (clock_->now() - last_upload_attempt_time_).seconds();
           // if mission upload succeeded, all is good and well in the world
           if (result == mavsdk::Mission::Result::Success)
@@ -177,7 +189,7 @@ bool MissionManager::start_mission()
         // of the MavSDK processing thread
         std::thread([this, result]
         {
-          std::scoped_lock lck(mutex);
+          std::scoped_lock lck(mutex_);
           const rclcpp::Duration starting_dur = clock_->now() - first_starting_attempt_time_;
           // if mission start succeeded, all is good and well in the world
           if (result == mavsdk::Mission::Result::Success)
@@ -224,7 +236,7 @@ void MissionManager::progress_callback(const mavsdk::Mission::MissionProgress& p
   // of the MavSDK processing thread
   std::thread([this, &progress]
   {
-    std::scoped_lock lck(mutex);
+    std::scoped_lock lck(mutex_);
 
     // if no mission is in progress, don't print or update anything to avoid spamming garbage
     if (state_ != state_t::in_progress)
