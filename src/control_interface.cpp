@@ -2114,11 +2114,21 @@ void ControlInterface::missionStateUpdateCallback()
 {
   std::scoped_lock lock(state_mutex_, telem_mutex_, action_server_mutex_, mission_mgr_mutex_);
   
-  if (action_server_goal_handle_ && action_server_goal_handle_->is_active() && mission_mgr_->state() == mission_state_t::finished)
+  if (action_server_goal_handle_ && action_server_goal_handle_->is_active())
   {
-    auto result = std::make_shared<ControlInterfaceAction::Result>();
-    result->message = "Mission finished";
-    action_server_goal_handle_->succeed(result);
+    const auto mission_state = mission_mgr_->state();
+    if (mission_state == mission_state_t::finished)
+    {
+      auto result = std::make_shared<ControlInterfaceAction::Result>();
+      result->message = "Goal " + rclcpp_action::to_string(action_server_goal_handle_->get_goal_id()) + " finished";
+      action_server_goal_handle_->succeed(result);
+    }
+    else if (mission_state == mission_state_t::stopped)
+    {
+      auto result = std::make_shared<ControlInterfaceAction::Result>();
+      result->message = "Goal " + rclcpp_action::to_string(action_server_goal_handle_->get_goal_id()) + "aborted";
+      action_server_goal_handle_->abort(result);
+    }
   }
 
   // publish some diags

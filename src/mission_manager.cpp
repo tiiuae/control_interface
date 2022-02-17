@@ -27,7 +27,7 @@ bool MissionManager::new_mission(const mavsdk::Mission::MissionPlan& mission_pla
   std::scoped_lock lck(mutex_);
   std::stringstream ss;
 
-  if (state_ != state_t::finished)
+  if (state_ != state_t::finished && state_ != state_t::stopped)
   {
     ss << "Last mission #" << mission_id_ << " not cancelled (mission " << to_string(state_) << "), cannot upload new mission.";
     fail_reason_out = ss.str();
@@ -59,8 +59,8 @@ bool MissionManager::stop_mission(std::string& fail_reason_out)
   // reset stuff
   plan_size_ = 0;
   current_waypoint_ = 0;
-  // set the state to finished to avoid any reupload attempts etc.
-  update_state(state_t::finished);
+  // set the state to stopped to avoid any reupload attempts etc.
+  update_state(state_t::stopped);
 
   // cancel any current mission upload to pixhawk if applicable
   if (orig_state == state_t::uploading)
@@ -163,7 +163,7 @@ bool MissionManager::start_mission_upload(const mavsdk::Mission::MissionPlan& mi
             else
             {
               RCLCPP_WARN_STREAM(logger_, "Mission #" << mission_id_ << " upload failed too many times. Scrapping mission.");
-              update_state(state_t::finished);
+              update_state(state_t::stopped);
             }
           }
         }).detach();
@@ -215,7 +215,7 @@ bool MissionManager::start_mission()
             else
             {
               RCLCPP_ERROR_STREAM(logger_, "Calling mission #" << mission_id_ << " start timed out (took " << starting_dur.seconds() << "s/" << starting_timeout_.seconds() << "s). Scrapping mission.");
-              update_state(state_t::finished);
+              update_state(state_t::stopped);
             }
           }
         }).detach();

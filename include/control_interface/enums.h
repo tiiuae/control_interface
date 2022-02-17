@@ -84,6 +84,7 @@ namespace control_interface
     starting,
     in_progress,
     finished,
+    stopped,
   };
   
   static inline mission_state_t to_enum(const fog_msgs::msg::ControlInterfaceMissionState msg)
@@ -94,6 +95,7 @@ namespace control_interface
       case fog_msgs::msg::ControlInterfaceMissionState::STARTING:     return mission_state_t::starting;
       case fog_msgs::msg::ControlInterfaceMissionState::IN_PROGRESS:  return mission_state_t::in_progress;
       case fog_msgs::msg::ControlInterfaceMissionState::FINISHED:     return mission_state_t::finished;
+      case fog_msgs::msg::ControlInterfaceMissionState::STOPPED:      return mission_state_t::stopped;
       default:                                                        assert(false && ERR_MSG); return mission_state_t::invalid;
     }
   }
@@ -107,6 +109,7 @@ namespace control_interface
       case mission_state_t::starting:    msg.state = fog_msgs::msg::ControlInterfaceMissionState::STARTING; break;
       case mission_state_t::in_progress: msg.state = fog_msgs::msg::ControlInterfaceMissionState::IN_PROGRESS; break;
       case mission_state_t::finished:    msg.state = fog_msgs::msg::ControlInterfaceMissionState::FINISHED; break;
+      case mission_state_t::stopped:     msg.state = fog_msgs::msg::ControlInterfaceMissionState::STOPPED; break;
       default:                           assert(false && ERR_MSG); msg.state = fog_msgs::msg::ControlInterfaceMissionState::INVALID; break;
     }
     return msg;
@@ -120,6 +123,7 @@ namespace control_interface
       case mission_state_t::starting:     return "starting";
       case mission_state_t::in_progress:  return "in_progress";
       case mission_state_t::finished:     return "finished";
+      case mission_state_t::stopped:      return "stopped";
       default:                            assert(false && ERR_MSG); return "invalid";
     }
   }
