@@ -98,21 +98,29 @@ class ControlInterfaceActionClient(Node):
     def goal_response_callback(self, future):
         goal_handle = future.result()
         if not goal_handle.accepted:
-            self.get_logger().info('Goal rejected :(')
+            self.get_logger().error('Goal rejected :(')
+            rclpy.shutdown()
             return
 
         self.get_logger().info('Goal accepted :)')
 
         self._get_result_future = goal_handle.get_result_async()
         self._get_result_future.add_done_callback(self.get_result_callback)
+        
+        # Start a 2 second timer
+
+        self._goal_handle = goal_handle
+        self._timer = self.create_timer(2.0, self.timer_callback)
 
     def get_result_callback(self, future):
         result = future.result().result
         status = future.result().status
         if status == GoalStatus.STATUS_SUCCEEDED:
             self.get_logger().info('Goal succeeded! Result: {0}'.format(result.message))
-        else:
-            self.get_logger().info('Goal failed with status: {0}'.format(status))
+        elif status == GoalStatus.STATUS_ABORTED:
+            self.get_logger().error('Goal aborted! Result: {0}'.format(result.message))
+        elif status == GoalStatus.STATUS_CANCELED:
+            self.get_logger().error('Goal canceled! Result: {0}'.format(result.message))
         # Shutdown after receiving a result
         rclpy.shutdown()
 
@@ -120,12 +128,34 @@ class ControlInterfaceActionClient(Node):
         feedback = feedback_msg.feedback
         self.get_logger().info('Received feedback: {0}'.format(feedback))
 
+    def cancel_done(self, future):
+        cancel_response = future.result()
+        if len(cancel_response.goals_canceling) > 0:
+            self.get_logger().info('Goal successfully canceled')
+        else:
+            self.get_logger().error('Goal failed to cancel')
+
+        rclpy.shutdown()
+
+    def timer_callback(self):
+        self.get_logger().info('Canceling goal')
+        
+        # Cancel the goal
+        future = self._goal_handle.cancel_goal_async()
+        future.add_done_callback(self.cancel_done)
+
+        # Cancel the timer
+        self._timer.cancel()
+
 def main(args=None):
     rclpy.init(args=args)
     action_client = ControlInterfaceActionClient()
+    action_client.get_logger().info('********************************')
     future = action_client.send_goal()
     rclpy.spin(action_client)
 
+    action_client.get_logger().info('=================================')
+        
 
 if __name__ == '__main__':
     main()
