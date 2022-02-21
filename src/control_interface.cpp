@@ -765,6 +765,8 @@ bool ControlInterface::mavsdkLogCallback(const mavsdk::log::Level level, const s
 }
 //}
 
+// | ----------------- Action server callbacks ---------------- |
+
 /* actionServerHandleGoal //{ */
 // note: to accept or reject goals sent to the server
 // callback must be non-blocking
@@ -831,7 +833,7 @@ rclcpp_action::CancelResponse ControlInterface::actionServerHandleCancel(const s
 
   RCLCPP_WARN_STREAM(this->get_logger(), "CANCEL of goal " << rclcpp_action::to_string(goal_handle->get_goal_id()) << "accepted.");
   // stop the mission asynchronously to avoid blocking
-  mission_mgr_->stop_mission_async([this, &goal_handle](const bool success, const std::string& reason)
+  mission_mgr_->stop_mission_async([this, goal_handle](const bool success, const std::string& reason)
       {
         std::scoped_lock lock(action_server_mutex_);
         fog_msgs::action::ControlInterfaceAction::Result::SharedPtr result = std::make_shared<fog_msgs::action::ControlInterfaceAction::Result>();

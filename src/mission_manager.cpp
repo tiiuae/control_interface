@@ -93,7 +93,7 @@ bool MissionManager::stop_mission(std::string& fail_reason_out)
 /* stop_mission_async() method //{ */
 void MissionManager::stop_mission_async(const std::function<void(bool, const std::string&)> callback)
 {
-  std::thread([this, &callback]
+  std::thread([this, callback]
       {
         std::string reason;
         const bool succ = stop_mission(reason);
