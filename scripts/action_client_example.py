@@ -135,8 +135,6 @@ class ControlInterfaceActionClient(Node):
         else:
             self.get_logger().error('Goal failed to cancel')
 
-        rclpy.shutdown()
-
     def timer_callback(self):
         self.get_logger().info('Canceling goal')
         

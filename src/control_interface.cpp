@@ -818,20 +818,20 @@ rclcpp_action::CancelResponse ControlInterface::actionServerHandleCancel(const s
 
   RCLCPP_INFO_STREAM(this->get_logger(), "ActionServer: Received request to cancel goal " << rclcpp_action::to_string(goal_handle->get_goal_id()));
 
-  // check if we received cancel of the goal that we are currently executing
   if (!action_server_goal_handle_)
   {
     RCLCPP_WARN(this->get_logger(), "No goal is active. CANCEL rejected.");
     return rclcpp_action::CancelResponse::REJECT;
   }
 
+  // check if we received cancel of the goal that we are currently executing
   if (action_server_goal_handle_->get_goal_id() != goal_handle->get_goal_id())
   {
     RCLCPP_WARN_STREAM(this->get_logger(), "The target goal is not active (active goal: " << rclcpp_action::to_string(action_server_goal_handle_->get_goal_id()) << ", requested: " << rclcpp_action::to_string(goal_handle->get_goal_id()) << "). CANCEL rejected.");
     return rclcpp_action::CancelResponse::REJECT;
   } 
 
-  RCLCPP_WARN_STREAM(this->get_logger(), "CANCEL of goal " << rclcpp_action::to_string(goal_handle->get_goal_id()) << "accepted.");
+  RCLCPP_WARN_STREAM(this->get_logger(), "CANCEL of goal " << rclcpp_action::to_string(goal_handle->get_goal_id()) << " accepted.");
   // stop the mission asynchronously to avoid blocking
   mission_mgr_->stop_mission_async([this, goal_handle](const bool success, const std::string& reason)
       {
