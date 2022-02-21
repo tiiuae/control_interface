@@ -838,7 +838,7 @@ rclcpp_action::CancelResponse ControlInterface::actionServerHandleCancel(const s
         std::scoped_lock lock(action_server_mutex_);
         fog_msgs::action::ControlInterfaceAction::Result::SharedPtr result = std::make_shared<fog_msgs::action::ControlInterfaceAction::Result>();
         if (success)
-          result->message = "Goal " + rclcpp_action::to_string(goal_handle->get_goal_id()) + " cancelled.";
+          result->message = "Goal " + rclcpp_action::to_string(goal_handle->get_goal_id()) + " canceled.";
         else
           result->message = "Failed to cancel goal: " + reason;
         goal_handle->canceled(result);
@@ -2125,7 +2125,7 @@ void ControlInterface::missionStateUpdateCallback()
       result->message = "Goal " + rclcpp_action::to_string(action_server_goal_handle_->get_goal_id()) + " finished";
       action_server_goal_handle_->succeed(result);
     }
-    else if (mission_state == mission_state_t::stopped)
+    else if (mission_state == mission_state_t::aborted)
     {
       auto result = std::make_shared<ControlInterfaceAction::Result>();
       result->message = "Goal " + rclcpp_action::to_string(action_server_goal_handle_->get_goal_id()) + "aborted";

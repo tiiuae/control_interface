@@ -27,9 +27,9 @@ bool MissionManager::new_mission(const mavsdk::Mission::MissionPlan& mission_pla
   std::scoped_lock lck(mutex_);
   std::stringstream ss;
 
-  if (state_ != state_t::finished && state_ != state_t::stopped)
+  if (mission_active(state_))
   {
-    ss << "Last mission #" << mission_id_ << " not cancelled (mission " << to_string(state_) << "), cannot upload new mission.";
+    ss << "Last mission #" << mission_id_ << " still active (mission " << to_string(state_) << "), cannot upload new mission.";
     fail_reason_out = ss.str();
     RCLCPP_ERROR_STREAM(logger_, fail_reason_out);
     return false;
@@ -45,7 +45,8 @@ bool MissionManager::new_mission(const mavsdk::Mission::MissionPlan& mission_pla
 
   mission_id_ = id;
   upload_attempts_ = 0;
-  return start_mission_upload(mission_plan);
+  start_mission_upload(mission_plan);
+  return true;
 }
 //}
 
@@ -60,7 +61,7 @@ bool MissionManager::stop_mission(std::string& fail_reason_out)
   plan_size_ = 0;
   current_waypoint_ = 0;
   // set the state to stopped to avoid any reupload attempts etc.
-  update_state(state_t::stopped);
+  update_state(state_t::canceled);
 
   // cancel any current mission upload to pixhawk if applicable
   if (orig_state == state_t::uploading)
@@ -127,7 +128,7 @@ int32_t MissionManager::mission_waypoint()
 // | --------------- private methods definitions -------------- |
 
 /* start_mission_upload //{ */
-bool MissionManager::start_mission_upload(const mavsdk::Mission::MissionPlan& mission_plan)
+void MissionManager::start_mission_upload(const mavsdk::Mission::MissionPlan& mission_plan)
 {
   last_upload_attempt_time_ = clock_->now();
   mission_->upload_mission_async(mission_plan, [this, mission_plan](mavsdk::Mission::Result result)
@@ -162,8 +163,8 @@ bool MissionManager::start_mission_upload(const mavsdk::Mission::MissionPlan& mi
             }
             else
             {
-              RCLCPP_WARN_STREAM(logger_, "Mission #" << mission_id_ << " upload failed too many times. Scrapping mission.");
-              update_state(state_t::stopped);
+              RCLCPP_WARN_STREAM(logger_, "Mission #" << mission_id_ << " upload failed too many times. Aborting mission.");
+              update_state(state_t::aborted);
             }
           }
         }).detach();
@@ -172,12 +173,11 @@ bool MissionManager::start_mission_upload(const mavsdk::Mission::MissionPlan& mi
 
   RCLCPP_INFO(logger_, "Started mission #%u upload (attempt %d/%d).", mission_id_, upload_attempts_+1, max_upload_attempts_+1);
   update_state(state_t::uploading);
-  return true;
 }
 //}
 
 /* start_mission //{ */
-bool MissionManager::start_mission()
+void MissionManager::start_mission()
 {
   plan_size_ = 0;
   current_waypoint_ = 0;
@@ -214,8 +214,8 @@ bool MissionManager::start_mission()
             }
             else
             {
-              RCLCPP_ERROR_STREAM(logger_, "Calling mission #" << mission_id_ << " start timed out (took " << starting_dur.seconds() << "s/" << starting_timeout_.seconds() << "s). Scrapping mission.");
-              update_state(state_t::stopped);
+              RCLCPP_ERROR_STREAM(logger_, "Calling mission #" << mission_id_ << " start timed out (took " << starting_dur.seconds() << "s/" << starting_timeout_.seconds() << "s). Aborting mission.");
+              update_state(state_t::aborted);
             }
           }
         }).detach();
@@ -224,7 +224,6 @@ bool MissionManager::start_mission()
 
   RCLCPP_INFO_STREAM(logger_, "Called mission #" << mission_id_ << " start (attempt " << starting_attempts_+1 << ").");
   update_state(state_t::starting);
-  return true;
 }
 //}
 
@@ -247,7 +246,7 @@ void MissionManager::progress_callback(const mavsdk::Mission::MissionProgress& p
 
     const float percent = progress.total == 0 ? 100 : progress.current/float(progress.total)*100.0f;
     if (progress.current == -1)
-      RCLCPP_INFO(logger_, "Last mission cancelled (waypoint %d/%d).", progress.current, progress.total);
+      RCLCPP_INFO(logger_, "Last mission canceled (waypoint %d/%d).", progress.current, progress.total);
     else if (progress.total == 0)
       RCLCPP_INFO(logger_, "Current mission #%u is empty (waypoint %d/%d).", mission_id_, progress.current, progress.total);
     else

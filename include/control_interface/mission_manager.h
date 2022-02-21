@@ -85,13 +85,13 @@ namespace control_interface
     // Mission upload will be retried up to a certain number of attempts.
     // This is because mission upload can take a non-negligible time (tens of ms)
     // and may fail a few times before being successful.
-    bool start_mission_upload(const mavsdk::Mission::MissionPlan& mission_plan);
+    void start_mission_upload(const mavsdk::Mission::MissionPlan& mission_plan);
     // Mission start will be retried repeatedly until a certain timeout duration
     // elapses. This is because mission start can be declined by PixHawk if it is
     // busy (processing the uploaded mission?). Typically, PixHawk is only busy
     // for a short time, but the mission starting is fast, so repeating it only
     // a certain number of times could fail before PixHawk is no longer busy.
-    bool start_mission();
+    void start_mission();
 
     void progress_callback(const mavsdk::Mission::MissionProgress& progress);
 
