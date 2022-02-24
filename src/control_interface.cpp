@@ -256,9 +256,9 @@ private:
   rclcpp::Duration mission_starting_timeout_ = rclcpp::Duration::from_seconds(0.3);
 
   // action server
-  std::recursive_mutex                                     action_server_mutex_;
+  std::recursive_mutex action_server_mutex_;
   rclcpp_action::Server<ControlAction>::SharedPtr action_server_;
-  std::shared_ptr<ControlGoalHandle>        action_server_goal_handle_ = nullptr;
+  std::shared_ptr<ControlGoalHandle> action_server_goal_handle_ = nullptr;
 
   // publishers
   rclcpp::Publisher<geometry_msgs::msg::PoseArray>::SharedPtr               waypoint_publisher_;
@@ -587,7 +587,7 @@ ControlInterface::ControlInterface(rclcpp::NodeOptions options) : Node("control_
 //}
 
 // --------------------------------------------------------------
-// |                 ControlInterfdace callbacks                |
+// |                 ControlInterface callbacks                 |
 // --------------------------------------------------------------
 
 // | --------------------- Data callbacks --------------------- |
@@ -793,17 +793,6 @@ rclcpp_action::GoalResponse ControlInterface::actionServerHandleGoal(
     RCLCPP_ERROR(this->get_logger(), "Goal rejected: Mission planner not initialized!");
     return rclcpp_action::GoalResponse::REJECT;
   }
-
-  if (action_server_goal_handle_)
-  {
-    if (action_server_goal_handle_->is_active())
-    {
-      RCLCPP_WARN_STREAM(this->get_logger(), "Previous goal is not terminated yet. ABORTING previous goal " << rclcpp_action::to_string(action_server_goal_handle_->get_goal_id()) << ".");
-      auto result = std::make_shared<ControlAction::Result>();
-      result->message = "Goal ABORTED: New goal received.";
-      action_server_goal_handle_->abort(result);
-    }
-  }
   
   return rclcpp_action::GoalResponse::ACCEPT_AND_EXECUTE;
 }
@@ -852,7 +841,7 @@ rclcpp_action::CancelResponse ControlInterface::actionServerHandleCancel(const s
 // callback must be non-blocking
 void ControlInterface::actionServerHandleAccepted(const std::shared_ptr<ControlGoalHandle> goal_handle)
 {
-  std::scoped_lock lock(action_server_mutex_);
+  std::scoped_lock lock(state_mutex_, action_server_mutex_, mission_mgr_mutex_);
 
   // attempt to start the new mission
   std::string reason;
@@ -1031,8 +1020,9 @@ bool ControlInterface::startNewMission(const T& path, const uint32_t id, const b
     return false;
   }
 
-  // ensure that nobody uploads a new mission while after the current one is cancelled and before the new one is started
-  std::scoped_lock lck(mission_mgr_mutex_);
+  // ensure that nobody uploads a new goal or a mission mission before the current one is cancelled and the new one is started
+  std::scoped_lock lck(action_server_mutex_, mission_mgr_mutex_);
+
   // this should never happen if we're in the autonomous_flight state
   if (!mission_mgr_)
   {
@@ -1040,7 +1030,7 @@ bool ControlInterface::startNewMission(const T& path, const uint32_t id, const b
     return false;
   }
 
-  // transform the path to a MissionPlan for pixhawk
+  // convert the path to a MissionPlan for pixhawk
   mavsdk::Mission::MissionPlan mission_plan;
   mission_plan.mission_items.reserve(path.size());
   for (const auto& pose : path)
