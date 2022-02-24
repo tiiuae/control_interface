@@ -182,8 +182,8 @@ bool is_healthy(const mavsdk::Telemetry::Health& health)
 class ControlInterface : public rclcpp::Node
 {
 public:  
-  using ControlInterfaceAction = fog_msgs::action::ControlInterfaceAction;
-  using GoalHandleControlInterfaceAction = rclcpp_action::ServerGoalHandle<ControlInterfaceAction>;
+  using ControlAction = fog_msgs::action::ControlInterfaceAction;
+  using ControlGoalHandle = rclcpp_action::ServerGoalHandle<ControlAction>;
   
   ControlInterface(rclcpp::NodeOptions options);
 
@@ -257,8 +257,8 @@ private:
 
   // action server
   std::recursive_mutex                                     action_server_mutex_;
-  rclcpp_action::Server<ControlInterfaceAction>::SharedPtr action_server_;
-  std::shared_ptr<GoalHandleControlInterfaceAction>        action_server_goal_handle_ = nullptr;
+  rclcpp_action::Server<ControlAction>::SharedPtr action_server_;
+  std::shared_ptr<ControlGoalHandle>        action_server_goal_handle_ = nullptr;
 
   // publishers
   rclcpp::Publisher<geometry_msgs::msg::PoseArray>::SharedPtr               waypoint_publisher_;
@@ -281,9 +281,9 @@ private:
   OnSetParametersCallbackHandle::SharedPtr parameters_callback_handle_;
 
   // action server methods
-  rclcpp_action::GoalResponse actionServerHandleGoal(const rclcpp_action::GoalUUID& uuid, std::shared_ptr<const ControlInterfaceAction::Goal> goal);
-  rclcpp_action::CancelResponse actionServerHandleCancel(const std::shared_ptr<GoalHandleControlInterfaceAction> goal_handle);
-  void actionServerHandleAccepted(const std::shared_ptr<GoalHandleControlInterfaceAction> goal_handle);
+  rclcpp_action::GoalResponse actionServerHandleGoal(const rclcpp_action::GoalUUID& uuid, std::shared_ptr<const ControlAction::Goal> goal);
+  rclcpp_action::CancelResponse actionServerHandleCancel(const std::shared_ptr<ControlGoalHandle> goal_handle);
+  void actionServerHandleAccepted(const std::shared_ptr<ControlGoalHandle> goal_handle);
 
   // subscriber callbacks
   void controlModeCallback(const px4_msgs::msg::VehicleControlMode::UniquePtr msg);
@@ -569,7 +569,7 @@ ControlInterface::ControlInterface(rclcpp::NodeOptions options) : Node("control_
   diagnostics_timer_ = create_wall_timer(std::chrono::duration<double>(1.0 / diagnostics_publish_rate_),
       std::bind(&ControlInterface::diagnosticsRoutine, this), new_cbk_grp());
 
-  action_server_ = rclcpp_action::create_server<ControlInterfaceAction>(
+  action_server_ = rclcpp_action::create_server<ControlAction>(
       get_node_base_interface(),
       get_node_clock_interface(),
       get_node_logging_interface(),
@@ -772,7 +772,7 @@ bool ControlInterface::mavsdkLogCallback(const mavsdk::log::Level level, const s
 // callback must be non-blocking
 rclcpp_action::GoalResponse ControlInterface::actionServerHandleGoal(
     const rclcpp_action::GoalUUID & uuid,
-    std::shared_ptr<const ControlInterfaceAction::Goal> goal)
+    std::shared_ptr<const ControlAction::Goal> goal)
 {
   // get_mutexed should come first to avoid deadlocks (it unlocks its mutex on return)
   const auto state = get_mutexed(state_mutex_, vehicle_state_);
@@ -799,7 +799,7 @@ rclcpp_action::GoalResponse ControlInterface::actionServerHandleGoal(
     if (action_server_goal_handle_->is_active())
     {
       RCLCPP_WARN_STREAM(this->get_logger(), "Previous goal is not terminated yet. ABORTING previous goal " << rclcpp_action::to_string(action_server_goal_handle_->get_goal_id()) << ".");
-      auto result = std::make_shared<ControlInterfaceAction::Result>();
+      auto result = std::make_shared<ControlAction::Result>();
       result->message = "Goal ABORTED: New goal received.";
       action_server_goal_handle_->abort(result);
     }
@@ -812,7 +812,7 @@ rclcpp_action::GoalResponse ControlInterface::actionServerHandleGoal(
 /* actionServerHandleCancel //{ */
 // note: to accept or reject requests to cancel a goal
 // callback must be non-blocking
-rclcpp_action::CancelResponse ControlInterface::actionServerHandleCancel(const std::shared_ptr<GoalHandleControlInterfaceAction> goal_handle)
+rclcpp_action::CancelResponse ControlInterface::actionServerHandleCancel(const std::shared_ptr<ControlGoalHandle> goal_handle)
 {
   std::scoped_lock lock(action_server_mutex_, mission_mgr_mutex_);
 
@@ -836,7 +836,7 @@ rclcpp_action::CancelResponse ControlInterface::actionServerHandleCancel(const s
   mission_mgr_->stop_mission_async([this, goal_handle](const bool success, const std::string& reason)
       {
         std::scoped_lock lock(action_server_mutex_);
-        fog_msgs::action::ControlInterfaceAction::Result::SharedPtr result = std::make_shared<fog_msgs::action::ControlInterfaceAction::Result>();
+        ControlAction::Result::SharedPtr result = std::make_shared<fog_msgs::action::ControlInterfaceAction::Result>();
         if (success)
           result->message = "Goal " + rclcpp_action::to_string(goal_handle->get_goal_id()) + " canceled.";
         else
@@ -850,7 +850,7 @@ rclcpp_action::CancelResponse ControlInterface::actionServerHandleCancel(const s
 /* actionServerHandleAccepted //{ */
 // note: to receive a goal handle after a goal has been accepted
 // callback must be non-blocking
-void ControlInterface::actionServerHandleAccepted(const std::shared_ptr<GoalHandleControlInterfaceAction> goal_handle)
+void ControlInterface::actionServerHandleAccepted(const std::shared_ptr<ControlGoalHandle> goal_handle)
 {
   std::scoped_lock lock(action_server_mutex_);
 
@@ -858,7 +858,7 @@ void ControlInterface::actionServerHandleAccepted(const std::shared_ptr<GoalHand
   std::string reason;
   if (!startNewMission(goal_handle->get_goal()->path.poses, goal_handle->get_goal()->mission_id, false, reason))
   {
-    auto result = std::make_shared<ControlInterfaceAction::Result>();
+    auto result = std::make_shared<ControlAction::Result>();
     result->message = "Goal " + rclcpp_action::to_string(goal_handle->get_goal_id()) + " ABORTED: " + std::to_string(goal_handle->get_goal()->path.poses.size()) + " new waypoints not set: " + reason;
     goal_handle->abort(result);
     RCLCPP_ERROR_STREAM(get_logger(), result->message);
@@ -2121,13 +2121,13 @@ void ControlInterface::missionStateUpdateCallback()
     const auto mission_state = mission_mgr_->state();
     if (mission_state == mission_state_t::finished)
     {
-      auto result = std::make_shared<ControlInterfaceAction::Result>();
+      auto result = std::make_shared<ControlAction::Result>();
       result->message = "Goal " + rclcpp_action::to_string(action_server_goal_handle_->get_goal_id()) + " finished";
       action_server_goal_handle_->succeed(result);
     }
     else if (mission_state == mission_state_t::aborted)
     {
-      auto result = std::make_shared<ControlInterfaceAction::Result>();
+      auto result = std::make_shared<ControlAction::Result>();
       result->message = "Goal " + rclcpp_action::to_string(action_server_goal_handle_->get_goal_id()) + "aborted";
       action_server_goal_handle_->abort(result);
     }
@@ -2171,7 +2171,7 @@ void ControlInterface::publishDiagnosticsAndFeedback()
 
   if (action_server_goal_handle_ && action_server_goal_handle_->is_active())
   {
-    auto feedback = std::make_shared<ControlInterfaceAction::Feedback>();
+    auto feedback = std::make_shared<ControlAction::Feedback>();
     feedback->mission_progress = msg.mission_progress;
     feedback->mission_state = msg.mission_state;
     action_server_goal_handle_->publish_feedback(feedback);
