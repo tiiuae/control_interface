@@ -2,7 +2,7 @@
 Changelog for package control_interface
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-Forthcoming
+0.1.1 (2022-03-03)
 -----------
 * [action_server]: fixed cancelling and aborting of goals
 * [action_server]: fixed crash when cancelling goal due to bad lambda capture
