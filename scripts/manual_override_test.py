@@ -21,7 +21,7 @@ class ControlModePublisherNode(Node):
         DRONE_DEVICE_ID = os.getenv('DRONE_DEVICE_ID')
 
         super().__init__("control_mode_publisher")
-        self.publisher = self.create_publisher(VehicleControlMode, "/" + DRONE_DEVICE_ID + "/VehicleControlMode_PubSubTopic", 10)
+        self.publisher = self.create_publisher(VehicleControlMode, "/" + DRONE_DEVICE_ID + "/fmu/vehicle_control_mode/out", 10)
         
         timer_period = 0.2  # seconds
         self.timer = self.create_timer(timer_period, self.timer_callback)
