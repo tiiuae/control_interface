@@ -31,3 +31,4 @@ ENV RMW_IMPLEMENTATION rmw_fastrtps_cpp
 
 WORKDIR /$PACKAGE_NAME
 ENTRYPOINT "/"$PACKAGE_NAME"/entrypoint.sh"
+USER root
