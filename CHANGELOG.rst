@@ -2,6 +2,30 @@
 Changelog for package control_interface
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
+0.1.1 (2022-03-03)
+-----------
+* [action_server]: fixed cancelling and aborting of goals
+* [action_server]: fixed crash when cancelling goal due to bad lambda capture
+* updated action_client script
+* fixed goal aborting for action server
+* goal cancelling added, fixed a deadlock with mission manager
+* minor refactoring of action server
+* set action_server to own callback_grp
+* Merge branch 'action_server' of github.com:fly4future/control_interface into action_server
+* working version of action_server
+* minor update in enums.h
+* [mission_manager]: minor refactoring for consistency and readability
+* [mission_manager]: minor fix of retry attempts
+* changed mission_start retry from number to interval
+* updated new fog_msgs/srv/Vec4 type handling
+* mavsdk debug messages will now be printed using ROS_INFO (if enabled)
+* fixed home offset - now applied consistently
+* added result and feedback checking into action_client_example
+* added action server method and simple example
+* update to new mission_progress msg
+* update diagnostics message
+* Contributors: Matouš Vrba, Vojtech Spurny
+
 0.1.0 (2022-02-02)
 -----------
 * added an arming_ready state. Now, after the arm service is complete, takeoff can be called immediately
