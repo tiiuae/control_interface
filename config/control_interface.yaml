@@ -12,6 +12,7 @@ general:
 takeoff:
   height: 1.0 # [m]
   position_samples: 20 # before takeoff, the first waypoint will be set to the average of these samples
+  require_bumper: true # whether to check for bumper data availability and close obstacles before enabling takeoff
 
 px4:
   target_velocity: 1.5 # [m/s]

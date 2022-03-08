@@ -56,6 +56,7 @@ def generate_launch_description():
                     ("~/mission_result_in", "/" + DRONE_DEVICE_ID + "/fmu/mission_result/out"),
                     ("~/home_position_in", "/" + DRONE_DEVICE_ID + "/fmu/home_position/out"),
                     ("~/local_odom_in", "/" + DRONE_DEVICE_ID + "/odometry/local_odom"),
+                    ("~/nav_diags_in", "/" + DRONE_DEVICE_ID + "/navigation/diagnostics"),
                     ("~/cmd_pose_in", "/" + DRONE_DEVICE_ID + "/fmu/vehicle_local_position_setpoint/out"),
                     
                     ("~/arming_in", "~/arming"),

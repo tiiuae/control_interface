@@ -3,6 +3,7 @@
 #include <connection_result.h>
 #include <eigen3/Eigen/Dense>
 #include <eigen3/Eigen/src/Geometry/Quaternion.h>
+#include <fog_msgs/msg/detail/navigation_diagnostics__struct.hpp>
 #include <geometry_msgs/msg/pose_array.hpp>
 #include <geometry_msgs/msg/transform_stamped.hpp>
 #include <mavsdk/geometry.h>
@@ -40,6 +41,7 @@
 #include <unordered_map>
 
 #include <fog_msgs/msg/control_interface_diagnostics.hpp>
+#include <fog_msgs/msg/navigation_diagnostics.hpp>
 #include <fog_msgs/srv/path.hpp>
 #include <fog_msgs/srv/path_to_local.hpp>
 #include <fog_msgs/srv/get_px4_param_int.hpp>
@@ -232,6 +234,10 @@ private:
   Eigen::Vector3d              pose_pos_;
   tf2::Quaternion              pose_ori_;
 
+  // diagnostics message from navigation (used to check for obstacles before takeoff)
+  std::mutex nav_diags_mutex_;
+  fog_msgs::msg::NavigationDiagnostics::SharedPtr nav_diags_ = nullptr;
+
   std::mutex mavsdk_logging_mutex_;
   std::ofstream mavsdk_logging_file_;
 
@@ -254,6 +260,7 @@ private:
   int    takeoff_position_samples_          = 20;
   int    mission_max_upload_attempts_       = 5;
   rclcpp::Duration mission_starting_timeout_ = rclcpp::Duration::from_seconds(0.3);
+  bool   require_bumper_ = false;
 
   // action server
   std::recursive_mutex action_server_mutex_;
@@ -271,6 +278,7 @@ private:
   rclcpp::Subscription<px4_msgs::msg::HomePosition>::SharedPtr                  home_position_subscriber_;
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr                      odometry_subscriber_;
   rclcpp::Subscription<px4_msgs::msg::VehicleLocalPositionSetpoint>::SharedPtr  cmd_pose_subscriber_;
+  rclcpp::Subscription<fog_msgs::msg::NavigationDiagnostics>::SharedPtr         nav_diags_subscriber_;
 
   // callback groups
   // a shared pointer to each callback group has to be saved or the callbacks will never get called
@@ -291,6 +299,7 @@ private:
   void homePositionCallback(const px4_msgs::msg::HomePosition::UniquePtr msg);
   void odometryCallback(const nav_msgs::msg::Odometry::UniquePtr msg);
   void cmdPoseCallback(const px4_msgs::msg::VehicleLocalPositionSetpoint::UniquePtr msg);
+  void navDiagsCallback(const fog_msgs::msg::NavigationDiagnostics::SharedPtr msg);
 
   // services provided
   rclcpp::Service<std_srvs::srv::SetBool>::SharedPtr          arming_service_;
@@ -425,6 +434,7 @@ ControlInterface::ControlInterface(rclcpp::NodeOptions options) : Node("control_
 
   loaded_successfully &= parse_param("takeoff.height", takeoff_height_, *this);
   loaded_successfully &= parse_param("takeoff.position_samples", takeoff_position_samples_, *this);
+  loaded_successfully &= parse_param("takeoff.require_bumper", require_bumper_, *this);
 
   loaded_successfully &= parse_param("px4.target_velocity", target_velocity_, *this);
   loaded_successfully &= parse_param("px4.waypoint_loiter_time", waypoint_loiter_time_, *this);
@@ -521,6 +531,10 @@ ControlInterface::ControlInterface(rclcpp::NodeOptions options) : Node("control_
   subopts.callback_group = new_cbk_grp();
   cmd_pose_subscriber_ = create_subscription<px4_msgs::msg::VehicleLocalPositionSetpoint>("~/cmd_pose_in",
       rclcpp::SystemDefaultsQoS(), std::bind(&ControlInterface::cmdPoseCallback, this, _1), subopts);
+
+  subopts.callback_group = new_cbk_grp();
+  nav_diags_subscriber_ = create_subscription<fog_msgs::msg::NavigationDiagnostics>("~/nav_diags_in",
+      rclcpp::SystemDefaultsQoS(), std::bind(&ControlInterface::navDiagsCallback, this, _1), subopts);
 
   // service handlers
   const auto qos_profile = qos.get_rmw_qos_profile();
@@ -700,6 +714,13 @@ void ControlInterface::odometryCallback(const nav_msgs::msg::Odometry::UniquePtr
     cmd_pose_publisher_->publish(std::move(msg_out));
 
     RCLCPP_INFO_ONCE(get_logger(), "Getting cmd pose, republishing");
+  }
+  //}
+
+  /* navDiagsCallback //{ */
+  void ControlInterface::navDiagsCallback(const fog_msgs::msg::NavigationDiagnostics::SharedPtr msg)
+  {
+    set_mutexed(nav_diags_mutex_, msg, nav_diags_);
   }
   //}
 
@@ -1478,7 +1499,7 @@ void ControlInterface::diagnosticsRoutine()
 void ControlInterface::vehicleStateRoutine()
 {
   scope_timer tim(print_callback_durations_, "vehicleStateRoutine", get_logger(), print_callback_throttle_, print_callback_min_dur_);
-  std::scoped_lock lck(state_mutex_, telem_mutex_, pose_mutex_, action_server_mutex_, mission_mgr_mutex_);
+  std::scoped_lock lck(state_mutex_, telem_mutex_, pose_mutex_, nav_diags_mutex_, action_server_mutex_, mission_mgr_mutex_);
 
   const auto prev_state = vehicle_state_;
   update_vehicle_state();
@@ -1494,6 +1515,7 @@ void ControlInterface::vehicleStateRoutine()
 // state_mutex_
 // telem_mutex_
 // pose_mutex_
+// nav_diags_mutex_
 // mission_mgr_mutex_
 void ControlInterface::update_vehicle_state(const state_action_t state_action)
 {
@@ -1558,6 +1580,7 @@ void ControlInterface::state_vehicle_not_connected()
 // state_mutex_
 // telem_mutex_
 // pose_mutex_
+// nav_diags_mutex_
 void ControlInterface::state_vehicle_not_ready()
 {
   RCLCPP_INFO_THROTTLE(get_logger(), *get_clock(), 1000, "Vehicle state: not ready for arming.");
@@ -1573,12 +1596,16 @@ void ControlInterface::state_vehicle_not_ready()
   const auto health = telem_->health();
   const bool healthy = is_healthy(health);
   const auto land_state = telem_->landed_state();
+  const bool bumper_ok = !require_bumper_ || (nav_diags_ != nullptr && nav_diags_->bumper_active);
+  const bool obstacles_ok = !require_bumper_ || (nav_diags_ != nullptr && !nav_diags_->obstacle_detected);
 
   // advance to the next state if all conditions are met
   if (gps_origin_set_
    && pose_takeoff_samples_.size() >= (size_t)takeoff_position_samples_
    && healthy
-   && land_state == mavsdk::Telemetry::LandedState::OnGround)
+   && land_state == mavsdk::Telemetry::LandedState::OnGround
+   && bumper_ok
+   && obstacles_ok)
   {
     RCLCPP_INFO(get_logger(), "Vehicle is now ready for arming! Switching state to arming_ready.");
     vehicle_state_ = vehicle_state_t::arming_ready;
@@ -1592,6 +1619,8 @@ void ControlInterface::state_vehicle_not_ready()
     add_reason_if("GPS origin not set", !gps_origin_set_, reasons);
     add_reason_if(gps_reason, pose_takeoff_samples_.size() < (size_t)takeoff_position_samples_, reasons);
     add_reason_if("not landed (" + to_string(land_state) + ")", land_state != mavsdk::Telemetry::LandedState::OnGround, reasons);
+    add_reason_if("bumper data missing", !bumper_ok, reasons);
+    add_reason_if("detected an obstacle", bumper_ok && !obstacles_ok, reasons);
     vehicle_state_str_ += ", " + reasons;
     RCLCPP_WARN_STREAM_THROTTLE(get_logger(), *get_clock(), 1000, "Not ready for arming: " << reasons);
   }
@@ -1620,10 +1649,14 @@ void ControlInterface::state_vehicle_arming_ready()
   const auto health = telem_->health();
   const bool healthy = is_healthy(health);
   const auto land_state = telem_->landed_state();
+  const bool bumper_ok = !require_bumper_ || (nav_diags_ != nullptr && nav_diags_->bumper_active);
+  const bool obstacles_ok = !require_bumper_ || (nav_diags_ != nullptr && !nav_diags_->obstacle_detected);
 
   // advance to the next state if all conditions are met
   if (healthy
-   && land_state == mavsdk::Telemetry::LandedState::OnGround)
+   && land_state == mavsdk::Telemetry::LandedState::OnGround
+   && bumper_ok
+   && obstacles_ok)
   {
     if (armed)
     {
@@ -1637,6 +1670,8 @@ void ControlInterface::state_vehicle_arming_ready()
     std::string reasons;
     add_unhealthy_reasons(health, reasons);
     add_reason_if("not landed (" + to_string(land_state) + ")", land_state != mavsdk::Telemetry::LandedState::OnGround, reasons);
+    add_reason_if("bumper data missing", !bumper_ok, reasons);
+    add_reason_if("detected an obstacle", bumper_ok && !obstacles_ok, reasons);
     RCLCPP_INFO_STREAM(get_logger(), "No longer ready for arming: " << reasons << ", stopping all missions and switching state to not_ready.");
 
     reasons = "mission planner not initialized!";
