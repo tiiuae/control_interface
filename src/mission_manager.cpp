@@ -12,8 +12,8 @@ using namespace control_interface;
 // | --------------- public methods definitions --------------- |
 
 /* constructor //{ */
-MissionManager::MissionManager(const unsigned max_upload_attempts, const rclcpp::Duration& starting_timeout, std::shared_ptr<mavsdk::System> system, const rclcpp::Logger& logger, rclcpp::Clock::SharedPtr clock, std::recursive_mutex& mutex)
-  : mutex_(mutex), mission_(std::make_unique<mavsdk::Mission>(system)), max_upload_attempts_(max_upload_attempts), starting_timeout_(starting_timeout), logger_(logger), clock_(clock)
+MissionManager::MissionManager(const unsigned max_upload_attempts, const rclcpp::Duration& starting_timeout, std::shared_ptr<mavsdk::System> system, const rclcpp::Logger& logger, rclcpp::Clock::SharedPtr clock, rclcpp::Publisher<fog_msgs::msg::MissionPlan>::SharedPtr plan_pub, std::recursive_mutex& mutex)
+  : mutex_(mutex), mission_(std::make_unique<mavsdk::Mission>(system)), max_upload_attempts_(max_upload_attempts), starting_timeout_(starting_timeout), logger_(logger), clock_(clock), plan_pub_(plan_pub)
 {
     // register some callbacks
     const mavsdk::Mission::MissionProgressCallback progress_cbk = std::bind(&MissionManager::progress_callback, this, std::placeholders::_1);
@@ -146,7 +146,7 @@ void MissionManager::start_mission_upload(const mavsdk::Mission::MissionPlan& mi
             RCLCPP_INFO_STREAM(logger_, "Mission #" << mission_id_ << " upload of " << mission_plan.mission_items.size() << " waypoints succeeded after " << dur_s << "s.");
             starting_attempts_ = 0;
             first_starting_attempt_time_ = clock_->now();
-            start_mission();
+            start_mission(mission_plan);
           }
           // otherwise, check if we should retry or give up
           else
@@ -177,17 +177,17 @@ void MissionManager::start_mission_upload(const mavsdk::Mission::MissionPlan& mi
 //}
 
 /* start_mission //{ */
-void MissionManager::start_mission()
+void MissionManager::start_mission(const mavsdk::Mission::MissionPlan& mission_plan)
 {
   plan_size_ = 0;
   current_waypoint_ = 0;
 
-  mission_->start_mission_async([this](mavsdk::Mission::Result result)
+  mission_->start_mission_async([this, mission_plan](mavsdk::Mission::Result result)
       {
         // spawn a new thread to avoid blocking in the MavSDK
         // callback which will eventually cause a deadlock
         // of the MavSDK processing thread
-        std::thread([this, result]
+        std::thread([this, result, mission_plan]
         {
           std::scoped_lock lck(mutex_);
           const rclcpp::Duration starting_dur = clock_->now() - first_starting_attempt_time_;
@@ -196,6 +196,7 @@ void MissionManager::start_mission()
           {
             RCLCPP_INFO(logger_, "Mission #%u successfully started after %.2fs.", mission_id_, starting_dur.seconds());
             update_state(state_t::in_progress);
+            publish_plan(mission_plan);
           }
           // otherwise, check if we should retry or give up
           else
@@ -209,7 +210,7 @@ void MissionManager::start_mission()
               if (state_ == state_t::starting)
               {
                 starting_attempts_++;
-                start_mission();
+                start_mission(mission_plan);
               }
             }
             else
@@ -224,6 +225,32 @@ void MissionManager::start_mission()
 
   RCLCPP_INFO_STREAM(logger_, "Called mission #" << mission_id_ << " start (attempt " << starting_attempts_+1 << ").");
   update_state(state_t::starting);
+}
+//}
+
+/* publish_plan //{ */
+void MissionManager::publish_plan(const mavsdk::Mission::MissionPlan& mission_plan)
+{
+  fog_msgs::msg::MissionPlan::UniquePtr msg = std::make_unique<fog_msgs::msg::MissionPlan>();
+  msg->mission_items.reserve(mission_plan.mission_items.size());
+  for (const auto& it : mission_plan.mission_items)
+  {
+    fog_msgs::msg::MissionItem it_msg;
+    it_msg.latitude_deg = it.latitude_deg;
+    it_msg.longitude_deg = it.longitude_deg;
+    it_msg.relative_altitude_m = it.relative_altitude_m;
+    it_msg.speed_m_s = it.speed_m_s;
+    it_msg.is_fly_through = it.is_fly_through;
+    it_msg.gimbal_pitch_deg = it.gimbal_pitch_deg;
+    it_msg.gimbal_yaw_deg = it.gimbal_yaw_deg;
+    it_msg.loiter_time_s = it.loiter_time_s;
+    it_msg.camera_photo_interval_s = it.camera_photo_interval_s;
+    it_msg.acceptance_radius_m = it.acceptance_radius_m;
+    it_msg.yaw_deg = it.yaw_deg;
+    it_msg.camera_action = (int)it.camera_action;
+    msg->mission_items.push_back(it_msg);
+  }
+  plan_pub_->publish(std::move(msg));
 }
 //}
 

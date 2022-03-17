@@ -6,6 +6,8 @@
 #include "control_interface/enums.h"
 #include "control_interface/utils.h"
 
+#include <fog_msgs/msg/mission_plan.hpp>
+
 #include <mavsdk/mavsdk.h>
 #include <mavsdk/plugins/mission/mission.h>
 
@@ -25,7 +27,7 @@ namespace control_interface
     MissionManager();
     MissionManager(const unsigned max_upload_attempts, const rclcpp::Duration& starting_timeout, 
                    std::shared_ptr<mavsdk::System> system, const rclcpp::Logger& logger, rclcpp::Clock::SharedPtr clock,
-                   std::recursive_mutex& mutex);
+                   rclcpp::Publisher<fog_msgs::msg::MissionPlan>::SharedPtr plan_pub, std::recursive_mutex& mutex);
 
     // doesn't block (the uploading & starting of the mission is asynchronous)
     bool new_mission(const mavsdk::Mission::MissionPlan& mission_plan, const uint32_t id, std::string& fail_reason_out);
@@ -77,6 +79,8 @@ namespace control_interface
     rclcpp::Logger logger_;
     // for time-related stuff
     rclcpp::Clock::SharedPtr clock_;
+    // for debugging
+    rclcpp::Publisher<fog_msgs::msg::MissionPlan>::SharedPtr plan_pub_;
 
     // set by the MavSDK progressCallback
     int32_t plan_size_ = 0;
@@ -91,11 +95,13 @@ namespace control_interface
     // busy (processing the uploaded mission?). Typically, PixHawk is only busy
     // for a short time, but the mission starting is fast, so repeating it only
     // a certain number of times could fail before PixHawk is no longer busy.
-    void start_mission();
+    void start_mission(const mavsdk::Mission::MissionPlan& mission_plan);
 
     void progress_callback(const mavsdk::Mission::MissionProgress& progress);
 
     void update_state(const state_t new_state);
+
+    void publish_plan(const mavsdk::Mission::MissionPlan& mission_plan);
   };
 
 }

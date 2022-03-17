@@ -203,6 +203,7 @@ private:
 
   std::recursive_mutex mission_mgr_mutex_;
   std::unique_ptr<MissionManager> mission_mgr_ = nullptr;
+  rclcpp::Publisher<fog_msgs::msg::MissionPlan>::SharedPtr mission_publisher_;
 
   // the mavsdk::Action is used for requesting actions such as takeoff and landing
   std::mutex action_mutex_;
@@ -502,6 +503,7 @@ ControlInterface::ControlInterface(rclcpp::NodeOptions options) : Node("control_
 
   // | ------------------ initialize publishers ----------------- |
   rclcpp::QoS qos(rclcpp::KeepLast(3));
+  mission_publisher_      = create_publisher<fog_msgs::msg::MissionPlan>("~/mission_plan_out", qos);
   waypoint_publisher_     = create_publisher<geometry_msgs::msg::PoseArray>("~/waypoints_out", qos);
   diagnostics_publisher_  = create_publisher<fog_msgs::msg::ControlInterfaceDiagnostics>("~/diagnostics_out", qos);
   cmd_pose_publisher_     = create_publisher<geometry_msgs::msg::PoseStamped>("~/cmd_pose_out", qos);
@@ -2007,7 +2009,7 @@ bool ControlInterface::connectPixHawk()
     action_  = std::make_shared<mavsdk::Action>(system_);
     param_   = std::make_shared<mavsdk::Param>(system_);
     telem_   = std::make_shared<mavsdk::Telemetry>(system_);
-    mission_mgr_ = std::make_unique<MissionManager>(mission_max_upload_attempts_, mission_starting_timeout_, system_, get_logger(), get_clock(), mission_mgr_mutex_);
+    mission_mgr_ = std::make_unique<MissionManager>(mission_max_upload_attempts_, mission_starting_timeout_, system_, get_logger(), get_clock(), mission_publisher_, mission_mgr_mutex_);
     MissionManager::state_update_cbk_t state_update_cbk = std::bind(&ControlInterface::missionStateUpdateCallback, this);
     mission_mgr_->subscribe_state_update(state_update_cbk);
 
