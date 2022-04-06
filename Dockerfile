@@ -4,14 +4,13 @@ COPY . /main_ws/src/
 
 # this:
 # 1) builds the application
-# 2) packages the application as .deb
-# 3) writes the .deb packages to /main_ws/
+# 2) packages the application as .deb & writes it to /main_ws/
 RUN /packaging/build.sh
 
 #  ▲               runtime ──┐
 #  └── build                 ▼
 
-FROM ghcr.io/tiiuae/fog-ros-baseimage:sha-d2cdcdb
+FROM ghcr.io/tiiuae/fog-ros-baseimage:sha-7857f7d
 
 ENTRYPOINT /entrypoint.sh
 
