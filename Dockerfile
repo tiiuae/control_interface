@@ -10,7 +10,7 @@ RUN /packaging/build.sh
 #  ▲               runtime ──┐
 #  └── build                 ▼
 
-FROM ghcr.io/tiiuae/fog-ros-baseimage:sha-7857f7d
+FROM ghcr.io/tiiuae/fog-ros-baseimage:stable
 
 ENTRYPOINT /entrypoint.sh
 
